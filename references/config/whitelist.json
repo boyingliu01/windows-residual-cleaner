@@ -1,0 +1,16 @@
+{
+  "registry_patterns": [
+    {"pattern": ".*Microsoft\\\\Windows\\\\CurrentVersion\\\\.*", "reason": "Windows system component", "added_date": "2026-05-02"},
+    {"pattern": ".*\\\\VCRedist\\\\.*", "reason": "Visual C++ runtime shared component", "added_date": "2026-05-02"},
+    {"pattern": ".*\\\\DotNet\\\\.*", "reason": ".NET runtime shared component", "added_date": "2026-05-02"},
+    {"pattern": ".*Intel\\\\.*", "reason": "Intel driver/component", "added_date": "2026-05-02"},
+    {"pattern": ".*NVIDIA\\\\.*", "reason": "NVIDIA driver component", "added_date": "2026-05-02"},
+    {"pattern": ".*AMD\\\\.*", "reason": "AMD driver component", "added_date": "2026-05-02"},
+    {"pattern": ".*Oracle\\\\.*", "reason": "Oracle Java/MySQL component", "added_date": "2026-05-02"}
+  ],
+  "path_patterns": [
+    {"pattern": ".*\\\\Microsoft\\\\.*", "reason": "Microsoft system files", "added_date": "2026-05-02"},
+    {"pattern": ".*\\\\WindowsApps\\\\.*", "reason": "UWP app directory", "added_date": "2026-05-02"}
+  ],
+  "service_names": ["Winmgmt", "RpcSs", "EventLog", "DcomLaunch", "gpsvc", "Schedule", "WlanSvc", "Dhcp", "Dnscache"]
+}
