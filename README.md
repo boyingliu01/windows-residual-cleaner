@@ -40,12 +40,18 @@ powershell -ExecutionPolicy Bypass -File references/scripts/scan-residuals.ps1
 # 6. Generate consolidated report
 powershell -ExecutionPolicy Bypass -File references/scripts/generate-report.ps1
 
-# 7. Review final-report.json, then cleanup (choose mode A/B/C/D)
-powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -Mode D
-# Dry-run preview:
-powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -Mode A -DryRun
+# 7. Interactive confirmation (select items to clean)
+powershell -ExecutionPolicy Bypass -File references/scripts/confirm-cleanup.ps1
+# → Outputs confirmed-ids.json with user-selected items
 
-# 8. If needed, show rollback instructions
+# 8. Cleanup confirmed items (use -ConfirmFile from step 7)
+powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -Mode A -ConfirmFile confirmed-ids.json
+# Dry-run preview:
+powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -Mode A -ConfirmFile confirmed-ids.json -DryRun
+# Legacy mode (without interactive confirmation):
+powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -Mode D
+
+# 9. If needed, show rollback instructions
 powershell -ExecutionPolicy Bypass -File references/scripts/rollback.ps1
 ```
 
@@ -68,7 +74,8 @@ windows-residual-cleaner/
 │       ├── scan-filesystem-residuals.ps1 # Scan empty/orphan directories
 │       ├── scan-residuals.ps1        # Scan registry/services/tasks/COM/Shell
 │       ├── generate-report.ps1       # Consolidate reports with risk IDs
-│       ├── clean-residuals.ps1       # Execute cleanup (4 modes + DryRun)
+│       ├── confirm-cleanup.ps1     # Interactive cleanup confirmation
+│       ├── clean-residuals.ps1       # Execute cleanup (4 modes + DryRun + ConfirmFile)
 │       └── rollback.ps1              # Show rollback instructions
 └── tests/
     ├── unit/

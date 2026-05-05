@@ -74,8 +74,20 @@ try {
 try {
     Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object {
         foreach ($action in $_.Actions) {
-            if ($action.Execute -and -not [System.IO.File]::Exists($action.Execute)) {
-                $ghostTasks.Add([PSCustomObject]@{ type='ghost_task'; name=$_.TaskName; execute=$action.Execute; risk='caution'; reason="Task executable not found: $($action.Execute)" })
+            if ($action.Execute) {
+                # 修复：展开环境变量后再检查文件是否存在
+                # 如 %windir%\system32\rundll32.exe → C:\WINDOWS\system32\rundll32.exe
+                $expandedExecute = [Environment]::ExpandEnvironmentVariables($action.Execute)
+                # 清理双引号（计划任务注册有时产生 ""C:\path"" 格式）
+                $cleanExecute = $expandedExecute.Trim('"')
+                # 裸可执行文件名（如 powershell.exe, sc.exe）跳过检查——一定在 PATH 中
+                if ($cleanExecute -notmatch '[\\/]' -and $cleanExecute -match '\.(exe|dll|sys)$') {
+                    # 裸文件名，可通过 PATH 找到，跳过
+                    continue
+                }
+                if (-not [System.IO.File]::Exists($cleanExecute)) {
+                    $ghostTasks.Add([PSCustomObject]@{ type='ghost_task'; name=$_.TaskName; execute=$action.Execute; expanded_path=$cleanExecute; risk='caution'; reason="Task executable not found: $cleanExecute" })
+                }
             }
         }
     }

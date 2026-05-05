@@ -19,63 +19,60 @@ $other = Get-Content "$DataDir\other-residuals.json" -Raw | ConvertFrom-Json
 # shl_XXX = shell_residuals (COM/ContextMenu), path_XXX = PATH entries
 $counters = @{fs=0; reg=0; svc=0; tsk=0; str=0; shl=0; path=0}
 
+# 修复：直接修改 hashtable 条目，避免 [ref] 对值类型的引用丢失
+# PowerShell 的 hashtable 值是 by-value 返回的，[ref]$counters.fs 指向临时拷贝
 function Set-Id {
-    [CmdletBinding(SupportsShouldProcess)]
-    [OutputType([string])]
-    param([ref]$counter, [string]$prefix)
-    if ($PSCmdlet.ShouldProcess("counter", "Increment and return new ID")) {
-        $counter.Value++
-        return "${prefix}$($counter.Value.ToString('D3'))"
-    }
-    return "${prefix}$($($counter.Value + 1).ToString('D3'))"
+    param([hashtable]$counters, [string]$key, [string]$prefix)
+    $counters[$key]++
+    return "{0}{1:D3}" -f $prefix, $counters[$key]
 }
 
 # Assign IDs to filesystem residuals
 $fsItems = @()
 foreach ($item in $fs) {
-    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id ([ref]$counters.fs) 'fs_')
+    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id $counters 'fs' 'fs_')
     $fsItems += $item
 }
 
 # Assign IDs to registry residuals
 $regItems = @()
 foreach ($item in $other.registry_residuals) {
-    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id ([ref]$counters.reg) 'reg_')
+    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id $counters 'reg' 'reg_')
     $regItems += $item
 }
 
 # Assign IDs to ghost services
 $svcItems = @()
 foreach ($item in $other.ghost_services) {
-    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id ([ref]$counters.svc) 'svc_')
+    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id $counters 'svc' 'svc_')
     $svcItems += $item
 }
 
 # Assign IDs to ghost tasks
 $tskItems = @()
 foreach ($item in $other.ghost_tasks) {
-    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id ([ref]$counters.tsk) 'tsk_')
+    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id $counters 'tsk' 'tsk_')
     $tskItems += $item
 }
 
 # Assign IDs to startup residuals
 $strItems = @()
 foreach ($item in $other.startup_residuals) {
-    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id ([ref]$counters.str) 'str_')
+    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id $counters 'str' 'str_')
     $strItems += $item
 }
 
 # Assign IDs to shell residuals (COM/ContextMenu)
 $shlItems = @()
 foreach ($item in $other.shell_residuals) {
-    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id ([ref]$counters.shl) 'shl_')
+    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id $counters 'shl' 'shl_')
     $shlItems += $item
 }
 
 # Assign IDs to PATH residuals
 $pathItems = @()
 foreach ($item in $other.path_residuals) {
-    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id ([ref]$counters.path) 'path_')
+    $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id $counters 'path' 'path_')
     $pathItems += $item
 }
 

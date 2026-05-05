@@ -4,6 +4,7 @@ param(
     [string]$ReportPath = "$PSScriptRoot\..\..\final-report.json",
     [string]$WhitelistPath = "$PSScriptRoot\..\config\whitelist.json",
     [string]$ItemsToClean = "",   # JSON array of IDs, e.g. '["fs_001","svc_001"]'
+    [string]$ConfirmFile = "",   # Path to confirmed-ids.json (output of confirm-cleanup.ps1)
     [ValidateSet('A','B','C','D')]
     [string]$Mode = 'D',         # A=Auto-clean Safe, B=Safe auto + Caution confirm, C=Full review, D=Report only
     [switch]$DryRun = $false     # Dry-run mode: log actions without executing
@@ -31,6 +32,104 @@ if (Test-Path $WhitelistPath) {
     } catch {
         Write-Warning "Failed to load whitelist: $_"
     }
+}
+
+# Robust file deletion with fallback strategies for locked/permission-denied files
+function Remove-ItemRobust {
+    param([string]$Path, [switch]$WhatIf)
+    if ($WhatIf) { return $true }
+    if (-not (Test-Path $Path)) { return $true }
+
+    # Strategy 1: Standard PowerShell Remove-Item
+    try {
+        Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
+        return $true
+    } catch {
+        $err1 = $_.Exception.Message
+        Write-Warning "  → Standard delete failed: $err1"
+    }
+
+    # Strategy 2: Take ownership + grant full access, then retry
+    try {
+        # takeown /f for files, /r for recursive on directories
+        $isDir = (Get-Item $Path).PSIsContainer
+        if ($isDir) {
+            $takeownArgs = '/r', '/d', 'Y', '/f', $Path
+        } else {
+            $takeownArgs = '/f', $Path
+        }
+        $takeown = Start-Process -FilePath 'takeown.exe' -ArgumentList $takeownArgs -Wait -PassThru -WindowStyle Hidden
+        if ($takeown.ExitCode -ne 0) {
+            Write-Warning "  → takeown.exe failed with exit code $($takeown.ExitCode)"
+        }
+
+        # icacls grant Administrators full control
+        if ($isDir) {
+            $icaclsArgs = $Path, '/grant', 'Administrators:F', '/T', '/C'
+        } else {
+            $icaclsArgs = $Path, '/grant', 'Administrators:F', '/C'
+        }
+        $icacls = Start-Process -FilePath 'icacls.exe' -ArgumentList $icaclsArgs -Wait -PassThru -WindowStyle Hidden
+        if ($icacls.ExitCode -ne 0) {
+            Write-Warning "  → icacls.exe failed with exit code $($icacls.ExitCode)"
+        }
+
+        Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
+        return $true
+    } catch {
+        $err2 = $_.Exception.Message
+        Write-Warning "  → Takeown+ACL delete failed: $err2"
+    }
+
+    # Strategy 3: cmd rd /s /q (sometimes works where PS fails)
+    try {
+        $isDir = (Get-Item $Path).PSIsContainer
+        if ($isDir) {
+            cmd /c "rd /s /q `"$Path`"" 2>&1
+            if ($LASTEXITCODE -eq 0 -and -not (Test-Path $Path)) { return $true }
+        } else {
+            cmd /c "del /f /q `"$Path`"" 2>&1
+            if ($LASTEXITCODE -eq 0 -and -not (Test-Path $Path)) { return $true }
+        }
+    } catch {
+        Write-Warning "  → cmd delete failed: $($_.Exception.Message)"
+    }
+
+    # Strategy 4: Rename the file/directory (if deletion is blocked by handle)
+    try {
+        $isDir = (Get-Item $Path).PSIsContainer
+        $parent = Split-Path $Path -Parent
+        $leaf = Split-Path $Path -Leaf
+        $renamed = Join-Path $parent "~$leaf.deleted"
+        $counter = 0
+        while (Test-Path $renamed) {
+            $counter++
+            $renamed = Join-Path $parent "~$leaf.deleted$counter"
+        }
+        Rename-Item -Path $Path -NewName $renamed -Force -ErrorAction Stop
+        Write-Output "  → Renamed to $(Split-Path $renamed -Leaf) (deferred delete - may be in use)"
+
+        # If it's a file, try to schedule it for deletion on next reboot using MoveFileEx
+        if (-not $isDir) {
+            try {
+                Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32Delete {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, int dwFlags);
+    public const int MOVEFILE_DELAY_UNTIL_REBOOT = 0x4;
+}
+"@ -ErrorAction SilentlyContinue
+                [Win32Delete]::MoveFileEx($renamed, $null, [Win32Delete]::MOVEFILE_DELAY_UNTIL_REBOOT) | Out-Null
+            } catch {}
+        }
+        return $true
+    } catch {
+        Write-Warning "  → Rename fallback also failed: $($_.Exception.Message)"
+    }
+
+    return $false
 }
 
 function Test-Whitelisted {
@@ -71,25 +170,49 @@ foreach ($cat in @('filesystem_residuals','registry_residuals','ghost_services',
         }
     }
 }
-
 # B-M4 修复：按 Mode 筛选
 # Mode A: 自动清理 Safe 项
 # Mode B: 自动清理 Safe 项，Caution 项仅标记（用户需逐项确认，由调用者控制）
 # Mode C: 全量审阅（Safe + Caution），Danger 保留
 # Mode D: 仅报告，不清理
-$itemsToClean = @()
-switch ($Mode) {
-    'A' { $itemsToClean = @($allItems | Where-Object { $_.risk -eq 'safe' }) }
-    'B' { $itemsToClean = @($allItems | Where-Object { $_.risk -eq 'safe' }) }
-    'C' { $itemsToClean = @($allItems | Where-Object { $_.risk -ne 'danger' }) }
-    'D' { Write-Output "Report-only mode. No cleanup performed."; return }
+# 如果指定了 ConfirmFile，则跳过 Mode 筛选，直接使用用户确认的 ID 列表
+# 注意：变量名必须用 $cleanupItems 而非 $itemsToClean，因为参数 $ItemsToClean
+# 是 [string] 类型，PS 变量不区分大小写，会导致类型约束冲突
+if ($ConfirmFile -ne '') {
+    # ConfirmFile 模式：用户已通过 confirm-cleanup.ps1 交互确认，跳过 Mode 筛选
+    $cleanupItems = @()
+    foreach ($item in $allItems) {
+        if ($item.risk -ne 'danger') {
+            $cleanupItems += $item
+        }
+    }
+} else {
+    switch ($Mode) {
+        'A' { $cleanupItems = @($allItems | Where-Object { $_.risk -eq 'safe' }) }
+        'B' { $cleanupItems = @($allItems | Where-Object { $_.risk -eq 'safe' }) }
+        'C' { $cleanupItems = @($allItems | Where-Object { $_.risk -ne 'danger' }) }
+        'D' { Write-Output "Report-only mode. No cleanup performed."; return }
+    }
+}
+
+# 如果指定了 ConfirmFile（来自 confirm-cleanup.ps1），则以此为筛选依据
+if ($ConfirmFile -and (Test-Path $ConfirmFile)) {
+    try {
+        $confirmedIds = Get-Content $ConfirmFile -Raw | ConvertFrom-Json
+        $cleanupItems = @($cleanupItems | Where-Object { $confirmedIds -contains $_.id })
+        Write-Output "Loaded $($confirmedIds.Count) confirmed IDs from $ConfirmFile, matched $($cleanupItems.Count) items"
+    } catch {
+        Write-Warning "Failed to load ConfirmFile: $_"
+    }
+} elseif ($ConfirmFile) {
+    Write-Warning "ConfirmFile not found: $ConfirmFile"
 }
 
 # 如果指定了具体 ID，则进一步过滤（B-m3 修复：try/catch）
 if ($ItemsToClean) {
     try {
         $ids = $ItemsToClean | ConvertFrom-Json
-        $itemsToClean = @($itemsToClean | Where-Object { $ids -contains $_.id })
+        $cleanupItems = @($cleanupItems | Where-Object { $ids -contains $_.id })
     } catch {
         Write-Warning "Invalid ItemsToClean JSON format. Ignoring filter."
     }
@@ -98,7 +221,7 @@ if ($ItemsToClean) {
 # --- 执行清理 ---
 $log = [System.Collections.Generic.List[Hashtable]]::new()
 
-foreach ($item in $itemsToClean) {
+foreach ($item in $cleanupItems) {
     $prefix = if ($DryRun) { "[DRY-RUN] " } else { "" }
 
     # Defense-in-Depth: 白名单二次校验
@@ -139,7 +262,10 @@ foreach ($item in $itemsToClean) {
             Write-Output "$prefix Deleting path: $($item.path)"
             if (-not $DryRun) {
                 if (Test-Path $item.path) {
-                    Remove-Item -Path $item.path -Recurse -Force -ErrorAction Stop
+                    $deleted = Remove-ItemRobust -Path $item.path -WhatIf:$DryRun
+                    if (-not $deleted) {
+                        throw "Failed to delete path after all fallback strategies"
+                    }
                 } else {
                     Write-Output "  → Path does not exist (already removed), skipping"
                 }
@@ -178,9 +304,9 @@ $summary = @{
     mode = $Mode
     dry_run = $DryRun.IsPresent
     total_processed = $log.Count
-    succeeded = ($log | Where-Object { $_.success -eq $true }).Count
-    failed = ($log | Where-Object { $_.success -eq $false -and $_.action -eq 'cleanup_failed' }).Count
-    skipped = ($log | Where-Object { $_.action -match 'skipped' }).Count
+    succeeded = @($log | Where-Object { $_.success -eq $true }).Count
+    failed = @($log | Where-Object { $_.success -eq $false -and $_.action -eq 'cleanup_failed' }).Count
+    skipped = @($log | Where-Object { $_.action -match 'skipped' }).Count
     timestamp = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
 }
 
