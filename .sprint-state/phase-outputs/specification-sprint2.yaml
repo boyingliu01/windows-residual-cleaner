@@ -1,0 +1,62 @@
+spec_version: "1.0"
+project: windows-residual-cleaner
+sprint: "Sprint 2: Agent-Driven Cleanup Workflow"
+
+## Objective
+Rewrite SKILL.md workflow to be agent-driven with natural language interaction. The user should only need to express intent (e.g., "帮我清理卸载残留"), and the agent automatically drives the full scan-to-cleanup pipeline with mandatory confirmation pauses.
+
+## Problem Statement
+Current SKILL.md places cognitive burden on the user:
+- User must understand Safe/Caution/Danger risk levels
+- User must choose between modes A/B/C/D or -AutoSelect parameters
+- Agent stops after scan and waits for next user command instead of continuing the flow
+- Confirmation is advisory, not mandatory
+
+## Solution Design
+
+### 1. Agent-Driven Workflow (SKILL.md rewrite)
+Replace the current "9-step manual workflow" with a conversational flow where the agent:
+1. **Auto-triggers on semantic match**: "cleanup residuals", "清理卸载残留", "remove leftover files"
+2. **Auto-executes scan**: Runs create-restore-point → build-index → scan-all → generate-report (sequential, internal)
+3. **Presents summary in natural language**: "扫描完成，发现 163 项 Safe 级别残留（约 12GB，主要是空目录）和 273 项 Caution 级别。Safe 级别风险较低，建议清理。"
+4. **Asks for confirmation**: "是否继续？"
+5. **If yes**: Runs confirm-cleanup.ps1 -NonInteractive -AutoSelect safe → DryRun preview
+6. **Presents DryRun summary**: "预览完成，将删除 163 个目录/文件，释放约 12GB。确认执行吗？"
+7. **If yes**: Executes clean-residuals.ps1 -ConfirmFile confirmed-ids.json
+8. **Reports results**: "完成，163 项已清理，释放 12GB。"
+
+### 2. Mandatory Confirmation Gates (hardcoded, non-skippable)
+The agent MUST pause and wait for explicit user confirmation at:
+- **Gate 1**: After scan summary is presented (before any selection/export)
+- **Gate 2**: After DryRun preview is presented (before actual cleanup execution)
+
+These gates are enforced in SKILL.md instructions, not optional.
+
+### 3. No Technical Parameters Exposed to User
+- Agent internally decides to use `-AutoSelect safe` for first pass
+- Agent internally calls `-DryRun` before actual cleanup
+- User never sees PowerShell parameters, JSON files, or ID lists
+- If user says "also clean Caution items", agent translates to `-AutoSelect caution` internally
+
+### 4. Natural Language Confirmation
+Acceptable confirmations: "好", "可以", "清理吧", "执行", "确认", "yes", "go ahead", "ok"
+Refusals / deferrals: "不了", "再看看", "先不", "no", "skip", "later"
+
+## Files to Modify
+- `SKILL.md`: Complete rewrite of "Workflow" and "AI Agent Usage" sections
+- `AGENTS.md`: Optional — add agent behavior guidelines for mandatory confirmation gates
+
+## Files NOT Modified
+- `references/scripts/*.ps1`: Already support -NonInteractive (v1.2.0.0)
+- `tests/`: May add tests for SKILL.md structure, but no script logic changes
+
+## Validation Criteria
+- [ ] PSScriptAnalyzer: 0 errors, 0 warnings on all scripts
+- [ ] Unit tests: All pass (confirm-cleanup.ps1 non-interactive mode, clean-residuals.ps1 ConfirmFile)
+- [ ] SKILL.md describes agent-driven flow with mandatory confirmation gates
+- [ ] No PowerShell parameters exposed in user-facing documentation
+- [ ] User can trigger entire workflow with a single natural language sentence
+
+## Risk Assessment
+- **Low risk**: No PowerShell script changes, only documentation/workflow update
+- **Mitigation**: confirm-cleanup.ps1 -NonInteractive already tested and verified
