@@ -40,14 +40,20 @@ powershell -ExecutionPolicy Bypass -File references/scripts/scan-residuals.ps1
 # 6. Generate consolidated report
 powershell -ExecutionPolicy Bypass -File references/scripts/generate-report.ps1
 
-# 7. Interactive confirmation (select items to clean)
+# 7. Confirmation (choose one)
+# 7a. Dialog-based (AI agent handles interaction, no window switching):
+#     Agent reads report, asks user, then runs non-interactive export:
+powershell -ExecutionPolicy Bypass -File references/scripts/confirm-cleanup.ps1 -NonInteractive -AutoSelect safe
+#     Or export specific IDs:
+powershell -ExecutionPolicy Bypass -File references/scripts/confirm-cleanup.ps1 -NonInteractive -SelectIds '["fs_001","fs_002"]'
+# 7b. Interactive TUI (standalone Windows Terminal only — Read-Host crashes in OpenCode):
 powershell -ExecutionPolicy Bypass -File references/scripts/confirm-cleanup.ps1
 # → Outputs confirmed-ids.json with user-selected items
 
 # 8. Cleanup confirmed items (use -ConfirmFile from step 7)
-powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -Mode A -ConfirmFile confirmed-ids.json
-# Dry-run preview:
-powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -Mode A -ConfirmFile confirmed-ids.json -DryRun
+powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -ConfirmFile confirmed-ids.json
+# Dry-run preview (recommended first):
+powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -ConfirmFile confirmed-ids.json -DryRun
 # Legacy mode (without interactive confirmation):
 powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -Mode D
 
