@@ -53,7 +53,7 @@ if ($restorePointEnabled) {
 }
 
 # 2. 注册表备份（B-M6 修复：验证导出完整性）
-$backupDir = "$PSScriptRoot\..\backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$backupDir = "$PSScriptRoot\..\..\backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 mkdir $backupDir -Force | Out-Null
 
 $regPaths = @(

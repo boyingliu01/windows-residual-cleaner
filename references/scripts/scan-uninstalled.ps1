@@ -39,27 +39,50 @@ foreach ($rp in $regPaths) {
             $notInIndex = -not $installedNames.ContainsKey($displayName)
 
             # 判断逻辑 2: InstallLocation 指向的路径不存在
+            # 修复：去除引号后再检查路径，避免 "D:\path" 被当作非法路径
             $installLocation = $sub.GetValue('InstallLocation')
-            $installPathMissing = ($installLocation -and -not [System.IO.Directory]::Exists($installLocation))
-
-            # 判断逻辑 3: UninstallString 指向的可执行文件不存在
-            $uninstallString = $sub.GetValue('UninstallString')
-            $uninstallPathMissing = $false
-            if ($uninstallString -and $uninstallString -match '^"(.+\.exe)"|^(.+\.exe)') {
-                $exePath = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
-                $uninstallPathMissing = -not [System.IO.File]::Exists($exePath)
+            $installPathMissing = $false
+            if ($installLocation) {
+                $cleanLocation = $installLocation.Trim('"').Trim("'")
+                if ($cleanLocation -ne '' -and -not [System.IO.Directory]::Exists($cleanLocation)) {
+                    $installPathMissing = $true
+                }
             }
 
+            # 判断逻辑 3: UninstallString 指向的可执行文件不存在
+            # 修复：跳过 MsiExec.exe / rundll32.exe / regsvr32.exe 等系统卸载器，
+            # 这些是 Windows 系统工具，总是存在于 System32，不应作为残留判断依据
+            $uninstallString = $sub.GetValue('UninstallString')
+            $uninstallPathMissing = $false
+            if ($uninstallString -and $uninstallString -notmatch '^\s*(MsiExec|rundll32|regsvr32)\.exe') {
+                $exePath = $null
+                if ($uninstallString -match '^"(.+?\.exe)"') {
+                    $exePath = $Matches[1]
+                } elseif ($uninstallString -match '^(.+?\.exe)(?:\s|$)') {
+                    $exePath = $Matches[1]
+                }
+                if ($exePath -and -not [System.IO.File]::Exists($exePath)) {
+                    $uninstallPathMissing = $true
+                }
+            }
+
+            # 三重判断 OR 组合：任一条件满足即判定为残留
+            # 逻辑 1（索引缺失）= 主信号
+            # 逻辑 2（InstallLocation 丢失）= 安装路径被删除
+            # 逻辑 3（UninstallString exe 丢失）= 卸载程序被删除
             $isResidual = $notInIndex -or $installPathMissing -or $uninstallPathMissing
             if ($isResidual) {
+                $evidenceParts = @()
+                if ($notInIndex) { $evidenceParts += "not in installed index" }
+                if ($installPathMissing) { $evidenceParts += "InstallLocation path missing" }
+                if ($uninstallPathMissing) { $evidenceParts += "UninstallString exe missing" }
+
                 $uninstalledEntries.Add([PSCustomObject]@{
                     name = $displayName
                     registry_key = "$($rp.Hive)\$subKeyPath\$name"
                     install_location = $installLocation
                     uninstall_string = $uninstallString
-                    evidence = @(if ($notInIndex) {"not in installed index"};
-                                 if ($installPathMissing) {"InstallLocation path missing"};
-                                 if ($uninstallPathMissing) {"UninstallString exe missing"}) -join '; '
+                    evidence = $evidenceParts -join '; '
                     source = $rp.Hive
                 })
             }

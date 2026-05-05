@@ -107,33 +107,34 @@ Describe 'Set-Id (generate-report.ps1)' {
     BeforeAll {
         . "$PSScriptRoot\..\..\references\scripts\generate-report.ps1" *>$null
     }
-    
+
     It 'Assigns first ID with prefix and zero padding' {
-        $counter = 0
-        $result = Set-Id -counter ([ref]$counter) -prefix 'fs_'
+        $counters = @{ fs=0 }
+        $result = Set-Id -counters $counters -key 'fs' -prefix 'fs_'
         $result | Should -Be 'fs_001'
-        $counter | Should -Be 1
+        $counters.fs | Should -Be 1
     }
-    
+
     It 'Increments IDs sequentially' {
-        $counter = 5
-        $result = Set-Id -counter ([ref]$counter) -prefix 'reg_'
+        $counters = @{ reg=5 }
+        $result = Set-Id -counters $counters -key 'reg' -prefix 'reg_'
         $result | Should -Be 'reg_006'
-        $counter | Should -Be 6
+        $counters.reg | Should -Be 6
     }
-    
+
     It 'Uses zero-padding for large numbers' {
-        $counter = 99
-        $result = Set-Id -counter ([ref]$counter) -prefix 'svc_'
+        $counters = @{ svc=99 }
+        $result = Set-Id -counters $counters -key 'svc' -prefix 'svc_'
         $result | Should -Be 'svc_100'
-        $counter | Should -Be 100
+        $counters.svc | Should -Be 100
     }
-    
+
     It 'Works with all prefixes' {
         $prefixes = @('fs_', 'reg_', 'svc_', 'tsk_', 'str_', 'shl_', 'path_')
         foreach ($p in $prefixes) {
-            $c = 0
-            $result = Set-Id -counter ([ref]$c) -prefix $p
+            $key = $p.TrimEnd('_')
+            $counters = @{ $key=0 }
+            $result = Set-Id -counters $counters -key $key -prefix $p
             $result | Should -Match "^${p}\d{3}$"
         }
     }
@@ -228,5 +229,130 @@ Describe 'Script Syntax Validation' {
             )
             $errors | Should -Be $null
         }
+    }
+}
+
+Describe 'confirm-cleanup.ps1 (non-interactive fallback)' {
+    It 'Exits gracefully in non-interactive environment' {
+        $scriptPath = "$PSScriptRoot\..\..\references\scripts\confirm-cleanup.ps1"
+        # Create a minimal test report
+        $testReport = @{
+            scan_time = '2026-01-01T00:00:00'
+            summary = @{ total_residuals=2; safe=1; caution=1; danger=0; estimated_space_recoverable_mb=0 }
+            filesystem_residuals = @(
+                @{ id='fs_001'; path='C:\Test'; name='Test'; type='empty_directory'; file_count=0; size_mb=0; risk='safe'; reason='test' }
+            )
+            ghost_services = @(
+                @{ id='svc_001'; name='testsvc'; display_name='Test'; binary_path='C:\test.exe'; extracted_path='C:\test.exe'; state='Stopped'; risk='safe'; reason='test' }
+            )
+            registry_residuals = @()
+            ghost_tasks = @()
+            startup_residuals = @()
+            shell_residuals = @()
+            path_residuals = @()
+            uninstalled_software = @()
+        } | ConvertTo-Json -Depth 3
+        $testReportPath = "$PSScriptRoot\..\..\test-report.json"
+        [System.IO.File]::WriteAllText($testReportPath, $testReport)
+
+        # Run in non-interactive mode (simulated by piping empty input)
+        $result = '' | & $scriptPath -ReportPath $testReportPath -OutputPath "$PSScriptRoot\..\..\test-confirmed.json" 2>&1
+        $result | Should -Match 'Non-interactive|interactive'
+
+        # Cleanup
+        Remove-Item $testReportPath -ErrorAction SilentlyContinue
+        Remove-Item "$PSScriptRoot\..\..\test-confirmed.json" -ErrorAction SilentlyContinue
+    }
+}
+
+Describe 'clean-residuals.ps1 ConfirmFile integration' {
+    It 'Filters items by confirmed IDs from JSON file' {
+        $scriptPath = "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
+        # Create a minimal test report
+        $testReport = @{
+            scan_time = '2026-01-01T00:00:00'
+            summary = @{ total_residuals=3; safe=3; caution=0; danger=0; estimated_space_recoverable_mb=0 }
+            filesystem_residuals = @(
+                @{ id='fs_001'; path='C:\Test1'; name='Test1'; type='empty_directory'; file_count=0; size_mb=0; risk='safe'; reason='test' }
+                @{ id='fs_002'; path='C:\Test2'; name='Test2'; type='empty_directory'; file_count=0; size_mb=0; risk='safe'; reason='test' }
+            )
+            ghost_services = @(
+                @{ id='svc_001'; name='testsvc'; display_name='Test'; binary_path='C:\test.exe'; extracted_path='C:\test.exe'; state='Stopped'; risk='safe'; reason='test' }
+            )
+            registry_residuals = @()
+            ghost_tasks = @()
+            startup_residuals = @()
+            shell_residuals = @()
+            path_residuals = @()
+            uninstalled_software = @()
+        } | ConvertTo-Json -Depth 3
+        $testReportPath = "$PSScriptRoot\..\..\test-report-final.json"
+        [System.IO.File]::WriteAllText($testReportPath, $testReport)
+
+        # Create confirmed IDs file with only 2 of the 3 items
+        $confirmedIds = '["fs_001","svc_001"]'
+        $confirmedPath = "$PSScriptRoot\..\..\test-confirmed.json"
+        [System.IO.File]::WriteAllText($confirmedPath, $confirmedIds)
+
+        # Mock backup directory to pass restore check
+        $backupDir = "$PSScriptRoot\..\..\backup-test"
+        New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
+
+        # Run in DryRun mode with ConfirmFile
+        $result = & $scriptPath -ReportPath $testReportPath -ConfirmFile $confirmedPath -DryRun 2>&1
+        $output = $result -join "`n"
+
+        $output | Should -Match 'Loaded 2 confirmed IDs'
+        $output | Should -Match 'matched 2 items'
+        $output | Should -Match 'Deleting path: C:\\Test1'
+        $output | Should -Match 'Stopping and deleting service: testsvc'
+        $output | Should -Not -Match 'Deleting path: C:\\Test2'
+
+        # Cleanup
+        Remove-Item $testReportPath -ErrorAction SilentlyContinue
+        Remove-Item $confirmedPath -ErrorAction SilentlyContinue
+        Remove-Item $backupDir -ErrorAction SilentlyContinue
+    }
+
+    It 'Skips Danger items even when in confirmed IDs' {
+        $scriptPath = "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
+        $testReport = @{
+            scan_time = '2026-01-01T00:00:00'
+            summary = @{ total_residuals=2; safe=1; caution=0; danger=1; estimated_space_recoverable_mb=0 }
+            filesystem_residuals = @(
+                @{ id='fs_001'; path='C:\Test1'; name='Test1'; type='empty_directory'; file_count=0; size_mb=0; risk='safe'; reason='test' }
+            )
+            path_residuals = @(
+                @{ id='path_001'; path='C:\NonExistent'; risk='danger'; reason='test' }
+            )
+            registry_residuals = @()
+            ghost_services = @()
+            ghost_tasks = @()
+            startup_residuals = @()
+            shell_residuals = @()
+            uninstalled_software = @()
+        } | ConvertTo-Json -Depth 3
+        $testReportPath = "$PSScriptRoot\..\..\test-report-danger.json"
+        [System.IO.File]::WriteAllText($testReportPath, $testReport)
+
+        # Try to confirm a Danger item (should be blocked)
+        $confirmedIds = '["fs_001","path_001"]'
+        $confirmedPath = "$PSScriptRoot\..\..\test-confirmed-danger.json"
+        [System.IO.File]::WriteAllText($confirmedPath, $confirmedIds)
+
+        $backupDir = "$PSScriptRoot\..\..\backup-test"
+        New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
+
+        $result = & $scriptPath -ReportPath $testReportPath -ConfirmFile $confirmedPath -DryRun 2>&1
+        $output = $result -join "`n"
+
+        # Danger items should be filtered out before ConfirmFile matching
+        $output | Should -Match 'matched 1 items'
+        $output | Should -Match 'Deleting path: C:\\Test1'
+        $output | Should -Not -Match 'Deleting path: C:\\NonExistent'
+
+        Remove-Item $testReportPath -ErrorAction SilentlyContinue
+        Remove-Item $confirmedPath -ErrorAction SilentlyContinue
+        Remove-Item $backupDir -ErrorAction SilentlyContinue
     }
 }
