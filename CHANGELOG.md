@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0.0] - 2026-05-06
+
+### Changed
+- **SKILL.md**: Completely rewritten agent workflow — zero cognitive burden for users
+  - Agent auto-triggers on semantic intent, no modes/parameters exposed
+  - Agent auto-executes scan pipeline, user only sees results
+  - Per-item/per-category selection confirmation (not just all/nothing)
+  - Three mandatory confirmation gates (scan→select→DryRun→execute)
+  - Natural language selection support ("腾讯会议的清理", "1-5项", "Safe全清")
+  - RFC 2119 keywords (MUST/MUST NOT) enforce agent behavior
+
+### Added
+- Delphi Review configuration: `.delphi-config.json` with GLM-5.1, Kimi-k2.6, MiniMax experts
+- OpenCode agent definitions for `delphi-reviewer-architecture`, `delphi-reviewer-technical`, `delphi-reviewer-feasibility`
+
+### Fixed
+- xgate issue #48: Documented missing `.delphi-config.json` initialization step
+
 ## [1.2.0.0] - 2026-05-05
 
 ### Added
