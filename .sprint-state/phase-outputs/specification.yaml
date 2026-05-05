@@ -1,0 +1,64 @@
+specification:
+  requirements:
+    - id: REQ-001
+      description: 新增 confirm-cleanup.ps1 脚本，读取 final-report.json 并生成交互式选择界面
+      priority: critical
+    - id: REQ-002
+      description: 按风险级别和分类分组展示残留项，Danger 项默认不选但可见
+      priority: high
+    - id: REQ-003
+      description: 支持快捷操作：按风险级别批量选择/取消、逐项确认/跳过
+      priority: high
+    - id: REQ-004
+      description: 输出用户确认的 ID 列表到 confirmed-ids.json
+      priority: critical
+    - id: REQ-005
+      description: 修改 clean-residuals.ps1 支持从 confirmed-ids.json 读取确认列表
+      priority: high
+    - id: REQ-006
+      description: PowerShell 5.1 兼容，非交互环境自动降级到 Mode D
+      priority: medium
+
+  acceptance_criteria:
+    - id: AC-001
+      requirement: REQ-001
+      criteria: confirm-cleanup.ps1 能正确读取 final-report.json 并显示分类汇总
+      test_type: unit
+    - id: AC-002
+      requirement: REQ-002
+      criteria: 残留项按 Safe/Caution/Danger 分组展示，Danger 项默认不选
+      test_type: unit
+    - id: AC-003
+      requirement: REQ-003
+      criteria: 用户可以逐项选择，也可以批量操作（选全部 Safe、清空所有选择等）
+      test_type: integration
+    - id: AC-004
+      requirement: REQ-004
+      criteria: 确认后输出 confirmed-ids.json，仅包含用户选中项的 ID
+      test_type: unit
+    - id: AC-005
+      requirement: REQ-005
+      criteria: clean-residuals.ps1 -ConfirmFile confirmed-ids.json 只清理确认的项
+      test_type: integration
+    - id: AC-006
+      requirement: REQ-006
+      criteria: 非交互终端中 confirm-cleanup.ps1 自动降级，不 Read-Host
+      test_type: unit
+
+  design_decisions:
+    - id: DD-001
+      decision: 交互方式使用 Read-Host + 数字菜单，不用 Out-GridView（需 PowerShell ISE）
+      rationale: 最大兼容性，PowerShell 5.1 全平台可用
+      alternatives_considered: Out-GridView（需 ISE）、TUI 界面（过度复杂）
+    - id: DD-002
+      decision: confirmed-ids.json 格式为字符串数组 ["fs_001","svc_003"]
+      rationale: 与现有 -ItemsToClean 参数格式一致，改动最小
+      alternatives_considered: 带完整对象的 JSON（冗余）
+    - id: DD-003
+      decision: 展示顺序按 风险级别(Safe→Caution→Danger) > 分类 > 大小降序
+      rationale: 用户最关心的先展示，Safe 最可能清理放最前
+      alternatives_considered: 按分类分组（不利于批量操作）
+    - id: DD-004
+      decision: 每页展示 20 项，翻页浏览，避免终端刷屏
+      rationale: 520 项一次展示不可读，分页让用户聚焦
+      alternatives_considered: 全量展示（信息过载）、只展示摘要（缺乏细节）

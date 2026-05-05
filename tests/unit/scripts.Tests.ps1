@@ -209,38 +209,43 @@ Describe 'Test-AllSubdirsEmpty (scan-filesystem-residuals.ps1)' {
 }
 
 Describe 'Script Syntax Validation' {
-    $scripts = @(
-        'build-installed-index.ps1',
-        'scan-uninstalled.ps1',
-        'scan-filesystem-residuals.ps1',
-        'scan-residuals.ps1',
-        'generate-report.ps1',
-        'create-restore-point.ps1',
-        'clean-residuals.ps1',
-        'rollback.ps1'
+    $testCases = @(
+        @{ ScriptName = 'build-installed-index.ps1' }
+        @{ ScriptName = 'scan-uninstalled.ps1' }
+        @{ ScriptName = 'scan-filesystem-residuals.ps1' }
+        @{ ScriptName = 'scan-residuals.ps1' }
+        @{ ScriptName = 'generate-report.ps1' }
+        @{ ScriptName = 'create-restore-point.ps1' }
+        @{ ScriptName = 'confirm-cleanup.ps1' }
+        @{ ScriptName = 'clean-residuals.ps1' }
+        @{ ScriptName = 'rollback.ps1' }
     )
-    
-    foreach ($script in $scripts) {
-        It "Script $script has no parse errors" {
-            $scriptPath = "$PSScriptRoot\..\..\references\scripts\$script"
-            $errors = $null
-            $null = [System.Management.Automation.PSParser]::Tokenize(
-                (Get-Content $scriptPath -Raw), [ref]$errors
-            )
-            $errors | Should -Be $null
-        }
+
+    It "Script <ScriptName> has no parse errors" -TestCases $testCases {
+        $scriptPath = "$PSScriptRoot\..\..\references\scripts\$ScriptName"
+        $errors = $null
+        $null = [System.Management.Automation.PSParser]::Tokenize(
+            (Get-Content $scriptPath -Raw), [ref]$errors
+        )
+        $errors | Should -Be $null
     }
 }
 
-Describe 'confirm-cleanup.ps1 (non-interactive fallback)' {
-    It 'Exits gracefully in non-interactive environment' {
-        $scriptPath = "$PSScriptRoot\..\..\references\scripts\confirm-cleanup.ps1"
-        # Create a minimal test report
+Describe 'confirm-cleanup.ps1 non-interactive mode' {
+    BeforeAll {
+        $script:scriptPath = "$PSScriptRoot\..\..\references\scripts\confirm-cleanup.ps1"
+        $script:testReportPath = "$PSScriptRoot\..\..\test-report-ni.json"
+        $script:testOutputPath = "$PSScriptRoot\..\..\test-confirmed-ni.json"
+
         $testReport = @{
             scan_time = '2026-01-01T00:00:00'
-            summary = @{ total_residuals=2; safe=1; caution=1; danger=0; estimated_space_recoverable_mb=0 }
+            summary = @{ total_residuals=4; safe=2; caution=1; danger=1; estimated_space_recoverable_mb=0 }
             filesystem_residuals = @(
-                @{ id='fs_001'; path='C:\Test'; name='Test'; type='empty_directory'; file_count=0; size_mb=0; risk='safe'; reason='test' }
+                @{ id='fs_001'; path='C:\TestSafe'; name='TestSafe'; type='empty_directory'; file_count=0; size_mb=0; risk='safe'; reason='test' }
+                @{ id='fs_002'; path='C:\TestCaution'; name='TestCaution'; type='orphan_directory'; file_count=1; size_mb=10; risk='caution'; reason='test' }
+            )
+            path_residuals = @(
+                @{ id='path_001'; path='C:\NonExistent'; risk='danger'; reason='test' }
             )
             ghost_services = @(
                 @{ id='svc_001'; name='testsvc'; display_name='Test'; binary_path='C:\test.exe'; extracted_path='C:\test.exe'; state='Stopped'; risk='safe'; reason='test' }
@@ -249,19 +254,70 @@ Describe 'confirm-cleanup.ps1 (non-interactive fallback)' {
             ghost_tasks = @()
             startup_residuals = @()
             shell_residuals = @()
-            path_residuals = @()
             uninstalled_software = @()
         } | ConvertTo-Json -Depth 3
-        $testReportPath = "$PSScriptRoot\..\..\test-report.json"
         [System.IO.File]::WriteAllText($testReportPath, $testReport)
+    }
 
-        # Run in non-interactive mode (simulated by piping empty input)
-        $result = '' | & $scriptPath -ReportPath $testReportPath -OutputPath "$PSScriptRoot\..\..\test-confirmed.json" 2>&1
-        $result | Should -Match 'Non-interactive|interactive'
+    BeforeEach {
+        Remove-Item $testOutputPath -ErrorAction SilentlyContinue
+    }
 
-        # Cleanup
+    It 'Exports safe items with -AutoSelect safe' {
+        $result = & $scriptPath -ReportPath $testReportPath -OutputPath $testOutputPath -NonInteractive -AutoSelect safe 2>&1
+        $output = $result -join "`n"
+        $output | Should -Match 'Safe:.*2'
+        $output | Should -Match 'Saved 2 items'
+
+        $confirmed = Get-Content $testOutputPath -Raw | ConvertFrom-Json
+        $confirmed | Should -Contain 'fs_001'
+        $confirmed | Should -Contain 'svc_001'
+        $confirmed | Should -Not -Contain 'fs_002'
+        $confirmed | Should -Not -Contain 'path_001'
+    }
+
+    It 'Exports caution items with -AutoSelect caution' {
+        $result = & $scriptPath -ReportPath $testReportPath -OutputPath $testOutputPath -NonInteractive -AutoSelect caution 2>&1
+        $output = $result -join "`n"
+        $output | Should -Match 'Caution:.*1'
+        $output | Should -Match 'Saved 1 items'
+
+        $confirmed = Get-Content $testOutputPath -Raw | ConvertFrom-Json
+        $confirmed | Should -Contain 'fs_002'
+        $confirmed | Should -Not -Contain 'fs_001'
+        $confirmed | Should -Not -Contain 'path_001'
+    }
+
+    It 'Exports specific IDs with -SelectIds' {
+        $result = & $scriptPath -ReportPath $testReportPath -OutputPath $testOutputPath -NonInteractive -SelectIds '["fs_001","fs_002"]' 2>&1
+        $output = $result -join "`n"
+        $output | Should -Match 'Saved 2 items'
+
+        $confirmed = Get-Content $testOutputPath -Raw | ConvertFrom-Json
+        $confirmed | Should -Contain 'fs_001'
+        $confirmed | Should -Contain 'fs_002'
+        $confirmed | Should -Not -Contain 'svc_001'
+    }
+
+    It 'Skips Danger items even when specified in -SelectIds' {
+        # Write-Warning uses stream 3, so we need 3>&1 to capture it
+        $result = & $scriptPath -ReportPath $testReportPath -OutputPath $testOutputPath -NonInteractive -SelectIds '["path_001"]' 3>&1
+        $output = $result -join "`n"
+        $output | Should -Match 'Skipping Danger item'
+        $output | Should -Match 'No items selected'
+
+        Test-Path $testOutputPath | Should -Be $false
+    }
+
+    It 'Requires -AutoSelect or -SelectIds when -NonInteractive' {
+        $result = & $scriptPath -ReportPath $testReportPath -OutputPath $testOutputPath -NonInteractive 2>&1
+        $output = $result -join "`n"
+        $output | Should -Match 'requires -AutoSelect or -SelectIds'
+    }
+
+    AfterAll {
         Remove-Item $testReportPath -ErrorAction SilentlyContinue
-        Remove-Item "$PSScriptRoot\..\..\test-confirmed.json" -ErrorAction SilentlyContinue
+        Remove-Item $testOutputPath -ErrorAction SilentlyContinue
     }
 }
 

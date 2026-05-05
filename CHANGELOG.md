@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0.0] - 2026-05-05
+
+### Added
+- `confirm-cleanup.ps1` non-interactive mode: `-NonInteractive`, `-AutoSelect <safe|caution|all>`, `-SelectIds '[...]'` for AI agent dialog workflow
+- Dialog-based cleanup workflow in SKILL.md: agent presents summary, user confirms via conversation, no window switching required
+
+### Fixed
+- `confirm-cleanup.ps1`: `[Environment]::UserInteractive` check no longer blocks `-NonInteractive` mode
+- Unit tests: fixed Pester v5 variable scoping in `Script Syntax Validation` (foreach → -TestCases)
+
 ## [1.1.0.0] - 2026-05-05
 
 ### Added

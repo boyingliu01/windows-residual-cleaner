@@ -2,14 +2,18 @@
 # 交互式确认清理项：按风险/分类浏览、选择/取消、保存确认列表
 param(
     [string]$ReportPath = "$PSScriptRoot\..\..\final-report.json",
-    [string]$OutputPath = "$PSScriptRoot\..\..\confirmed-ids.json"
+    [string]$OutputPath = "$PSScriptRoot\..\..\confirmed-ids.json",
+    [switch]$NonInteractive = $false,
+    [ValidateSet('safe','caution','all','none')]
+    [string]$AutoSelect = 'none',
+    [string]$SelectIds = ''
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-if (-not [Environment]::UserInteractive) {
-    Write-Warning "非交互终端，无法运行交互式确认。请在 Windows Terminal 中运行此脚本。"
+if (-not $NonInteractive -and -not [Environment]::UserInteractive) {
+    Write-Warning "非交互终端，无法运行交互式确认。请在 Windows Terminal 中运行此脚本，或使用 -NonInteractive 参数。"
     exit 0
 }
 
@@ -103,6 +107,76 @@ $totalItems = $sorted.Count
 $totalPages = [Math]::Ceiling($totalItems / [double]$pageSize)
 if ($totalPages -lt 1) { $totalPages = 1 }
 $currentPage = 0
+
+# --- Non-interactive batch export mode (for AI agent dialog workflow) ---
+if ($NonInteractive) {
+    # Reset selections: non-interactive mode starts with empty selection
+    $selectedIds = @{}
+
+    # If SelectIds is provided, it takes precedence over AutoSelect
+    if ($SelectIds -ne '') {
+        try {
+            $idList = $SelectIds | ConvertFrom-Json
+            foreach ($id in $idList) {
+                $matched = $sorted | Where-Object { $_.id -eq $id } | Select-Object -First 1
+                if ($matched) {
+                    if ($matched.risk -eq 'danger') {
+                        Write-Warning "Skipping Danger item in SelectIds: $id"
+                    } else {
+                        $selectedIds[$id] = $true
+                    }
+                } else {
+                    Write-Warning "ID not found in report: $id"
+                }
+            }
+        } catch {
+            Write-Error "Invalid SelectIds JSON: $_"
+            exit 1
+        }
+    } elseif ($AutoSelect -ne 'none') {
+        foreach ($item in $sorted) {
+            if ($item.risk -eq 'danger') { continue }
+            if ($AutoSelect -eq 'all' -or $item.risk -eq $AutoSelect) {
+                $selectedIds[$item.id] = $true
+            }
+        }
+    } else {
+        Write-Error "NonInteractive mode requires -AutoSelect or -SelectIds"
+        exit 1
+    }
+
+    $safeCount = 0
+    $cautionCount = 0
+    $dangerCount = 0
+    $confirmedIds = @()
+    foreach ($item in $sorted) {
+        if ($selectedIds[$item.id]) {
+            $confirmedIds += $item.id
+            switch ($item.risk) {
+                'safe'    { $safeCount++ }
+                'caution' { $cautionCount++ }
+                'danger'  { $dangerCount++ }
+            }
+        }
+    }
+
+    Write-Output "=== Non-interactive selection summary ==="
+    Write-Output "  Safe:    $safeCount 项"
+    Write-Output "  Caution: $cautionCount 项"
+    Write-Output "  Danger:  $dangerCount 项"
+    Write-Output "  Total:   $($confirmedIds.Count) 项"
+
+    if ($confirmedIds.Count -eq 0) {
+        Write-Warning "No items selected. Exiting without saving."
+        exit 0
+    }
+
+    $jsonArray = ConvertTo-Json -InputObject $confirmedIds -Compress
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($OutputPath, $jsonArray, $utf8NoBom)
+    Write-Output "Saved $($confirmedIds.Count) items to: $OutputPath"
+    exit 0
+}
 
 function Show-Page {
     param([int]$Page)
