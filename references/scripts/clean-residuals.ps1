@@ -36,6 +36,8 @@ if (Test-Path $WhitelistPath) {
 
 # Robust file deletion with fallback strategies for locked/permission-denied files
 function Remove-ItemRobust {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions','')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSupportsShouldProcess','')]
     param([string]$Path, [switch]$WhatIf)
     if ($WhatIf) { return $true }
     if (-not (Test-Path $Path)) { return $true }
@@ -122,7 +124,7 @@ public class Win32Delete {
 }
 "@ -ErrorAction SilentlyContinue
                 [Win32Delete]::MoveFileEx($renamed, $null, [Win32Delete]::MOVEFILE_DELAY_UNTIL_REBOOT) | Out-Null
-            } catch {}
+            } catch { Write-Verbose "MoveFileEx delayed-delete failed for $renamed" }
         }
         return $true
     } catch {

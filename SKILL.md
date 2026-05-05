@@ -20,7 +20,8 @@ Scan and clean up residuals left by uninstalled software on Windows systems.
 4. Scan filesystem for empty/orphan directories
 5. Scan registry, services, tasks, COM extensions, shell handlers, PATH for residuals
 6. Generate JSON report with risk classification (Safe/Caution/Danger) and unique IDs
-7. Present report → user confirms → execute cleanup (4 modes: A/B/C/D + DryRun)
+7. Interactive confirmation: user reviews each item and selects which to clean (`confirm-cleanup.ps1`)
+8. Execute cleanup with confirmed IDs (`clean-residuals.ps1 -ConfirmFile confirmed-ids.json`)
 
 ## Safety First
 
@@ -33,11 +34,24 @@ Scan and clean up residuals left by uninstalled software on Windows systems.
 
 ## User Confirmation Flow
 
-- Option A: Auto-clean all Safe items (recommended for first-time users)
+1. **Scan phase**: Generate comprehensive report with risk classification
+2. **Interactive confirmation** (`confirm-cleanup.ps1`):
+   - Paginated display (20 items/page)
+   - Filter by risk level (Safe / Caution)
+   - Per-item confirm (y/n) or batch select (all/none on current page)
+   - Danger items displayed but not selectable (report-only)
+   - Save selected IDs to `confirmed-ids.json`
+3. **Cleanup phase** (`clean-residuals.ps1 -ConfirmFile confirmed-ids.json`):
+   - Only confirmed IDs are processed
+   - Danger items never cleaned even if accidentally confirmed
+   - DryRun mode available for preview
+   - Four-tier deletion fallback for locked files
+
+Legacy modes (without interactive confirmation):
+- Option A: Auto-clean all Safe items
 - Option B: Auto-clean Safe items, Caution items require manual review
 - Option C: Full review mode (confirm each item)
 - Option D: View report only, no cleanup
-- DryRun mode: Preview changes without executing (--DryRun flag)
 
 ## AI Agent Usage
 
@@ -62,15 +76,14 @@ powershell -ExecutionPolicy Bypass -File "references/scripts/scan-residuals.ps1"
 # Step 6: Generate consolidated report
 powershell -ExecutionPolicy Bypass -File "references/scripts/generate-report.ps1"
 
-# Step 7: Present report to user, get confirmation choice (A/B/C/D)
+# Step 7: Interactive confirmation — user reviews and selects items to clean
+# Outputs confirmed-ids.json with user-selected items
+powershell -ExecutionPolicy Bypass -File "references/scripts/confirm-cleanup.ps1"
 
-# Step 8: Execute cleanup with chosen mode
-#   -Mode A: Auto-clean Safe items
-#   -Mode B: Auto-clean Safe items (Caution items require manual review)
-#   -Mode C: Review all non-Danger items
-#   -Mode D: Report only (no cleanup)
-#   -DryRun: Preview what would be deleted without making changes
-powershell -ExecutionPolicy Bypass -File "references/scripts/clean-residuals.ps1" -Mode A
+# Step 8: Execute cleanup with confirmed IDs
+# -ConfirmFile: path to confirmed-ids.json from Step 7
+# -DryRun: Preview what would be deleted without making changes
+powershell -ExecutionPolicy Bypass -File "references/scripts/clean-residuals.ps1" -ConfirmFile confirmed-ids.json -DryRun
 
 # Step 9: If needed, show rollback instructions
 powershell -ExecutionPolicy Bypass -File "references/scripts/rollback.ps1"
