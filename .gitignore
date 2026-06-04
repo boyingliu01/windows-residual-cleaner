@@ -20,5 +20,8 @@ desktop.ini
 .vscode/
 .idea/
 
+# Worktree directories (sprint-flow isolation)
+.worktrees/
+
 # PowerShell
 *.pdb
