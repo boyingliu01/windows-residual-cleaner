@@ -8,6 +8,23 @@ param(
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
+# 修复：直接修改 hashtable 条目，避免 [ref] 对值类型的引用丢失
+# PowerShell 的 hashtable 值是 by-value 返回的，[ref]$counters.fs 指向临时拷贝
+function Set-Id {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions','')]
+    param([hashtable]$counters, [string]$key, [string]$prefix)
+    $counters[$key]++
+    return "{0}{1:D3}" -f $prefix, $counters[$key]
+}
+
+# 点源守卫：当脚本被 dot-source（如单元测试加载函数）时，只加载函数定义，
+# 跳过所有副作用代码（文件加载/报告生成），使 dot-source 完全无副作用。
+# 正常执行（& script 或 -File script）时 $MyInvocation.InvocationName != '.', 继续执行。
+# 必须位于所有函数定义之后、任何可执行副作用语句之前。
+if ($MyInvocation.InvocationName -eq '.') {
+    return
+}
+
 # Load scan outputs
 $uninstalled = Get-Content "$DataDir\uninstalled-list.json" -Raw | ConvertFrom-Json
 $fs = Get-Content "$DataDir\fs-residuals.json" -Raw | ConvertFrom-Json
@@ -18,15 +35,6 @@ $other = Get-Content "$DataDir\other-residuals.json" -Raw | ConvertFrom-Json
 # tsk_XXX = ghost_tasks, str_XXX = startup_residuals,
 # shl_XXX = shell_residuals (COM/ContextMenu), path_XXX = PATH entries
 $counters = @{fs=0; reg=0; svc=0; tsk=0; str=0; shl=0; path=0}
-
-# 修复：直接修改 hashtable 条目，避免 [ref] 对值类型的引用丢失
-# PowerShell 的 hashtable 值是 by-value 返回的，[ref]$counters.fs 指向临时拷贝
-function Set-Id {
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions','')]
-    param([hashtable]$counters, [string]$key, [string]$prefix)
-    $counters[$key]++
-    return "{0}{1:D3}" -f $prefix, $counters[$key]
-}
 
 # Assign IDs to filesystem residuals
 $fsItems = @()

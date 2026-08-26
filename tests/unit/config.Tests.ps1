@@ -118,7 +118,8 @@ Describe 'SKILL.md' {
     
     It 'Has YAML frontmatter with description' {
         $content = Get-Content $skillPath -Raw
-        $content | Should -Match 'description:\s+Scan and clean'
+        # description 值可能是引号包裹或裸文本，匹配 'description:' 后跟 Scan and clean
+        $content | Should -Match 'description:\s*"?Scan and clean'
     }
     
     It 'Lists key workflow steps' {
@@ -130,12 +131,22 @@ Describe 'SKILL.md' {
         $content | Should -Match 'Generate.*report'
     }
     
-    It 'Documents all 4 cleanup modes' {
+    It 'Documents the Phase-based agent workflow' {
         $content = Get-Content $skillPath -Raw
-        $content | Should -Match 'Option A'
-        $content | Should -Match 'Option B'
-        $content | Should -Match 'Option C'
-        $content | Should -Match 'Option D'
+        # SKILL.md 使用 Phase 1-6 工作流（而非旧版 Option A/B/C/D）
+        $content | Should -Match 'Phase 1: Auto-Scan'
+        $content | Should -Match 'Phase 2: Present Itemized List'
+        $content | Should -Match 'Phase 3: Parse User Selection'
+        $content | Should -Match 'Phase 4: Export Confirmed IDs'
+        $content | Should -Match 'Phase 5: DryRun Preview'
+        $content | Should -Match 'Phase 6: Execute Cleanup'
+    }
+    
+    It 'Documents the confirmation safety gates' {
+        $content = Get-Content $skillPath -Raw
+        $content | Should -Match 'Gate 1'
+        $content | Should -Match 'Gate 2'
+        $content | Should -Match 'Gate 3'
     }
     
     It 'Mentions DryRun mode' {

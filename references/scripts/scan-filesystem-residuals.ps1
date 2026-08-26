@@ -8,23 +8,6 @@ param(
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# 加载配置
-$config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-$maxFileCount = $config.file_thresholds.max_file_count
-$maxSizeMB = $config.file_thresholds.max_size_mb
-$excludedFiles = $config.file_thresholds.excluded_files
-$targetDirs = $config.target_directories
-
-$residuals = [System.Collections.Generic.List[PSObject]]::new()
-
-# 受保护目录：系统关键目录，永远不标记为残留（即使看起来"空"或文件少）
-# 这些目录由系统/其他软件动态管理，绝不能清理
-$protectedDirNames = @(
-    'WindowsApps','ModifiableWindowsApps','Windows Defender','Microsoft',
-    'Windows Defender Advanced Threat Protection','Windows Photo Viewer',
-    'WindowsPowerShell','Windows Mail','Windows Security','Internet Explorer'
-)
-
 function Get-EffectiveFileCount {
     param([string]$path, [string[]]$excluded)
     # 修复：递归统计文件数，与 Get-DirectorySizeMB 的 AllDirectories 保持一致
@@ -77,6 +60,31 @@ function Test-AllSubdirsEmpty {
         return $true
     }
 }
+
+# 点源守卫：当脚本被 dot-source（如单元测试加载函数）时，只加载函数定义，
+# 跳过所有副作用代码（配置文件加载/目录遍历），使 dot-source 完全无副作用。
+# 正常执行（& script 或 -File script）时 $MyInvocation.InvocationName != '.', 继续执行。
+# 必须位于所有函数定义之后、任何可执行副作用语句之前。
+if ($MyInvocation.InvocationName -eq '.') {
+    return
+}
+
+# 加载配置
+$config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+$maxFileCount = $config.file_thresholds.max_file_count
+$maxSizeMB = $config.file_thresholds.max_size_mb
+$excludedFiles = $config.file_thresholds.excluded_files
+$targetDirs = $config.target_directories
+
+$residuals = [System.Collections.Generic.List[PSObject]]::new()
+
+# 受保护目录：系统关键目录，永远不标记为残留（即使看起来"空"或文件少）
+# 这些目录由系统/其他软件动态管理，绝不能清理
+$protectedDirNames = @(
+    'WindowsApps','ModifiableWindowsApps','Windows Defender','Microsoft',
+    'Windows Defender Advanced Threat Protection','Windows Photo Viewer',
+    'WindowsPowerShell','Windows Mail','Windows Security','Internet Explorer'
+)
 
 foreach ($targetDir in $targetDirs) {
     $expandedDir = [Environment]::ExpandEnvironmentVariables($targetDir)
