@@ -17,10 +17,21 @@ $targetDirs = $config.target_directories
 
 $residuals = [System.Collections.Generic.List[PSObject]]::new()
 
+# 受保护目录：系统关键目录，永远不标记为残留（即使看起来"空"或文件少）
+# 这些目录由系统/其他软件动态管理，绝不能清理
+$protectedDirNames = @(
+    'WindowsApps','ModifiableWindowsApps','Windows Defender','Microsoft',
+    'Windows Defender Advanced Threat Protection','Windows Photo Viewer',
+    'WindowsPowerShell','Windows Mail','Windows Security','Internet Explorer'
+)
+
 function Get-EffectiveFileCount {
     param([string]$path, [string[]]$excluded)
+    # 修复：递归统计文件数，与 Get-DirectorySizeMB 的 AllDirectories 保持一致
+    # 原实现用 GetFiles($path) 只数顶层文件，导致"顶层 0 文件但子目录有大量文件"的
+    # 活跃程序目录（WindowsApps/Tencent/Google/Office 等）被误判为 0 files 残留
     try {
-        $allFiles = [System.IO.Directory]::GetFiles($path)
+        $allFiles = [System.IO.Directory]::EnumerateFiles($path, '*', [System.IO.SearchOption]::AllDirectories)
         $count = 0
         foreach ($f in $allFiles) {
             $fname = [System.IO.Path]::GetFileName($f)
@@ -38,12 +49,14 @@ function Get-EffectiveFileCount {
 
 function Get-DirectorySizeMB {
     param([string]$path)
+    # 修复：用 EnumerateFiles + 内联 Length 累加，避免对每个文件调用 Get-Item（极慢）
+    # 原实现逐文件 Get-Item，在 WindowsApps 等大目录（数千文件）上导致扫描超时
     try {
-        $files = [System.IO.Directory]::GetFiles($path, '*', [System.IO.SearchOption]::AllDirectories)
-        $size = 0
-        foreach ($f in $files) {
-            $fileInfo = Get-Item $f -Force -ErrorAction SilentlyContinue
-            if ($fileInfo) { $size += $fileInfo.Length }
+        $size = 0L
+        foreach ($f in [System.IO.Directory]::EnumerateFiles($path, '*', [System.IO.SearchOption]::AllDirectories)) {
+            try {
+                $size += (New-Object System.IO.FileInfo $f).Length
+            } catch { }
         }
         return [math]::Round($size / 1MB, 2)
     } catch {
@@ -71,11 +84,40 @@ foreach ($targetDir in $targetDirs) {
     try {
         foreach ($subdir in [System.IO.Directory]::GetDirectories($expandedDir)) {
             $dirName = [System.IO.Path]::GetFileName($subdir)
-            $fileCount = Get-EffectiveFileCount -path $subdir -excluded $excludedFiles
-            $totalSizeMB = Get-DirectorySizeMB -path $subdir
-            $allSubdirsEmpty = Test-AllSubdirsEmpty -path $subdir
 
-            # 判定风险等级
+            # 受保护目录直接跳过（系统关键目录，绝不清理）
+            if ($protectedDirNames -contains $dirName) {
+                continue
+            }
+
+            # 单次递归遍历：同时统计文件数、总大小、是否含非空子目录
+            # 原实现对每个目录做 3 次独立递归（计数/大小/空判定），大目录上极慢且误报
+            $fileCount = 0
+            $totalSizeMB = 0.0
+            $allSubdirsEmpty = $true
+            try {
+                $size = 0L
+                $hasNonEmptySubdir = $false
+                foreach ($f in [System.IO.Directory]::EnumerateFiles($subdir, '*', [System.IO.SearchOption]::AllDirectories)) {
+                    $fname = [System.IO.Path]::GetFileName($f)
+                    $isExcluded = $false
+                    foreach ($pattern in $excludedFiles) {
+                        if ($fname -like $pattern) { $isExcluded = $true; break }
+                    }
+                    if (-not $isExcluded) { $fileCount++ }
+                    try { $size += (New-Object System.IO.FileInfo $f).Length } catch { }
+                }
+                # 若存在任何文件，则说明有非空子目录（递归已包含）
+                $totalSizeMB = [math]::Round($size / 1MB, 2)
+                $allSubdirsEmpty = ($fileCount -eq 0)
+            } catch {
+                # 无权限等异常时按保守处理
+                $fileCount = 0
+                $totalSizeMB = 0.0
+                $allSubdirsEmpty = $false
+            }
+
+            # 判定风险等级（修复：递归计数后，有实际内容的目录是活跃程序而非残留，跳过）
             $risk = 'skip'
             $reason = ''
             if ($fileCount -eq 0 -and $allSubdirsEmpty) {
@@ -85,14 +127,13 @@ foreach ($targetDir in $targetDirs) {
                 $risk = 'safe'
                 $reason = "Minimal residual ($fileCount files, ${totalSizeMB}MB)"
             } elseif ($fileCount -le $maxFileCount -and $totalSizeMB -ge $maxSizeMB) {
+                # 文件少但体积大（如残留的模型缓存/日志）：仍需人工确认
                 $risk = 'caution'
                 $reason = "Few files but notable size ($fileCount files, ${totalSizeMB}MB)"
-            } elseif ($fileCount -gt $maxFileCount -and $fileCount -le 20) {
-                $risk = 'caution'
-                $reason = "Moderate file count ($fileCount files, ${totalSizeMB}MB)"
             } else {
-                $risk = 'caution'
-                $reason = "Substantial content ($fileCount files, ${totalSizeMB}MB) - manual review recommended"
+                # 递归计数后文件多 → 活跃程序目录，非残留，跳过（不再误报）
+                $risk = 'skip'
+                $reason = "Active directory with $fileCount files - not a residual"
             }
 
             if ($risk -ne 'skip') {

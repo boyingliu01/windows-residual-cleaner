@@ -297,6 +297,43 @@ foreach ($item in $cleanupItems) {
             }
             $log.Add(@{ id=$item.id; action='service_deleted'; name=$item.name; success=$true })
         }
+
+        # Clean ghost scheduled tasks（修复：新增 ghost_task 处理分支）
+        # ghost task 结构: { type='ghost_task'; name; execute; expanded_path; risk; reason; id }
+        # 与 service 的区分：service 有 binary_path，task 有 expanded_path
+        if ($item.name -and $item.expanded_path -and -not $item.binary_path) {
+            Write-Output "$prefix Deleting scheduled task: $($item.name)"
+            if (-not $DryRun) {
+                # 根据 name 精确删除计划任务（Unregister-ScheduledTask 会同时删除 task + 其所有 action）
+                $task = Get-ScheduledTask -TaskName $item.name -ErrorAction SilentlyContinue
+                if ($task) {
+                    Unregister-ScheduledTask -TaskName $item.name -Confirm:$false -ErrorAction Stop
+                    Write-Output "  → Scheduled task deleted: $($item.name)"
+                } else {
+                    Write-Output "  → Scheduled task not found (already removed), skipping"
+                }
+            }
+            $log.Add(@{ id=$item.id; action='task_deleted'; name=$item.name; success=$true })
+        }
+
+        # Clean PATH residuals（修复：新增 path_entry 处理分支）
+        # PATH 残留结构: { type='path_entry'; path=<dead dir>; risk; reason; id }
+        # 从机器 PATH 环境变量中移除指向不存在目录的条目
+        if ($item.type -eq 'path_entry' -and $item.path) {
+            Write-Output "$prefix Removing dead PATH entry: $($item.path)"
+            if (-not $DryRun) {
+                $mp = [Environment]::GetEnvironmentVariable('Path','Machine')
+                $target = $item.path.Trim()
+                if ($mp -match [regex]::Escape($target)) {
+                    $mpItems = $mp -split ';' | Where-Object { $_.Trim() -and $_.Trim() -ne $target }
+                    [Environment]::SetEnvironmentVariable('Path', ($mpItems -join ';'), 'Machine')
+                    Write-Output "  → Removed from machine PATH: $target"
+                } else {
+                    Write-Output "  → PATH entry not found (already removed), skipping"
+                }
+            }
+            $log.Add(@{ id=$item.id; action='path_entry_removed'; path=$item.path; success=$true })
+        }
     } catch {
         $log.Add(@{ id=$item.id; action='cleanup_failed'; error=$_.Exception.Message; success=$false })
     }

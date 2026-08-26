@@ -115,8 +115,10 @@ $pathEntries = [Environment]::GetEnvironmentVariable('PATH', 'Machine') -split '
 foreach ($entry in $pathEntries) {
     if ([string]::IsNullOrWhiteSpace($entry)) { continue }
     if (-not (Test-Path $entry)) {
-        $risk = 'danger'  # 默认标记为 Danger：PATH 条目可能被其他软件引用
-        $reason = "PATH directory does not exist (may still be referenced by other software)"
+        # 修复：改为 caution 而非 danger。死 PATH 条目指向不存在的目录，可安全清理。
+        # 原逻辑一律标 danger，导致 confirm-cleanup 和 clean-residuals 都拒绝处理。
+        $risk = 'caution'
+        $reason = "PATH directory does not exist (dead path, safe to remove)"
         $pathResiduals.Add([PSCustomObject]@{ type='path_entry'; path=$entry; risk=$risk; reason=$reason })
     }
 }
