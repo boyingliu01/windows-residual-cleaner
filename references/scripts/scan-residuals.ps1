@@ -8,11 +8,6 @@ param(
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# 加载已卸载列表
-$uninstalled = Get-Content $UninstalledPath -Raw | ConvertFrom-Json
-$uninstalledNames = @{}
-foreach ($u in $uninstalled.uninstalled_software) { $uninstalledNames[$u.name.ToLower()] = $true }
-
 # 提取可执行文件路径（处理引号和参数，Expert B Critical #1 修复）
 function Get-ExecutablePath {
     param([string]$pathName)
@@ -22,6 +17,19 @@ function Get-ExecutablePath {
     if ($exeMatch.Success) { return $exeMatch.Groups[1].Value }
     return $pathName.Split(' ')[0].Trim('"')
 }
+
+# 点源守卫：当脚本被 dot-source（如单元测试加载函数）时，只加载函数定义，
+# 跳过所有副作用代码（文件加载/系统扫描），使 dot-source 完全无副作用。
+# 正常执行（& script 或 -File script）时 $MyInvocation.InvocationName != '.', 继续执行。
+# 必须位于所有函数定义之后、任何可执行副作用语句之前。
+if ($MyInvocation.InvocationName -eq '.') {
+    return
+}
+
+# 加载已卸载列表
+$uninstalled = Get-Content $UninstalledPath -Raw | ConvertFrom-Json
+$uninstalledNames = @{}
+foreach ($u in $uninstalled.uninstalled_software) { $uninstalledNames[$u.name.ToLower()] = $true }
 
 $registryResiduals = [System.Collections.Generic.List[PSObject]]::new()
 $ghostServices = [System.Collections.Generic.List[PSObject]]::new()

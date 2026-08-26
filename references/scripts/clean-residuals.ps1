@@ -13,27 +13,6 @@ param(
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# B-M7 修复：清理前检查还原点是否已创建
-if ($Mode -ne 'D') {
-    $restoreFiles = Get-ChildItem -Path "$PSScriptRoot\..\..\backup-*" -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-    if (-not $restoreFiles) {
-        Write-Error "No restore point or backup found. Please run create-restore-point.ps1 first."
-        Write-Output "Run: powershell -ExecutionPolicy Bypass -File '$PSScriptRoot\create-restore-point.ps1'"
-        exit 1
-    }
-    Write-Output "Restore backup found: $($restoreFiles[0].Name)"
-}
-
-# --- 加载白名单（Defense-in-Depth: 清理前二次校验） ---
-$whitelist = $null
-if (Test-Path $WhitelistPath) {
-    try {
-        $whitelist = Get-Content $WhitelistPath -Raw | ConvertFrom-Json
-    } catch {
-        Write-Warning "Failed to load whitelist: $_"
-    }
-}
-
 # Robust file deletion with fallback strategies for locked/permission-denied files
 function Remove-ItemRobust {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions','')]
@@ -149,6 +128,35 @@ function Test-Whitelisted {
     }
     if ($ServiceName -and $whitelist.service_names -contains $ServiceName) { return $true }
     return $false
+}
+
+# 点源守卫：当脚本被 dot-source（如单元测试加载函数）时，只加载函数定义，
+# 跳过所有副作用代码（还原点检查/白名单加载/清理执行），使 dot-source 完全无副作用。
+# 正常执行（& script 或 -File script）时 $MyInvocation.InvocationName != '.', 继续执行。
+# 必须位于所有函数定义之后、任何可执行副作用语句之前。
+if ($MyInvocation.InvocationName -eq '.') {
+    return
+}
+
+# B-M7 修复：清理前检查还原点是否已创建
+if ($Mode -ne 'D') {
+    $restoreFiles = Get-ChildItem -Path "$PSScriptRoot\..\..\backup-*" -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+    if (-not $restoreFiles) {
+        Write-Error "No restore point or backup found. Please run create-restore-point.ps1 first."
+        Write-Output "Run: powershell -ExecutionPolicy Bypass -File '$PSScriptRoot\create-restore-point.ps1'"
+        exit 1
+    }
+    Write-Output "Restore backup found: $($restoreFiles[0].Name)"
+}
+
+# --- 加载白名单（Defense-in-Depth: 清理前二次校验） ---
+$whitelist = $null
+if (Test-Path $WhitelistPath) {
+    try {
+        $whitelist = Get-Content $WhitelistPath -Raw | ConvertFrom-Json
+    } catch {
+        Write-Warning "Failed to load whitelist: $_"
+    }
 }
 
 # --- 加载报告并按模式筛选项目 ---
