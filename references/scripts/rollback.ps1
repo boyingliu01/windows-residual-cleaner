@@ -5,6 +5,13 @@ param(
 )
 
 function Main {
+    # Admin privilege check (warning only for read-only operations)
+    if (-not ([Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+        Write-Warning "Running without admin. Restore points may not be enumerable."
+    }
+
     Write-Output "===== ROLLBACK INSTRUCTIONS ====="
     Write-Output ""
 
