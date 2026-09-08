@@ -1,62 +1,365 @@
-spec_version: "1.0"
-project: windows-residual-cleaner
-sprint: "Sprint 2: Agent-Driven Cleanup Workflow"
+# Windows Residual Cleaner — 全面发布级改造 Specification
+# Delphi Review: APPROVED (Round 2, 100% consensus)
+# Date: 2026-06-04
 
-## Objective
-Rewrite SKILL.md workflow to be agent-driven with natural language interaction. The user should only need to express intent (e.g., "帮我清理卸载残留"), and the agent automatically drives the full scan-to-cleanup pipeline with mandatory confirmation pauses.
+project:
+  name: windows-residual-cleaner
+  version_target: "2.0.0"
+  description: "Windows 卸载残留清理 Qoder Skill — 全面发布级改造"
+  target_audience: "Qoder AI 用户 (agent-driven)"
 
-## Problem Statement
-Current SKILL.md places cognitive burden on the user:
-- User must understand Safe/Caution/Danger risk levels
-- User must choose between modes A/B/C/D or -AutoSelect parameters
-- Agent stops after scan and waits for next user command instead of continuing the flow
-- Confirmation is advisory, not mandatory
+layers:
+  layer_0_foundation:
+    name: "Foundation — 测试基础设施"
+    description: "所有 Layer 1 修改的前置依赖，确保测试可运行"
+    
+    tasks:
+      - id: L0-T1
+        title: "函数/执行分离 — $PSCommandPath 守卫"
+        priority: critical
+        files:
+          - references/scripts/scan-residuals.ps1
+          - references/scripts/clean-residuals.ps1
+          - references/scripts/generate-report.ps1
+          - references/scripts/scan-filesystem-residuals.ps1
+          - references/scripts/scan-uninstalled.ps1
+        spec: |
+          将所有含函数定义的脚本改为:
+          1. 函数定义保持不变
+          2. 顶层执行逻辑封装进 Main 函数
+          3. 脚本底部添加:
+             if ($PSCommandPath -eq $MyInvocation.MyCommand.Path) { Main }
+          4. dot-source 时只加载函数定义，不执行 Main
+        acceptance:
+          - "dot-source 加载脚本不触发顶层代码执行"
+          - "直接执行脚本时 Main 正常运行"
+          - "scripts.Tests.ps1 不再超时"
 
-## Solution Design
+      - id: L0-T2
+        title: "修复测试 dot-source 模式"
+        priority: critical
+        files:
+          - tests/unit/scripts.Tests.ps1
+        spec: |
+          更新 BeforeAll 块中的 dot-source 语句，适配新的函数/执行分离模式。
+          移除不再需要的 Set-Alias 语句（如果函数名已统一）。
+        acceptance:
+          - "scripts.Tests.ps1 所有 Describe 块可通过"
+          - "无超时错误"
 
-### 1. Agent-Driven Workflow (SKILL.md rewrite)
-Replace the current "9-step manual workflow" with a conversational flow where the agent:
-1. **Auto-triggers on semantic match**: "cleanup residuals", "清理卸载残留", "remove leftover files"
-2. **Auto-executes scan**: Runs create-restore-point → build-index → scan-all → generate-report (sequential, internal)
-3. **Presents summary in natural language**: "扫描完成，发现 163 项 Safe 级别残留（约 12GB，主要是空目录）和 273 项 Caution 级别。Safe 级别风险较低，建议清理。"
-4. **Asks for confirmation**: "是否继续？"
-5. **If yes**: Runs confirm-cleanup.ps1 -NonInteractive -AutoSelect safe → DryRun preview
-6. **Presents DryRun summary**: "预览完成，将删除 163 个目录/文件，释放约 12GB。确认执行吗？"
-7. **If yes**: Executes clean-residuals.ps1 -ConfirmFile confirmed-ids.json
-8. **Reports results**: "完成，163 项已清理，释放 12GB。"
+  layer_1_core:
+    name: "Core — 核心修复"
+    description: "修复关键 bug + 统一入口 + 权限检查 + 退出码"
+    depends_on: [layer_0_foundation]
+    
+    tasks:
+      - id: L1-T1
+        title: "修复 scan-uninstalled.ps1 两阶段加权判断"
+        priority: critical
+        files:
+          - references/scripts/scan-uninstalled.ps1
+        spec: |
+          替换第 73 行的 OR 逻辑为两阶段加权判断:
+          - 阶段 1: $notInIndex=$true → 直接标记为残留
+            - 有路径/卸载证据 → high confidence
+            - 无路径/卸载证据 → low confidence
+          - 阶段 2: $notInIndex=$false → 需要强证据
+            - installPathMissing AND uninstallPathMissing → 标记
+          同时修复:
+          - InstallLocation 环境变量展开: [Environment]::ExpandEnvironmentVariables()
+          - InstallLocation 引号处理: .Trim('"')
+          - 空值判断使用 [string]::IsNullOrWhiteSpace()
+        acceptance:
+          - "7 场景回归测试矩阵全部通过"
+          - "已安装软件路径被删不标记为残留（原误报）"
+          - "MSI 孤儿注册表键被正确标记（低置信度）"
 
-### 2. Mandatory Confirmation Gates (hardcoded, non-skippable)
-The agent MUST pause and wait for explicit user confirmation at:
-- **Gate 1**: After scan summary is presented (before any selection/export)
-- **Gate 2**: After DryRun preview is presented (before actual cleanup execution)
+      - id: L1-T2
+        title: "分级权限检查"
+        priority: high
+        files:
+          - references/scripts/clean-residuals.ps1
+          - references/scripts/create-restore-point.ps1
+          - references/scripts/run-all.ps1
+          - references/scripts/build-installed-index.ps1
+          - references/scripts/scan-uninstalled.ps1
+          - references/scripts/scan-filesystem-residuals.ps1
+          - references/scripts/scan-residuals.ps1
+          - references/scripts/generate-report.ps1
+          - references/scripts/confirm-cleanup.ps1
+        spec: |
+          写入操作脚本（clean, create-restore-point, run-all）:
+            非管理员 → Write-Error + exit 2
+          只读扫描脚本（其余）:
+            非管理员 → Write-Warning（不阻断）
+          权限检查放在 Main 函数内部（dot-source 时不触发）
+        acceptance:
+          - "写入脚本在非管理员下 exit 2"
+          - "只读脚本在非管理员下正常执行 + 警告"
+          - "dot-source 时不触发权限检查"
 
-These gates are enforced in SKILL.md instructions, not optional.
+      - id: L1-T3
+        title: "创建 run-all.ps1 统一入口脚本"
+        priority: critical
+        files:
+          - references/scripts/run-all.ps1
+        spec: |
+          纯扫描管道脚本，职责边界: 只负责扫描阶段（还原点→报告），不参与确认/清理。
+          步骤:
+            Step 0: 管理员权限检查（强制）
+            Step 1: create-restore-point.ps1
+            Step 2: build-installed-index.ps1
+            Step 3: scan-uninstalled.ps1
+            Step 4: scan-filesystem-residuals.ps1
+            Step 5: scan-residuals.ps1
+            Step 6: generate-report.ps1
+          特性:
+            - fail-stop: 每步检测退出码，失败立即中断
+            - -SkipRestorePoint: 跳过还原点（输出明显警告）
+            - -Verbose: 详细日志
+            - 每步骤输出耗时和结果摘要
+            - 默认串行执行
+        acceptance:
+          - "端到端执行生成 final-report.json"
+          - "任一步骤失败时后续步骤不执行"
+          - "-SkipRestorePoint 输出警告信息"
 
-### 3. No Technical Parameters Exposed to User
-- Agent internally decides to use `-AutoSelect safe` for first pass
-- Agent internally calls `-DryRun` before actual cleanup
-- User never sees PowerShell parameters, JSON files, or ID lists
-- If user says "also clean Caution items", agent translates to `-AutoSelect caution` internally
+      - id: L1-T4
+        title: "添加退出码"
+        priority: high
+        files:
+          - references/scripts/*.ps1
+        spec: |
+          统一退出码:
+            0 = 成功
+            1 = 通用错误
+            2 = 权限错误
+            3 = 依赖缺失
+            4~255 = 预留扩展
+        acceptance:
+          - "所有 exit 路径有明确退出码"
+          - "run-all.ps1 能正确检测子脚本退出码"
 
-### 4. Natural Language Confirmation
-Acceptable confirmations: "好", "可以", "清理吧", "执行", "确认", "yes", "go ahead", "ok"
-Refusals / deferrals: "不了", "再看看", "先不", "no", "skip", "later"
+      - id: L1-T5
+        title: "clean-residuals.ps1 三轮批处理"
+        priority: critical
+        files:
+          - references/scripts/clean-residuals.ps1
+        spec: |
+          将 foreach 循环拆分为三轮:
+            Phase 1: 停止所有服务（仅 stop，不 delete）
+            Phase 2: 删除所有文件/目录 + 删除服务（sc.exe delete）
+            Phase 3: 清理注册表
+          每轮之间有显式错误检查点。
+          per-item 失败不阻断其他 item 的处理。
+        acceptance:
+          - "服务二进制在目录中时，先停止服务再删目录"
+          - "Phase 1 失败不阻断 Phase 2 的其他 item"
+          - "每轮输出错误摘要"
 
-## Files to Modify
-- `SKILL.md`: Complete rewrite of "Workflow" and "AI Agent Usage" sections
-- `AGENTS.md`: Optional — add agent behavior guidelines for mandatory confirmation gates
+      - id: L1-T6
+        title: "修复 -notmatch 数组语义 Bug"
+        priority: high
+        files:
+          - references/scripts/scan-uninstalled.ps1
+        spec: |
+          第 107 行:
+            $installedNames.Keys -notmatch [regex]::Escape($dirName)
+          改为:
+            $matched = @($installedNames.Keys | Where-Object { $_ -match [regex]::Escape($dirName) })
+            if ($matched.Count -eq 0) { ... }
+        acceptance:
+          - "文件系统反查不再产生大量误报"
 
-## Files NOT Modified
-- `references/scripts/*.ps1`: Already support -NonInteractive (v1.2.0.0)
-- `tests/`: May add tests for SKILL.md structure, but no script logic changes
+      - id: L1-T7
+        title: "修复 candidate_directories 死代码"
+        priority: high
+        files:
+          - references/scripts/generate-report.ps1
+        spec: |
+          generate-report.ps1 新增读取 uninstalled-list.json 的 candidate_directories 字段，
+          将其合并到报告生成流程中。保持脚本间数据流单向性。
+        acceptance:
+          - "candidate_directories 出现在 final-report.json 中"
 
-## Validation Criteria
-- [ ] PSScriptAnalyzer: 0 errors, 0 warnings on all scripts
-- [ ] Unit tests: All pass (confirm-cleanup.ps1 non-interactive mode, clean-residuals.ps1 ConfirmFile)
-- [ ] SKILL.md describes agent-driven flow with mandatory confirmation gates
-- [ ] No PowerShell parameters exposed in user-facing documentation
-- [ ] User can trigger entire workflow with a single natural language sentence
+      - id: L1-T8
+        title: "修复 Where-Object .Count 陷阱"
+        priority: medium
+        files:
+          - references/scripts/clean-residuals.ps1
+        spec: |
+          第 309-311 行:
+            ($log | Where-Object { ... }).Count
+          改为:
+            @($log | Where-Object { ... }).Count
+        acceptance:
+          - "单条结果时 .Count 返回 1 而非属性数"
 
-## Risk Assessment
-- **Low risk**: No PowerShell script changes, only documentation/workflow update
-- **Mitigation**: confirm-cleanup.ps1 -NonInteractive already tested and verified
+  layer_2_polish:
+    name: "Polish — 完善打磨"
+    description: "测试修复 + 回归测试 + rollback 增强"
+    depends_on: [layer_1_core]
+    
+    tasks:
+      - id: L2-T1
+        title: "修复 SKILL.md 测试"
+        priority: high
+        files:
+          - tests/unit/config.Tests.ps1
+        spec: |
+          更新正则匹配:
+            - description 正则适配带引号的 YAML 值
+            - 移除 Option A/B/C/D 匹配，改为验证 agent-driven workflow 结构
+        acceptance:
+          - "config.Tests.ps1 所有测试通过"
+
+      - id: L2-T2
+        title: "补充回归测试"
+        priority: high
+        files:
+          - tests/unit/scripts.Tests.ps1
+          - tests/integration/pipeline.Tests.ps1
+        spec: |
+          新增测试:
+            - 两阶段加权判断的 7 场景覆盖
+            - run-all.ps1 退出码传播
+            - 权限检查在 dot-source 时不触发
+            - 三轮批处理顺序正确性
+        acceptance:
+          - "所有新增测试通过"
+          - "全量测试 0 failures"
+
+      - id: L2-T3
+        title: "完善 rollback.ps1 信息输出"
+        priority: medium
+        files:
+          - references/scripts/rollback.ps1
+        spec: |
+          增强信息输出（不含 -Execute）:
+            - 还原点与备份目录的关联信息
+            - 注册表备份文件列表
+            - 标注"自动回滚功能开发中"
+        acceptance:
+          - "rollback.ps1 输出清晰的回滚指引"
+
+  layer_3_release:
+    name: "Release — 发布就绪"
+    description: "Web UI 验证 + 环境检查 + 文档完善"
+    depends_on: [layer_2_polish]
+    
+    tasks:
+      - id: L3-T1
+        title: "Web UI 验证（CLI 优先策略）"
+        priority: medium
+        files:
+          - ui/
+        spec: |
+          验证范围:
+            - npm install + npm run build 通过
+            - 前端能展示扫描结果
+            - 后端能调用只读扫描脚本
+          降级方案:
+            - 如果严重问题 → 移除 UI 引用，标记 "Web UI 开发中"
+        acceptance:
+          - "npm run build 成功 或 UI 引用已移除"
+
+      - id: L3-T2
+        title: "创建 setup.ps1 环境检查脚本"
+        priority: medium
+        files:
+          - setup.ps1
+        spec: |
+          检查项:
+            - PowerShell 版本 ≥5.1
+            - 管理员权限（信息输出）
+            - Pester 版本 ≥5.x
+            - Node.js（可选）
+          输出系统兼容性报告
+        acceptance:
+          - "setup.ps1 正确检测环境状态"
+
+      - id: L3-T3
+        title: "完善 AGENTS.md"
+        priority: medium
+        files:
+          - AGENTS.md
+        spec: |
+          更新内容:
+            - 项目结构和脚本职责
+            - 退出码表（0-3 + 扩展空间）
+            - 权限分级说明
+            - run-all.ps1 使用方式
+            - 已知陷阱和注意事项
+        acceptance:
+          - "AGENTS.md 内容与实际代码一致"
+
+      - id: L3-T4
+        title: "SKILL.md 优化"
+        priority: medium
+        files:
+          - SKILL.md
+        spec: |
+          优化:
+            - 描述准确性和完整性
+            - Agent 错误处理场景
+            - 区分 agent internal steps 和 user interaction points
+        acceptance:
+          - "SKILL.md 描述与实际工作流一致"
+
+test_matrix:
+  regression_scenarios:
+    - id: TS-1
+      scenario: "已安装软件，路径被删"
+      notInIndex: false
+      installPathMissing: true
+      uninstallPathMissing: false
+      expected: "不标记为残留"
+    - id: TS-2
+      scenario: "已卸载，不在索引，路径缺失"
+      notInIndex: true
+      installPathMissing: true
+      uninstallPathMissing: false
+      expected: "标记为残留 (high confidence)"
+    - id: TS-3
+      scenario: "已卸载，不在索引，路径和卸载程序都健全"
+      notInIndex: true
+      installPathMissing: false
+      uninstallPathMissing: false
+      expected: "标记为残留 (low confidence)"
+    - id: TS-4
+      scenario: "MSI 安装，孤儿注册表键"
+      notInIndex: true
+      installPathMissing: false
+      uninstallPathMissing: false
+      expected: "标记为残留 (low confidence)"
+    - id: TS-5
+      scenario: "InstallLocation 含引号"
+      notInIndex: true
+      installPathMissing: true
+      uninstallPathMissing: false
+      expected: "标记为残留 (Trim 后判断)"
+    - id: TS-6
+      scenario: "InstallLocation 含环境变量"
+      notInIndex: true
+      installPathMissing: true
+      uninstallPathMissing: false
+      expected: "标记为残留 (展开后判断)"
+    - id: TS-7
+      scenario: "已安装软件，一切正常"
+      notInIndex: false
+      installPathMissing: false
+      uninstallPathMissing: false
+      expected: "不标记"
+
+exit_codes:
+  0: "成功"
+  1: "通用错误（文件未找到、解析失败等）"
+  2: "权限错误"
+  3: "依赖缺失（如找不到 JSON 文件）"
+  "4-255": "预留扩展空间"
+
+non_blocking_suggestions:
+  - "§1.7 candidate_directories 合并接口规格需在实现时明确字段映射"
+  - "Phase 2 内部先执行文件删除确认成功后再执行服务删除"
+  - "[string]::IsNullOrWhiteSpace() 替代 -eq '' 用于路径/命令检查"
+  - "补充性能基线测试场景（500+ 已安装软件索引）"
