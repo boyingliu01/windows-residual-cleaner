@@ -22,42 +22,35 @@ Scan and clean up residuals left by uninstalled software on Windows systems.
 ## Quick Start
 
 ```powershell
-# 1. Create restore point (MUST run first)
-powershell -ExecutionPolicy Bypass -File references/scripts/create-restore-point.ps1
+# 0. Environment check (optional)
+powershell -ExecutionPolicy Bypass -File setup.ps1
 
-# 2. Build installed software index
-powershell -ExecutionPolicy Bypass -File references/scripts/build-installed-index.ps1
+# 1. Scan: restore point + installed index + all residual scans + consolidated report
+powershell -ExecutionPolicy Bypass -File references/scripts/run-all.ps1
+#    Skip the restore point (cleanup then becomes unrecoverable):
+powershell -ExecutionPolicy Bypass -File references/scripts/run-all.ps1 -SkipRestorePoint
+#    Manual equivalent, in order:
+#      create-restore-point.ps1 → build-installed-index.ps1 → scan-uninstalled.ps1
+#      → scan-filesystem-residuals.ps1 → scan-residuals.ps1 → generate-report.ps1
 
-# 3. Scan uninstalled software
-powershell -ExecutionPolicy Bypass -File references/scripts/scan-uninstalled.ps1
-
-# 4. Scan filesystem residuals
-powershell -ExecutionPolicy Bypass -File references/scripts/scan-filesystem-residuals.ps1
-
-# 5. Scan registry/services/tasks/COM residuals
-powershell -ExecutionPolicy Bypass -File references/scripts/scan-residuals.ps1
-
-# 6. Generate consolidated report
-powershell -ExecutionPolicy Bypass -File references/scripts/generate-report.ps1
-
-# 7. Confirmation (choose one)
-# 7a. Dialog-based (AI agent handles interaction, no window switching):
+# 2. Confirmation (choose one)
+# 2a. Dialog-based (AI agent handles interaction, no window switching):
 #     Agent reads report, asks user, then runs non-interactive export:
 powershell -ExecutionPolicy Bypass -File references/scripts/confirm-cleanup.ps1 -NonInteractive -AutoSelect safe
 #     Or export specific IDs:
 powershell -ExecutionPolicy Bypass -File references/scripts/confirm-cleanup.ps1 -NonInteractive -SelectIds '["fs_001","fs_002"]'
-# 7b. Interactive TUI (standalone Windows Terminal only — Read-Host crashes in OpenCode):
+# 2b. Interactive TUI (standalone Windows Terminal only — Read-Host crashes in OpenCode):
 powershell -ExecutionPolicy Bypass -File references/scripts/confirm-cleanup.ps1
 # → Outputs confirmed-ids.json with user-selected items
 
-# 8. Cleanup confirmed items (use -ConfirmFile from step 7)
+# 3. Cleanup confirmed items (use -ConfirmFile from step 2)
 powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -ConfirmFile confirmed-ids.json
 # Dry-run preview (recommended first):
 powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -ConfirmFile confirmed-ids.json -DryRun
 # Legacy mode (without interactive confirmation):
 powershell -ExecutionPolicy Bypass -File references/scripts/clean-residuals.ps1 -Mode D
 
-# 9. If needed, show rollback instructions
+# 4. If needed, show rollback instructions
 powershell -ExecutionPolicy Bypass -File references/scripts/rollback.ps1
 ```
 
@@ -68,12 +61,14 @@ windows-residual-cleaner/
 ├── SKILL.md                          # OpenCode skill definition
 ├── README.md                         # This file
 ├── LICENSE                           # MIT License
+├── setup.ps1                         # Environment compatibility check
 ├── .gitignore
 ├── references/
 │   ├── config/
 │   │   ├── config.json               # Scan thresholds and target directories
 │   │   └── whitelist.json            # Protected patterns (never delete)
 │   └── scripts/
+│       ├── run-all.ps1               # Unified scan pipeline entry point (scan only)
 │       ├── build-installed-index.ps1 # Build installed software index
 │       ├── create-restore-point.ps1  # Create restore point + registry backup
 │       ├── scan-uninstalled.ps1      # Scan uninstalled registry entries
@@ -88,6 +83,7 @@ windows-residual-cleaner/
     │   ├── scripts.Tests.ps1         # Unit tests for pure functions
     │   └── config.Tests.ps1          # Unit tests for config validation
     └── integration/
+        ├── main-flow.Tests.ps1       # Per-script Main execution against fixtures
         └── pipeline.Tests.ps1        # End-to-end pipeline tests
 ```
 

@@ -17,6 +17,12 @@ Scan and clean up residuals left by uninstalled software on Windows systems.
 When the user says anything like "帮我清理卸载残留", "清理下卸载软件的垃圾", "remove leftover files", the agent **MUST** follow this flow exactly. Do NOT ask the user to choose modes or parameters.
 
 ### Phase 1: Auto-Scan (Agent executes silently)
+
+```bash
+powershell -ExecutionPolicy Bypass -File "references/scripts/run-all.ps1"
+```
+
+The pipeline runs these steps in order:
 1. Create system restore point + backup registry
 2. Build installed-software index (baseline from 6 sources)
 3. Scan uninstalled software registry entries
@@ -24,7 +30,7 @@ When the user says anything like "帮我清理卸载残留", "清理下卸载软
 5. Scan registry, services, tasks, COM extensions, shell handlers, PATH for residuals
 6. Generate JSON report with risk classification (Safe/Caution/Danger) and unique IDs
 
-**Agent behavior:** Execute all scripts sequentially. If any script fails, stop and report the error to the user. Do NOT proceed with partial results.
+**Agent behavior:** `run-all.ps1` scans only — it never asks for confirmation and never cleans anything. If it exits non-zero, stop and report which step failed; do NOT proceed with partial results. Pass `-SkipRestorePoint` only when the user explicitly declines a restore point, and tell them cleanup is then unrecoverable.
 
 ### Phase 2: Present Itemized List (Agent shows, user selects)
 
@@ -186,26 +192,20 @@ The user only needs to express intent in natural language and confirm selections
 If a developer or advanced user wants to run scripts directly without agent orchestration:
 
 ```bash
-# Step 1: Create restore point (MUST run first)
-powershell -ExecutionPolicy Bypass -File "references/scripts/create-restore-point.ps1"
+# Step 1: Restore point + index + all scans + report (scan only, no cleanup)
+powershell -ExecutionPolicy Bypass -File "references/scripts/run-all.ps1"
 
-# Step 2-6: Build index + scan all sources + generate report
-powershell -ExecutionPolicy Bypass -File "references/scripts/build-installed-index.ps1"
-powershell -ExecutionPolicy Bypass -File "references/scripts/scan-uninstalled.ps1"
-powershell -ExecutionPolicy Bypass -File "references/scripts/scan-filesystem-residuals.ps1"
-powershell -ExecutionPolicy Bypass -File "references/scripts/scan-residuals.ps1"
-powershell -ExecutionPolicy Bypass -File "references/scripts/generate-report.ps1"
-
-# Step 7: Non-interactive export by risk level
+# Step 2: Non-interactive export by risk level
 powershell -ExecutionPolicy Bypass -File "references/scripts/confirm-cleanup.ps1" -NonInteractive -AutoSelect safe
 
-# Step 8: Cleanup with DryRun preview
+# Step 3: Cleanup with DryRun preview
 powershell -ExecutionPolicy Bypass -File "references/scripts/clean-residuals.ps1" -ConfirmFile confirmed-ids.json -DryRun
 ```
 
 **Output convention:** All JSON files output to skill root directory (`windows-residual-cleaner/`).
 
 **Important:**
-- All scripts require Administrator privileges
-- Scripts MUST be run in order (dependencies exist)
-- Steps 4 and 5 can run in parallel after Step 3 completes
+- Write scripts (`clean-residuals.ps1`, `create-restore-point.ps1`, `run-all.ps1`) abort with exit code 2 when not elevated; read-only scan scripts only warn.
+- Exit codes: `0` success, `1` general error, `2` permission denied, `3` missing input JSON.
+- Scan scripts depend on each other's output, so invoke them through `run-all.ps1` unless you know why you are calling one directly.
+- `rollback.ps1` prints available restore points and registry backups after a cleanup.

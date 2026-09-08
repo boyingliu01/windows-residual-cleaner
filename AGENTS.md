@@ -107,6 +107,27 @@ Test-Path $expanded
 
 ---
 
+### 6. `ConvertFrom-Json` 不把顶层 JSON 数组展开为管道元素
+
+PowerShell 5.1 的 `ConvertFrom-Json` 将反序列化结果作为**单个** `Object[]` 对象写入输出流。所以 `@(cmd | ConvertFrom-Json)` 包到的是那个数组本身，`Count` 恒为 1，元素才是真正的记录集。
+
+```powershell
+# ❌ 错误: $idx.Count 永远是 1（$idx[0] 才是 Object[]）
+$idx = @(Get-Content $path -Raw | ConvertFrom-Json)
+
+# ✅ 正确: 先赋值给变量（变量直接拿到 Object[]），再 @() 规整
+$doc = Get-Content $path -Raw | ConvertFrom-Json
+$idx = @($doc)
+```
+
+后续症状都具有迷惑性：`$idx | Where-Object { $_.name -eq 'X' }` 会返回**全部**记录（`$_.name` 在数组上做 `-eq` 变成了数组过滤）；`$ids | Should -Contain 'fs_201'` 报 `Expected 'fs_201' to be found in collection @(fs_201)`。
+
+> **不要改回一行式**: PowerShell 7 起 `ConvertFrom-Json` 已改为逐元素展开，同样的一行式代码在 `pwsh` 下是正确的，容易让人误判此处冗余。本项目运行时基线是 PS 5.1。
+
+**影响**: `main-flow.Tests.ps1` 有 8 个集成测试因此失败（索引条数恒为 1、风险分级断言拿到整表、`-Contain` 匹配不到 id）。产品脚本不受波及，因为它们都先赋值再访问属性。
+
+---
+
 ## 多条件检测逻辑设计原则
 
 ### 核心规则: 权威信号必须 gate 辅助信号
@@ -248,6 +269,64 @@ It 'Works against real registry data' {
 
 ---
 
+## 脚本架构规范
+
+### 函数/执行分离模式
+
+`references/scripts/` 下全部 10 个脚本统一使用函数/执行分离模式，确保可测试性（dot-source 只加载函数定义，不触发任何副作用）：
+
+```powershell
+function Main {
+    # 所有执行逻辑在此函数内（编码设置、权限检查、扫描/清理、输出）
+}
+
+# 执行守卫 — 仅当脚本被直接执行时运行
+# $MyInvocation.InvocationName 在 dot-source 时为 '.'，-File 调用时为空
+if ($MyInvocation.InvocationName -ne '.') {
+    Main
+    exit 0
+}
+```
+
+- 需要被单元测试直接调用的辅助函数（`Get-ExecutablePath`、`Remove-ItemRobust`、`Test-Whitelisted`、`Set-Id`、`Test-AdminPrivilege` 等）保留在 **Main 外部**作为顶层函数。
+- 不要用 `$PSCommandPath -eq $MyInvocation.MyCommand.Path` 做守卫，在 `powershell -Command ". script.ps1"` 场景下不可靠。
+- 不要使用「顶层代码 + 提前 `return`」的写法：它虽能挡住 dot-source，但 `exit` 语句会散落到文件末尾，与其余脚本不一致。
+
+### 退出码规范
+
+| 退出码 | 含义 | 使用场景 |
+|--------|------|----------|
+| 0 | 成功 | 脚本正常完成 |
+| 1 | 通用错误 | 文件未找到、解析失败 |
+| 2 | 权限错误 | 非管理员运行写入脚本 |
+| 3 | 依赖缺失 | 必需的 JSON 输入文件不存在 |
+
+`exit 0` 放在执行守卫处（`Main` 调用之后），**不在 `Main` 内部**，以避免 dot-source 测试时终止 Pester。
+
+### 权限分级
+
+| 脚本类型 | 权限检查 | 脚本 |
+|----------|----------|------|
+| 写入操作 | 强制 Admin（`Test-AdminPrivilege -Mandatory` → `exit 2`） | `clean-residuals.ps1`、`create-restore-point.ps1`、`run-all.ps1` |
+| 只读操作 | 仅警告（`Write-Warning`） | `build-installed-index.ps1`、`scan-uninstalled.ps1`、`scan-filesystem-residuals.ps1`、`scan-residuals.ps1`、`generate-report.ps1`、`confirm-cleanup.ps1`、`rollback.ps1` |
+
+权限检查放在 `Main` 顶部，因此对独立调用生效、对 dot-source 不可见。经 `run-all.ps1` 调用的子脚本继承父进程权限，检查必然通过——这里的检查是为**用户直接运行单个脚本**兜底的。
+
+### run-all.ps1 统一入口
+
+`run-all.ps1` 是扫描管道的统一入口，**只扫描、不确认、不清理**，按顺序执行：
+
+1. `create-restore-point.ps1` — 创建还原点 + 注册表备份（`-SkipRestorePoint` 可跳过）
+2. `build-installed-index.ps1` — 构建已安装软件索引
+3. `scan-uninstalled.ps1` — 扫描已卸载软件残留
+4. `scan-filesystem-residuals.ps1` — 扫描文件系统残留
+5. `scan-residuals.ps1` — 扫描注册表/服务/任务/COM 残留
+6. `generate-report.ps1` — 生成 `final-report.json`
+
+子脚本通过 `Start-Process -FilePath $psExe -ArgumentList ... -Wait -PassThru` 调用（`$psExe` 优先 `pwsh`，回退到 PS 5.1 绝对路径），任一步非零退出即中断管道并向上传播退出码。清理阶段仍由 agent 逐条确认后调用 `clean-residuals.ps1`。
+
+---
+
 ## 变更历史
 
 - 2026-05-05: 从 v1.0.0 → v1.1.0.0 session 中提取并整理
@@ -255,3 +334,12 @@ It 'Works against real registry data' {
   - 新增多条件检测逻辑设计原则
   - 新增四层降级删除策略
   - 新增测试策略（Mock 局限性 + 集成测试要求）
+- 2026-06-04: Sprint 2 发布级改造（sprint 分支）
+  - 新增脚本架构规范（函数/执行分离、退出码、权限分级）
+  - 新增 run-all.ps1 统一入口说明
+  - 修正执行守卫模式（`$MyInvocation.InvocationName`）
+- 2026-09-08: Sprint 2 改动移植回主线
+  - 陷阱清单新增第 6 条：`ConvertFrom-Json` 数组不展开（PS 5.1）
+  - `scan-filesystem-residuals.ps1` 补齐 Main 包装，10 个脚本架构完全统一
+  - `rollback.ps1` 补只读权限警告，权限分级覆盖全部脚本
+  - 集成测试改为「fixture 驱动 + 真实只读扫描」，98 个测试 0 失败
