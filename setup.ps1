@@ -1,4 +1,4 @@
-# setup.ps1 — Environment compatibility check
+﻿# setup.ps1 — Environment compatibility check
 function Main {
     Write-Output "=== Windows Residual Cleaner — Environment Check ==="
     $issues = @()

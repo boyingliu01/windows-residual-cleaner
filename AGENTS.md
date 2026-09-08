@@ -10,8 +10,16 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x
-**代码质量**: PSScriptAnalyzer (0 error, 0 warning)
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 98 个测试，目标 0 失败）
+**代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
+
+```powershell
+Invoke-ScriptAnalyzer -Path references/scripts -Recurse -Settings PSScriptAnalyzerSettings.psd1
+```
+
+> 裸跑会多出 23 条 `PSReviewUnusedParameter`：本项目所有脚本的入口参数在顶层 `param()`
+> 声明、在 `function Main` 内消费，该规则不跨作用域追踪，故在设置文件中排除这一条规则。
+> 其余规则（含 `PSUseBOMForUnicodeEncodedFile`）均未放宽，告警为 0。
 
 ---
 

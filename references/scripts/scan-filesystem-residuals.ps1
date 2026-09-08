@@ -36,7 +36,9 @@ function Get-DirectorySizeMB {
         foreach ($f in [System.IO.Directory]::EnumerateFiles($path, '*', [System.IO.SearchOption]::AllDirectories)) {
             try {
                 $size += (New-Object System.IO.FileInfo $f).Length
-            } catch { }
+            } catch {
+                Write-Verbose "Skipped unreadable file: $f"
+            }
         }
         return [math]::Round($size / 1MB, 2)
     } catch {
@@ -116,7 +118,7 @@ function Main {
                             if ($fname -like $pattern) { $isExcluded = $true; break }
                         }
                         if (-not $isExcluded) { $fileCount++ }
-                        try { $size += (New-Object System.IO.FileInfo $f).Length } catch { }
+                        try { $size += (New-Object System.IO.FileInfo $f).Length } catch { Write-Verbose "Skipped unreadable file: $f" }
                     }
                     # 若存在任何文件，则说明有非空子目录（递归已包含）
                     $totalSizeMB = [math]::Round($size / 1MB, 2)

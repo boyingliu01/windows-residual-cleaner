@@ -120,8 +120,13 @@ Invoke-Pester tests/integration/
 All scripts pass PSScriptAnalyzer with zero errors and zero warnings:
 
 ```powershell
-Invoke-ScriptAnalyzer -Path references/scripts -Recurse
+Invoke-ScriptAnalyzer -Path references/scripts -Recurse -Settings PSScriptAnalyzerSettings.psd1
 ```
+
+The settings file excludes `PSReviewUnusedParameter` only: every script declares its
+entry parameters in a top-level `param()` block and consumes them inside `function Main`,
+which that rule cannot follow across scopes. The single genuinely unused parameter it
+flagged (`run-all.ps1 -Verbose`) was removed instead of suppressed.
 
 ## License
 

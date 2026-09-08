@@ -1,9 +1,8 @@
-# run-all.ps1
+﻿# run-all.ps1
 # Unified scan pipeline: restore point → index → scan → report
 # Responsibility: SCAN ONLY. Does not perform confirmation or cleanup.
 param(
-    [switch]$SkipRestorePoint = $false,
-    [switch]$Verbose = $false
+    [switch]$SkipRestorePoint = $false
 )
 
 # Admin privilege check (mandatory — includes create-restore-point)
