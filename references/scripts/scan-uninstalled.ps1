@@ -39,11 +39,12 @@ foreach ($rp in $regPaths) {
             $notInIndex = -not $installedNames.ContainsKey($displayName)
 
             # 判断逻辑 2: InstallLocation 指向的路径不存在
-            # 修复：去除引号后再检查路径，避免 "D:\path" 被当作非法路径
+            # 修复：去除引号 + 展开环境变量后再检查路径，
+            # 避免 "D:\path" 与 %ProgramFiles% 等格式被当作非法路径
             $installLocation = $sub.GetValue('InstallLocation')
             $installPathMissing = $false
             if ($installLocation) {
-                $cleanLocation = $installLocation.Trim('"').Trim("'")
+                $cleanLocation = [Environment]::ExpandEnvironmentVariables($installLocation.Trim('"').Trim("'"))
                 if ($cleanLocation -ne '' -and -not [System.IO.Directory]::Exists($cleanLocation)) {
                     $installPathMissing = $true
                 }
@@ -61,16 +62,35 @@ foreach ($rp in $regPaths) {
                 } elseif ($uninstallString -match '^(.+?\.exe)(?:\s|$)') {
                     $exePath = $Matches[1]
                 }
-                if ($exePath -and -not [System.IO.File]::Exists($exePath)) {
-                    $uninstallPathMissing = $true
+                if ($exePath) {
+                    $expandedExePath = [Environment]::ExpandEnvironmentVariables($exePath)
+                    if (-not [System.IO.File]::Exists($expandedExePath)) {
+                        $uninstallPathMissing = $true
+                    }
                 }
             }
 
-            # 三重判断 OR 组合：任一条件满足即判定为残留
-            # 逻辑 1（索引缺失）= 主信号
-            # 逻辑 2（InstallLocation 丢失）= 安装路径被删除
-            # 逻辑 3（UninstallString exe 丢失）= 卸载程序被删除
-            $isResidual = $notInIndex -or $installPathMissing -or $uninstallPathMissing
+            # 两阶段加权判断（Delphi R1 C1 fix）：
+            # 阶段 1: 不在索引中 → 权威信号，直接标记为残留（辅助信号决定置信度）
+            # 阶段 2: 在索引中 → 需要路径与卸载程序同时缺失的强证据 (AND)
+            # 避免 OR 逻辑下辅助信号（路径缺失）覆盖权威信号（索引成员）导致误报
+            $isResidual = $false
+            $confidence = 'high'
+
+            if ($notInIndex) {
+                $isResidual = $true
+                if ($installPathMissing -or $uninstallPathMissing) {
+                    $confidence = 'high'
+                } else {
+                    $confidence = 'low'
+                }
+            } else {
+                if ($installPathMissing -and $uninstallPathMissing) {
+                    $isResidual = $true
+                    $confidence = 'medium'
+                }
+            }
+
             if ($isResidual) {
                 $evidenceParts = @()
                 if ($notInIndex) { $evidenceParts += "not in installed index" }
@@ -83,6 +103,7 @@ foreach ($rp in $regPaths) {
                     install_location = $installLocation
                     uninstall_string = $uninstallString
                     evidence = $evidenceParts -join '; '
+                    confidence = $confidence
                     source = $rp.Hive
                 })
             }
@@ -104,7 +125,10 @@ foreach ($dir in $scanDirs) {
     try {
         foreach ($subdir in [System.IO.Directory]::GetDirectories($dir)) {
             $dirName = [System.IO.Path]::GetFileName($subdir)
-            if (-not $installedNames.ContainsKey($dirName) -and $installedNames.Keys -notmatch [regex]::Escape($dirName)) {
+            # 修复：-notmatch 对数组返回"不匹配的元素子集"，非空时恒为真，
+            # 导致几乎所有目录都被误判为候选目录；改为逐 key 匹配检查
+            $matchedNames = @($installedNames.Keys | Where-Object { $_ -match [regex]::Escape($dirName) })
+            if (-not $installedNames.ContainsKey($dirName) -and $matchedNames.Count -eq 0) {
                 $uninstalledDirs.Add([PSCustomObject]@{
                     name = $dirName
                     path = $subdir
