@@ -69,7 +69,18 @@ if ($MyInvocation.InvocationName -eq '.') {
     return
 }
 
+# 权限检查（只读扫描，非管理员仅警告）
+if (-not ([Security.Principal.WindowsPrincipal]::new(
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+    Write-Warning "Running without admin. Some system directories may not be readable."
+}
+
 # 加载配置
+if (-not (Test-Path $ConfigPath)) {
+    Write-Error "Configuration file not found: $ConfigPath"
+    exit 3
+}
 $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
 $maxFileCount = $config.file_thresholds.max_file_count
 $maxSizeMB = $config.file_thresholds.max_size_mb

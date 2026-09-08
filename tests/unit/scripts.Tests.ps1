@@ -354,14 +354,20 @@ Describe 'clean-residuals.ps1 ConfirmFile integration' {
         $backupDir = "$PSScriptRoot\..\..\backup-test"
         New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
 
-        # Run in DryRun mode with ConfirmFile
-        $result = & $scriptPath -ReportPath $testReportPath -ConfirmFile $confirmedPath -DryRun 2>&1
+        # Run in DryRun mode with ConfirmFile (dot-source + mock admin check)
+        . $scriptPath
+        Mock Test-AdminPrivilege { return $true }
+        $ReportPath = $testReportPath
+        $ConfirmFile = $confirmedPath
+        $DryRun = $true
+        $result = Main 2>&1
         $output = $result -join "`n"
 
         $output | Should -Match 'Loaded 2 confirmed IDs'
         $output | Should -Match 'matched 2 items'
         $output | Should -Match 'Deleting path: C:\\Test1'
-        $output | Should -Match 'Stopping and deleting service: testsvc'
+        $output | Should -Match 'Stopping service: testsvc'
+        $output | Should -Match 'Deleting service: testsvc'
         $output | Should -Not -Match 'Deleting path: C:\\Test2'
 
         # Cleanup
@@ -399,7 +405,13 @@ Describe 'clean-residuals.ps1 ConfirmFile integration' {
         $backupDir = "$PSScriptRoot\..\..\backup-test"
         New-Item -Path $backupDir -ItemType Directory -Force | Out-Null
 
-        $result = & $scriptPath -ReportPath $testReportPath -ConfirmFile $confirmedPath -DryRun 2>&1
+        # Dot-source + mock admin check
+        . $scriptPath
+        Mock Test-AdminPrivilege { return $true }
+        $ReportPath = $testReportPath
+        $ConfirmFile = $confirmedPath
+        $DryRun = $true
+        $result = Main 2>&1
         $output = $result -join "`n"
 
         # Danger items should be filtered out before ConfirmFile matching

@@ -10,9 +10,6 @@ param(
     [switch]$DryRun = $false     # Dry-run mode: log actions without executing
 )
 
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-
 # Robust file deletion with fallback strategies for locked/permission-denied files
 function Remove-ItemRobust {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions','')]
@@ -130,238 +127,281 @@ function Test-Whitelisted {
     return $false
 }
 
-# 点源守卫：当脚本被 dot-source（如单元测试加载函数）时，只加载函数定义，
-# 跳过所有副作用代码（还原点检查/白名单加载/清理执行），使 dot-source 完全无副作用。
-# 正常执行（& script 或 -File script）时 $MyInvocation.InvocationName != '.', 继续执行。
-# 必须位于所有函数定义之后、任何可执行副作用语句之前。
-if ($MyInvocation.InvocationName -eq '.') {
-    return
+# Admin privilege check (mandatory for write operations)
+function Test-AdminPrivilege {
+    [CmdletBinding()]
+    param([switch]$Mandatory)
+    $isAdmin = [Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        if ($Mandatory) {
+            Write-Error "Administrator privileges required. Please run PowerShell as Administrator."
+            exit 2
+        } else {
+            Write-Warning "Running without admin. Some HKLM registry keys may not be readable."
+        }
+    }
+    return $isAdmin
 }
 
-# B-M7 修复：清理前检查还原点是否已创建
-if ($Mode -ne 'D') {
-    $restoreFiles = Get-ChildItem -Path "$PSScriptRoot\..\..\backup-*" -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
-    if (-not $restoreFiles) {
-        Write-Error "No restore point or backup found. Please run create-restore-point.ps1 first."
-        Write-Output "Run: powershell -ExecutionPolicy Bypass -File '$PSScriptRoot\create-restore-point.ps1'"
+function Main {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+
+    [void](Test-AdminPrivilege -Mandatory)
+
+    # B-M7 修复：清理前检查还原点是否已创建
+    if ($Mode -ne 'D') {
+        $restoreFiles = Get-ChildItem -Path "$PSScriptRoot\..\..\backup-*" -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+        if (-not $restoreFiles) {
+            Write-Error "No restore point or backup found. Please run create-restore-point.ps1 first."
+            Write-Output "Run: powershell -ExecutionPolicy Bypass -File '$PSScriptRoot\create-restore-point.ps1'"
+            exit 1
+        }
+        Write-Output "Restore backup found: $($restoreFiles[0].Name)"
+    }
+
+    # --- 加载白名单（Defense-in-Depth: 清理前二次校验） ---
+    $script:whitelist = $null
+    if (Test-Path $WhitelistPath) {
+        try {
+            $script:whitelist = Get-Content $WhitelistPath -Raw | ConvertFrom-Json
+        } catch {
+            Write-Warning "Failed to load whitelist: $_"
+        }
+    }
+
+    # --- 加载报告并按模式筛选项目 ---
+    try {
+        $report = Get-Content $ReportPath -Raw | ConvertFrom-Json
+    } catch {
+        $errMsg = $_.Exception.Message
+        Write-Error ("Failed to load report from {0}: {1}" -f $ReportPath, $errMsg)
         exit 1
     }
-    Write-Output "Restore backup found: $($restoreFiles[0].Name)"
-}
 
-# --- 加载白名单（Defense-in-Depth: 清理前二次校验） ---
-$whitelist = $null
-if (Test-Path $WhitelistPath) {
-    try {
-        $whitelist = Get-Content $WhitelistPath -Raw | ConvertFrom-Json
-    } catch {
-        Write-Warning "Failed to load whitelist: $_"
-    }
-}
-
-# --- 加载报告并按模式筛选项目 ---
-try {
-    $report = Get-Content $ReportPath -Raw | ConvertFrom-Json
-} catch {
-    $errMsg = $_.Exception.Message
-    Write-Error ("Failed to load report from {0}: {1}" -f $ReportPath, $errMsg)
-    exit 1
-}
-
-# 汇总所有项目到统一列表（含 shell_residuals 分类）
-$allItems = @()
-foreach ($cat in @('filesystem_residuals','registry_residuals','ghost_services','ghost_tasks','startup_residuals','shell_residuals','path_residuals')) {
-    $items = $report.$cat
-    if ($items) {
-        if ($items -is [array] -or $items -is [System.Collections.IList]) {
-            $allItems += @($items)
-        } else {
-            $allItems += $items
+    # 汇总所有项目到统一列表（含 shell_residuals 分类）
+    $allItems = @()
+    foreach ($cat in @('filesystem_residuals','registry_residuals','ghost_services','ghost_tasks','startup_residuals','shell_residuals','path_residuals')) {
+        $items = $report.$cat
+        if ($items) {
+            if ($items -is [array] -or $items -is [System.Collections.IList]) {
+                $allItems += @($items)
+            } else {
+                $allItems += $items
+            }
         }
     }
-}
-# B-M4 修复：按 Mode 筛选
-# Mode A: 自动清理 Safe 项
-# Mode B: 自动清理 Safe 项，Caution 项仅标记（用户需逐项确认，由调用者控制）
-# Mode C: 全量审阅（Safe + Caution），Danger 保留
-# Mode D: 仅报告，不清理
-# 如果指定了 ConfirmFile，则跳过 Mode 筛选，直接使用用户确认的 ID 列表
-# 注意：变量名必须用 $cleanupItems 而非 $itemsToClean，因为参数 $ItemsToClean
-# 是 [string] 类型，PS 变量不区分大小写，会导致类型约束冲突
-if ($ConfirmFile -ne '') {
-    # ConfirmFile 模式：用户已通过 confirm-cleanup.ps1 交互确认，跳过 Mode 筛选
-    $cleanupItems = @()
-    foreach ($item in $allItems) {
-        if ($item.risk -ne 'danger') {
-            $cleanupItems += $item
+    # B-M4 修复：按 Mode 筛选
+    # Mode A: 自动清理 Safe 项
+    # Mode B: 自动清理 Safe 项，Caution 项仅标记（用户需逐项确认，由调用者控制）
+    # Mode C: 全量审阅（Safe + Caution），Danger 保留
+    # Mode D: 仅报告，不清理
+    # 如果指定了 ConfirmFile，则跳过 Mode 筛选，直接使用用户确认的 ID 列表
+    # 注意：变量名必须用 $cleanupItems 而非 $itemsToClean，因为参数 $ItemsToClean
+    # 是 [string] 类型，PS 变量不区分大小写，会导致类型约束冲突
+    if ($ConfirmFile -ne '') {
+        # ConfirmFile 模式：用户已通过 confirm-cleanup.ps1 交互确认，跳过 Mode 筛选
+        $cleanupItems = @()
+        foreach ($item in $allItems) {
+            if ($item.risk -ne 'danger') {
+                $cleanupItems += $item
+            }
+        }
+    } else {
+        switch ($Mode) {
+            'A' { $cleanupItems = @($allItems | Where-Object { $_.risk -eq 'safe' }) }
+            'B' { $cleanupItems = @($allItems | Where-Object { $_.risk -eq 'safe' }) }
+            'C' { $cleanupItems = @($allItems | Where-Object { $_.risk -ne 'danger' }) }
+            'D' { Write-Output "Report-only mode. No cleanup performed."; return }
         }
     }
-} else {
-    switch ($Mode) {
-        'A' { $cleanupItems = @($allItems | Where-Object { $_.risk -eq 'safe' }) }
-        'B' { $cleanupItems = @($allItems | Where-Object { $_.risk -eq 'safe' }) }
-        'C' { $cleanupItems = @($allItems | Where-Object { $_.risk -ne 'danger' }) }
-        'D' { Write-Output "Report-only mode. No cleanup performed."; return }
+
+    # 如果指定了 ConfirmFile（来自 confirm-cleanup.ps1），则以此为筛选依据
+    if ($ConfirmFile -and (Test-Path $ConfirmFile)) {
+        try {
+            $confirmedIds = Get-Content $ConfirmFile -Raw | ConvertFrom-Json
+            $cleanupItems = @($cleanupItems | Where-Object { $confirmedIds -contains $_.id })
+            Write-Output "Loaded $($confirmedIds.Count) confirmed IDs from $ConfirmFile, matched $($cleanupItems.Count) items"
+        } catch {
+            Write-Warning "Failed to load ConfirmFile: $_"
+        }
+    } elseif ($ConfirmFile) {
+        Write-Warning "ConfirmFile not found: $ConfirmFile"
     }
-}
 
-# 如果指定了 ConfirmFile（来自 confirm-cleanup.ps1），则以此为筛选依据
-if ($ConfirmFile -and (Test-Path $ConfirmFile)) {
-    try {
-        $confirmedIds = Get-Content $ConfirmFile -Raw | ConvertFrom-Json
-        $cleanupItems = @($cleanupItems | Where-Object { $confirmedIds -contains $_.id })
-        Write-Output "Loaded $($confirmedIds.Count) confirmed IDs from $ConfirmFile, matched $($cleanupItems.Count) items"
-    } catch {
-        Write-Warning "Failed to load ConfirmFile: $_"
+    # 如果指定了具体 ID，则进一步过滤（B-m3 修复：try/catch）
+    if ($ItemsToClean) {
+        try {
+            $ids = $ItemsToClean | ConvertFrom-Json
+            $cleanupItems = @($cleanupItems | Where-Object { $ids -contains $_.id })
+        } catch {
+            Write-Warning "Invalid ItemsToClean JSON format. Ignoring filter."
+        }
     }
-} elseif ($ConfirmFile) {
-    Write-Warning "ConfirmFile not found: $ConfirmFile"
-}
 
-# 如果指定了具体 ID，则进一步过滤（B-m3 修复：try/catch）
-if ($ItemsToClean) {
-    try {
-        $ids = $ItemsToClean | ConvertFrom-Json
-        $cleanupItems = @($cleanupItems | Where-Object { $ids -contains $_.id })
-    } catch {
-        Write-Warning "Invalid ItemsToClean JSON format. Ignoring filter."
-    }
-}
-
-# --- 执行清理 ---
-$log = [System.Collections.Generic.List[Hashtable]]::new()
-
-foreach ($item in $cleanupItems) {
+    # --- Three-phase batch processing ---
+    $log = [System.Collections.Generic.List[Hashtable]]::new()
     $prefix = if ($DryRun) { "[DRY-RUN] " } else { "" }
 
-    # Defense-in-Depth: 白名单二次校验
-    if (Test-Whitelisted -Path $item.path -Key $item.key -ServiceName $item.name) {
-        Write-Warning "$prefix SKIP (whitelisted): $($item.id)"
-        $log.Add(@{ id=$item.id; action='skipped_whitelisted'; success=$false })
-        continue
+    # Pre-filter: whitelist + danger (applies to all phases)
+    $eligibleItems = @()
+    foreach ($item in $cleanupItems) {
+        if (Test-Whitelisted -Path $item.path -Key $item.key -ServiceName $item.name) {
+            Write-Warning "$prefix SKIP (whitelisted): $($item.id)"
+            $log.Add(@{ id=$item.id; action='skipped_whitelisted'; success=$false })
+            continue
+        }
+        if ($item.risk -eq 'danger') {
+            Write-Warning "$prefix SKIP (danger): $($item.id) - $($item.reason)"
+            $log.Add(@{ id=$item.id; action='skipped_danger'; success=$false })
+            continue
+        }
+        $eligibleItems += $item
     }
 
-    # Danger 项永远不清理（二次保险）
-    if ($item.risk -eq 'danger') {
-        Write-Warning "$prefix SKIP (danger): $($item.id) - $($item.reason)"
-        $log.Add(@{ id=$item.id; action='skipped_danger'; success=$false })
-        continue
-    }
-
-    try {
-        # Clean registry（B-C2 修复：清理前检查键是否存在）
-        if ($item.key) {
-            Write-Output "$prefix Deleting registry key: $($item.key)"
-            if (-not $DryRun) {
-                # 先用 reg query 检查键是否存在
-                $regKey = $item.key
-                cmd /c "reg query `"$regKey`" 2>&1"
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Output "  → Registry key does not exist (already removed), skipping"
-                    $log.Add(@{ id=$item.id; action='registry_skip'; key=$item.key; success=$true; note='key not found' })
-                    continue
-                }
-                reg delete "$regKey" /f 2>&1
-                if ($LASTEXITCODE -ne 0) { throw "reg delete failed with exit code $LASTEXITCODE" }
-            }
-            $log.Add(@{ id=$item.id; action='registry_deleted'; key=$item.key; success=$true })
-        }
-
-        # Clean files/dirs
-        if ($item.path) {
-            Write-Output "$prefix Deleting path: $($item.path)"
-            if (-not $DryRun) {
-                if (Test-Path $item.path) {
-                    $deleted = Remove-ItemRobust -Path $item.path -WhatIf:$DryRun
-                    if (-not $deleted) {
-                        throw "Failed to delete path after all fallback strategies"
-                    }
-                } else {
-                    Write-Output "  → Path does not exist (already removed), skipping"
-                }
-            }
-            $log.Add(@{ id=$item.id; action='path_deleted'; path=$item.path; success=$true })
-        }
-
-        # Clean services（B-C4 修复：停止 + 依赖检查 + 等待 + 删除）
+    # Phase 1: Stop all services (stop only, no delete)
+    Write-Output "$prefix Phase 1: Stopping services..."
+    foreach ($item in $eligibleItems) {
         if ($item.name -and $item.binary_path) {
-            Write-Output "$prefix Stopping and deleting service: $($item.name)"
+            Write-Output "$prefix   Stopping service: $($item.name)"
             if (-not $DryRun) {
-                # 先尝试停止服务
-                sc.exe stop $item.name 2>$null
-                # 等待服务停止（最多 10 秒）
-                $waited = 0
-                do {
-                    Start-Sleep -Milliseconds 1000
-                    $waited++
-                    $svcState = (Get-CimInstance Win32_Service -Filter "Name='$($item.name)'" -ErrorAction SilentlyContinue).State
-                } while ($svcState -eq 'Running' -and $waited -lt 10)
-
-                if ($svcState -eq 'Running') {
-                    Write-Warning "  → Service did not stop in time, attempting force delete"
-                }
-                sc.exe delete $item.name 2>&1
-                if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE" }
-            }
-            $log.Add(@{ id=$item.id; action='service_deleted'; name=$item.name; success=$true })
-        }
-
-        # Clean ghost scheduled tasks（修复：新增 ghost_task 处理分支）
-        # ghost task 结构: { type='ghost_task'; name; execute; expanded_path; risk; reason; id }
-        # 与 service 的区分：service 有 binary_path，task 有 expanded_path
-        if ($item.name -and $item.expanded_path -and -not $item.binary_path) {
-            Write-Output "$prefix Deleting scheduled task: $($item.name)"
-            if (-not $DryRun) {
-                # 根据 name 精确删除计划任务（Unregister-ScheduledTask 会同时删除 task + 其所有 action）
-                $task = Get-ScheduledTask -TaskName $item.name -ErrorAction SilentlyContinue
-                if ($task) {
-                    Unregister-ScheduledTask -TaskName $item.name -Confirm:$false -ErrorAction Stop
-                    Write-Output "  → Scheduled task deleted: $($item.name)"
-                } else {
-                    Write-Output "  → Scheduled task not found (already removed), skipping"
+                try {
+                    sc.exe stop $item.name 2>$null
+                    $waited = 0
+                    do {
+                        Start-Sleep -Milliseconds 1000
+                        $waited++
+                        $svcState = (Get-CimInstance Win32_Service -Filter "Name='$($item.name)'" -ErrorAction SilentlyContinue).State
+                    } while ($svcState -eq 'Running' -and $waited -lt 10)
+                    if ($svcState -eq 'Running') {
+                        Write-Warning "  → Service $($item.name) did not stop in time"
+                    }
+                } catch {
+                    Write-Warning "  → Failed to stop service $($item.name): $($_.Exception.Message)"
                 }
             }
-            $log.Add(@{ id=$item.id; action='task_deleted'; name=$item.name; success=$true })
         }
-
-        # Clean PATH residuals（修复：新增 path_entry 处理分支）
-        # PATH 残留结构: { type='path_entry'; path=<dead dir>; risk; reason; id }
-        # 从机器 PATH 环境变量中移除指向不存在目录的条目
-        if ($item.type -eq 'path_entry' -and $item.path) {
-            Write-Output "$prefix Removing dead PATH entry: $($item.path)"
-            if (-not $DryRun) {
-                $mp = [Environment]::GetEnvironmentVariable('Path','Machine')
-                $target = $item.path.Trim()
-                if ($mp -match [regex]::Escape($target)) {
-                    $mpItems = $mp -split ';' | Where-Object { $_.Trim() -and $_.Trim() -ne $target }
-                    [Environment]::SetEnvironmentVariable('Path', ($mpItems -join ';'), 'Machine')
-                    Write-Output "  → Removed from machine PATH: $target"
-                } else {
-                    Write-Output "  → PATH entry not found (already removed), skipping"
-                }
-            }
-            $log.Add(@{ id=$item.id; action='path_entry_removed'; path=$item.path; success=$true })
-        }
-    } catch {
-        $log.Add(@{ id=$item.id; action='cleanup_failed'; error=$_.Exception.Message; success=$false })
     }
+
+    # Phase 2: Delete files/directories + delete services
+    Write-Output "$prefix Phase 2: Deleting files and services..."
+    foreach ($item in $eligibleItems) {
+        try {
+            # Clean files/dirs
+            if ($item.path) {
+                Write-Output "$prefix   Deleting path: $($item.path)"
+                if (-not $DryRun) {
+                    if (Test-Path $item.path) {
+                        $deleted = Remove-ItemRobust -Path $item.path
+                        if (-not $deleted) {
+                            throw "Failed to delete path after all fallback strategies"
+                        }
+                    } else {
+                        Write-Output "  → Path does not exist (already removed), skipping"
+                    }
+                }
+                $log.Add(@{ id=$item.id; action='path_deleted'; path=$item.path; success=$true })
+            }
+
+            # Delete services (after files, so binaries are released)
+            if ($item.name -and $item.binary_path) {
+                Write-Output "$prefix   Deleting service: $($item.name)"
+                if (-not $DryRun) {
+                    sc.exe delete $item.name 2>&1
+                    if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE" }
+                }
+                $log.Add(@{ id=$item.id; action='service_deleted'; name=$item.name; success=$true })
+            }
+
+            # Delete ghost scheduled tasks（master 修复：ghost_task 分支）
+            # ghost task 结构: { type='ghost_task'; name; execute; expanded_path; risk; reason; id }
+            # 与 service 的区分：service 有 binary_path，task 有 expanded_path
+            if ($item.name -and $item.expanded_path -and -not $item.binary_path) {
+                Write-Output "$prefix   Deleting scheduled task: $($item.name)"
+                if (-not $DryRun) {
+                    # 根据 name 精确删除计划任务（Unregister-ScheduledTask 会同时删除 task + 其所有 action）
+                    $task = Get-ScheduledTask -TaskName $item.name -ErrorAction SilentlyContinue
+                    if ($task) {
+                        Unregister-ScheduledTask -TaskName $item.name -Confirm:$false -ErrorAction Stop
+                        Write-Output "  → Scheduled task deleted: $($item.name)"
+                    } else {
+                        Write-Output "  → Scheduled task not found (already removed), skipping"
+                    }
+                }
+                $log.Add(@{ id=$item.id; action='task_deleted'; name=$item.name; success=$true })
+            }
+
+            # Remove dead PATH entries（master 修复：path_entry 分支）
+            # PATH 残留结构: { type='path_entry'; path=<dead dir>; risk; reason; id }
+            # 从机器 PATH 环境变量中移除指向不存在目录的条目
+            if ($item.type -eq 'path_entry' -and $item.path) {
+                Write-Output "$prefix   Removing dead PATH entry: $($item.path)"
+                if (-not $DryRun) {
+                    $mp = [Environment]::GetEnvironmentVariable('Path','Machine')
+                    $target = $item.path.Trim()
+                    if ($mp -match [regex]::Escape($target)) {
+                        $mpItems = $mp -split ';' | Where-Object { $_.Trim() -and $_.Trim() -ne $target }
+                        [Environment]::SetEnvironmentVariable('Path', ($mpItems -join ';'), 'Machine')
+                        Write-Output "  → Removed from machine PATH: $target"
+                    } else {
+                        Write-Output "  → PATH entry not found (already removed), skipping"
+                    }
+                }
+                $log.Add(@{ id=$item.id; action='path_entry_removed'; path=$item.path; success=$true })
+            }
+        } catch {
+            $log.Add(@{ id=$item.id; action='cleanup_failed'; error=$_.Exception.Message; success=$false })
+        }
+    }
+
+    # Phase 3: Clean registry keys
+    Write-Output "$prefix Phase 3: Cleaning registry..."
+    foreach ($item in $eligibleItems) {
+        try {
+            if ($item.key) {
+                Write-Output "$prefix   Deleting registry key: $($item.key)"
+                if (-not $DryRun) {
+                    $regKey = $item.key
+                    cmd /c "reg query `"$regKey`" 2>&1"
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Output "  → Registry key does not exist (already removed), skipping"
+                        $log.Add(@{ id=$item.id; action='registry_skip'; key=$item.key; success=$true; note='key not found' })
+                        continue
+                    }
+                    reg delete "$regKey" /f 2>&1
+                    if ($LASTEXITCODE -ne 0) { throw "reg delete failed with exit code $LASTEXITCODE" }
+                }
+                $log.Add(@{ id=$item.id; action='registry_deleted'; key=$item.key; success=$true })
+            }
+        } catch {
+            $log.Add(@{ id=$item.id; action='cleanup_failed'; error=$_.Exception.Message; success=$false })
+        }
+    }
+
+    $summary = @{
+        mode = $Mode
+        dry_run = $DryRun.IsPresent
+        total_processed = $log.Count
+        succeeded = @($log | Where-Object { $_.success -eq $true }).Count
+        failed = @($log | Where-Object { $_.success -eq $false -and $_.action -eq 'cleanup_failed' }).Count
+        skipped = @($log | Where-Object { $_.action -match 'skipped' }).Count
+        timestamp = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
+    }
+
+    Write-Output "`nCleanup summary: $($summary.succeeded) succeeded, $($summary.failed) failed, $($summary.skipped) skipped"
+    if ($DryRun) { Write-Output "(DRY-RUN mode - no changes were made)" }
+
+    # 输出日志（UTF-8 without BOM）
+    $outputPath = "$PSScriptRoot\..\..\cleanup-log.json"
+    $logJson = @{ summary = $summary; entries = $log } | ConvertTo-Json -Depth 3
+    [System.IO.File]::WriteAllText($outputPath, $logJson, [System.Text.UTF8Encoding]::new($false))
+    Write-Output "Cleanup log saved to: $outputPath"
 }
 
-$summary = @{
-    mode = $Mode
-    dry_run = $DryRun.IsPresent
-    total_processed = $log.Count
-    succeeded = @($log | Where-Object { $_.success -eq $true }).Count
-    failed = @($log | Where-Object { $_.success -eq $false -and $_.action -eq 'cleanup_failed' }).Count
-    skipped = @($log | Where-Object { $_.action -match 'skipped' }).Count
-    timestamp = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
+# Execution guard — only runs when script is directly executed, not when dot-sourced
+if ($MyInvocation.InvocationName -ne '.') {
+    Main
+    exit 0
 }
-
-Write-Output "`nCleanup summary: $($summary.succeeded) succeeded, $($summary.failed) failed, $($summary.skipped) skipped"
-if ($DryRun) { Write-Output "(DRY-RUN mode - no changes were made)" }
-
-# 输出日志（UTF-8 without BOM）
-$outputPath = "$PSScriptRoot\..\..\cleanup-log.json"
-$logJson = @{ summary = $summary; entries = $log } | ConvertTo-Json -Depth 3
-[System.IO.File]::WriteAllText($outputPath, $logJson, [System.Text.UTF8Encoding]::new($false))
-Write-Output "Cleanup log saved to: $outputPath"
