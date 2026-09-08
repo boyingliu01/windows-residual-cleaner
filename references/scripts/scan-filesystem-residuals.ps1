@@ -5,9 +5,6 @@ param(
     [string]$OutputPath = "$PSScriptRoot\..\..\fs-residuals.json"
 )
 
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-
 function Get-EffectiveFileCount {
     param([string]$path, [string[]]$excluded)
     # 修复：递归统计文件数，与 Get-DirectorySizeMB 的 AllDirectories 保持一致
@@ -61,118 +58,120 @@ function Test-AllSubdirsEmpty {
     }
 }
 
-# 点源守卫：当脚本被 dot-source（如单元测试加载函数）时，只加载函数定义，
-# 跳过所有副作用代码（配置文件加载/目录遍历），使 dot-source 完全无副作用。
-# 正常执行（& script 或 -File script）时 $MyInvocation.InvocationName != '.', 继续执行。
-# 必须位于所有函数定义之后、任何可执行副作用语句之前。
-if ($MyInvocation.InvocationName -eq '.') {
-    return
-}
+function Main {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
 
-# 权限检查（只读扫描，非管理员仅警告）
-if (-not ([Security.Principal.WindowsPrincipal]::new(
-    [Security.Principal.WindowsIdentity]::GetCurrent()
-).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
-    Write-Warning "Running without admin. Some system directories may not be readable."
-}
+    # 权限检查（只读扫描，非管理员仅警告）
+    if (-not ([Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
+        Write-Warning "Running without admin. Some system directories may not be readable."
+    }
 
-# 加载配置
-if (-not (Test-Path $ConfigPath)) {
-    Write-Error "Configuration file not found: $ConfigPath"
-    exit 3
-}
-$config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-$maxFileCount = $config.file_thresholds.max_file_count
-$maxSizeMB = $config.file_thresholds.max_size_mb
-$excludedFiles = $config.file_thresholds.excluded_files
-$targetDirs = $config.target_directories
+    # 加载配置
+    if (-not (Test-Path $ConfigPath)) {
+        Write-Error "Configuration file not found: $ConfigPath"
+        exit 3
+    }
+    $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    $maxFileCount = $config.file_thresholds.max_file_count
+    $maxSizeMB = $config.file_thresholds.max_size_mb
+    $excludedFiles = $config.file_thresholds.excluded_files
+    $targetDirs = $config.target_directories
 
-$residuals = [System.Collections.Generic.List[PSObject]]::new()
+    $residuals = [System.Collections.Generic.List[PSObject]]::new()
 
-# 受保护目录：系统关键目录，永远不标记为残留（即使看起来"空"或文件少）
-# 这些目录由系统/其他软件动态管理，绝不能清理
-$protectedDirNames = @(
-    'WindowsApps','ModifiableWindowsApps','Windows Defender','Microsoft',
-    'Windows Defender Advanced Threat Protection','Windows Photo Viewer',
-    'WindowsPowerShell','Windows Mail','Windows Security','Internet Explorer'
-)
+    # 受保护目录：系统关键目录，永远不标记为残留（即使看起来"空"或文件少）
+    # 这些目录由系统/其他软件动态管理，绝不能清理
+    $protectedDirNames = @(
+        'WindowsApps','ModifiableWindowsApps','Windows Defender','Microsoft',
+        'Windows Defender Advanced Threat Protection','Windows Photo Viewer',
+        'WindowsPowerShell','Windows Mail','Windows Security','Internet Explorer'
+    )
 
-foreach ($targetDir in $targetDirs) {
-    $expandedDir = [Environment]::ExpandEnvironmentVariables($targetDir)
-    if (-not (Test-Path $expandedDir)) { continue }
-    try {
-        foreach ($subdir in [System.IO.Directory]::GetDirectories($expandedDir)) {
-            $dirName = [System.IO.Path]::GetFileName($subdir)
+    foreach ($targetDir in $targetDirs) {
+        $expandedDir = [Environment]::ExpandEnvironmentVariables($targetDir)
+        if (-not (Test-Path $expandedDir)) { continue }
+        try {
+            foreach ($subdir in [System.IO.Directory]::GetDirectories($expandedDir)) {
+                $dirName = [System.IO.Path]::GetFileName($subdir)
 
-            # 受保护目录直接跳过（系统关键目录，绝不清理）
-            if ($protectedDirNames -contains $dirName) {
-                continue
-            }
-
-            # 单次递归遍历：同时统计文件数、总大小、是否含非空子目录
-            # 原实现对每个目录做 3 次独立递归（计数/大小/空判定），大目录上极慢且误报
-            $fileCount = 0
-            $totalSizeMB = 0.0
-            $allSubdirsEmpty = $true
-            try {
-                $size = 0L
-                $hasNonEmptySubdir = $false
-                foreach ($f in [System.IO.Directory]::EnumerateFiles($subdir, '*', [System.IO.SearchOption]::AllDirectories)) {
-                    $fname = [System.IO.Path]::GetFileName($f)
-                    $isExcluded = $false
-                    foreach ($pattern in $excludedFiles) {
-                        if ($fname -like $pattern) { $isExcluded = $true; break }
-                    }
-                    if (-not $isExcluded) { $fileCount++ }
-                    try { $size += (New-Object System.IO.FileInfo $f).Length } catch { }
+                # 受保护目录直接跳过（系统关键目录，绝不清理）
+                if ($protectedDirNames -contains $dirName) {
+                    continue
                 }
-                # 若存在任何文件，则说明有非空子目录（递归已包含）
-                $totalSizeMB = [math]::Round($size / 1MB, 2)
-                $allSubdirsEmpty = ($fileCount -eq 0)
-            } catch {
-                # 无权限等异常时按保守处理
+
+                # 单次递归遍历：同时统计文件数、总大小、是否含非空子目录
+                # 原实现对每个目录做 3 次独立递归（计数/大小/空判定），大目录上极慢且误报
                 $fileCount = 0
                 $totalSizeMB = 0.0
-                $allSubdirsEmpty = $false
-            }
+                $allSubdirsEmpty = $true
+                try {
+                    $size = 0L
+                    foreach ($f in [System.IO.Directory]::EnumerateFiles($subdir, '*', [System.IO.SearchOption]::AllDirectories)) {
+                        $fname = [System.IO.Path]::GetFileName($f)
+                        $isExcluded = $false
+                        foreach ($pattern in $excludedFiles) {
+                            if ($fname -like $pattern) { $isExcluded = $true; break }
+                        }
+                        if (-not $isExcluded) { $fileCount++ }
+                        try { $size += (New-Object System.IO.FileInfo $f).Length } catch { }
+                    }
+                    # 若存在任何文件，则说明有非空子目录（递归已包含）
+                    $totalSizeMB = [math]::Round($size / 1MB, 2)
+                    $allSubdirsEmpty = ($fileCount -eq 0)
+                } catch {
+                    # 无权限等异常时按保守处理
+                    $fileCount = 0
+                    $totalSizeMB = 0.0
+                    $allSubdirsEmpty = $false
+                }
 
-            # 判定风险等级（修复：递归计数后，有实际内容的目录是活跃程序而非残留，跳过）
-            $risk = 'skip'
-            $reason = ''
-            if ($fileCount -eq 0 -and $allSubdirsEmpty) {
-                $risk = 'safe'
-                $reason = "Empty directory (0 files, no non-empty subdirectories)"
-            } elseif ($fileCount -le $maxFileCount -and $totalSizeMB -lt $maxSizeMB) {
-                $risk = 'safe'
-                $reason = "Minimal residual ($fileCount files, ${totalSizeMB}MB)"
-            } elseif ($fileCount -le $maxFileCount -and $totalSizeMB -ge $maxSizeMB) {
-                # 文件少但体积大（如残留的模型缓存/日志）：仍需人工确认
-                $risk = 'caution'
-                $reason = "Few files but notable size ($fileCount files, ${totalSizeMB}MB)"
-            } else {
-                # 递归计数后文件多 → 活跃程序目录，非残留，跳过（不再误报）
+                # 判定风险等级（修复：递归计数后，有实际内容的目录是活跃程序而非残留，跳过）
                 $risk = 'skip'
-                $reason = "Active directory with $fileCount files - not a residual"
-            }
+                $reason = ''
+                if ($fileCount -eq 0 -and $allSubdirsEmpty) {
+                    $risk = 'safe'
+                    $reason = "Empty directory (0 files, no non-empty subdirectories)"
+                } elseif ($fileCount -le $maxFileCount -and $totalSizeMB -lt $maxSizeMB) {
+                    $risk = 'safe'
+                    $reason = "Minimal residual ($fileCount files, ${totalSizeMB}MB)"
+                } elseif ($fileCount -le $maxFileCount -and $totalSizeMB -ge $maxSizeMB) {
+                    # 文件少但体积大（如残留的模型缓存/日志）：仍需人工确认
+                    $risk = 'caution'
+                    $reason = "Few files but notable size ($fileCount files, ${totalSizeMB}MB)"
+                } else {
+                    # 递归计数后文件多 → 活跃程序目录，非残留，跳过（不再误报）
+                    $risk = 'skip'
+                    $reason = "Active directory with $fileCount files - not a residual"
+                }
 
-            if ($risk -ne 'skip') {
-                $residuals.Add([PSCustomObject]@{
-                    path = $subdir
-                    name = $dirName
-                    type = if ($fileCount -eq 0) { 'empty_directory' } else { 'residual_directory' }
-                    file_count = $fileCount
-                    size_mb = $totalSizeMB
-                    risk = $risk
-                    reason = $reason
-                })
+                if ($risk -ne 'skip') {
+                    $residuals.Add([PSCustomObject]@{
+                        path = $subdir
+                        name = $dirName
+                        type = if ($fileCount -eq 0) { 'empty_directory' } else { 'residual_directory' }
+                        file_count = $fileCount
+                        size_mb = $totalSizeMB
+                        risk = $risk
+                        reason = $reason
+                    })
+                }
             }
-        }
-    } catch { Write-Warning "Scan failed for ${expandedDir}: $_" }
+        } catch { Write-Warning "Scan failed for ${expandedDir}: $_" }
+    }
+
+    $jsonContent = $residuals | ConvertTo-Json -Depth 3
+    [System.IO.File]::WriteAllText($OutputPath, $jsonContent, [System.Text.UTF8Encoding]::new($false))
+
+    Write-Output "Filesystem residuals found: $($residuals.Count)"
+    Write-Output "  Safe: $($residuals | Where-Object { $_.risk -eq 'safe' } | Measure-Object | Select-Object -ExpandProperty Count)"
+    Write-Output "  Caution: $($residuals | Where-Object { $_.risk -eq 'caution' } | Measure-Object | Select-Object -ExpandProperty Count)"
 }
 
-$jsonContent = $residuals | ConvertTo-Json -Depth 3
-[System.IO.File]::WriteAllText($OutputPath, $jsonContent, [System.Text.UTF8Encoding]::new($false))
-
-Write-Output "Filesystem residuals found: $($residuals.Count)"
-Write-Output "  Safe: $($residuals | Where-Object { $_.risk -eq 'safe' } | Measure-Object | Select-Object -ExpandProperty Count)"
-Write-Output "  Caution: $($residuals | Where-Object { $_.risk -eq 'caution' } | Measure-Object | Select-Object -ExpandProperty Count)"
+# Execution guard — only runs when script is directly executed, not when dot-sourced
+if ($MyInvocation.InvocationName -ne '.') {
+    Main
+    exit 0
+}
