@@ -246,15 +246,17 @@ function Main {
     $prefix = if ($DryRun) { "[DRY-RUN] " } else { "" }
 
     # Pre-filter: whitelist + danger (applies to all phases)
+    # 业务日志用 Write-Output（非 Warning）：Pester 拦截 warning 流导致 2>&1 无法捕获，
+    # 且这些消息是正常流程状态而非告警
     $eligibleItems = @()
     foreach ($item in $cleanupItems) {
         if (Test-Whitelisted -Path $item.path -Key $item.key -ServiceName $item.name) {
-            Write-Warning "$prefix SKIP (whitelisted): $($item.id)"
+            Write-Output "$prefix SKIP (whitelisted): $($item.id)"
             $log.Add(@{ id=$item.id; action='skipped_whitelisted'; success=$false })
             continue
         }
         if ($item.risk -eq 'danger') {
-            Write-Warning "$prefix SKIP (danger): $($item.id) - $($item.reason)"
+            Write-Output "$prefix SKIP (danger): $($item.id) - $($item.reason)"
             $log.Add(@{ id=$item.id; action='skipped_danger'; success=$false })
             continue
         }

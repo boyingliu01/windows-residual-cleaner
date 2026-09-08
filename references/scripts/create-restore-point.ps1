@@ -1,17 +1,32 @@
 ﻿# create-restore-point.ps1
 # 创建系统还原点 + 注册表备份
+param(
+    [string]$BackupRoot = "$PSScriptRoot\..\.."
+)
+
+# Admin privilege check (mandatory for write operations)
+function Test-AdminPrivilege {
+    [CmdletBinding()]
+    param([switch]$Mandatory)
+    $isAdmin = [Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        if ($Mandatory) {
+            Write-Error "Administrator privileges required. Please run PowerShell as Administrator."
+            exit 2
+        } else {
+            Write-Warning "Running without admin. Some HKLM registry keys may not be readable."
+        }
+    }
+    return $isAdmin
+}
 
 function Main {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 
-    # Admin privilege check (mandatory for write operations)
-    if (-not ([Security.Principal.WindowsPrincipal]::new(
-        [Security.Principal.WindowsIdentity]::GetCurrent()
-    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
-        Write-Error "Administrator privileges required. Please run PowerShell as Administrator."
-        exit 2
-    }
+    [void](Test-AdminPrivilege -Mandatory)
 
     # B-C3 修复：正确检测系统还原是否启用
     # Get-ComputerRestorePoint 在还原禁用时返回空而非抛异常
@@ -62,7 +77,7 @@ function Main {
     }
 
     # 2. 注册表备份（B-M6 修复：验证导出完整性）
-    $backupDir = "$PSScriptRoot\..\..\backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    $backupDir = "$BackupRoot\backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     mkdir $backupDir -Force | Out-Null
 
     $regPaths = @(

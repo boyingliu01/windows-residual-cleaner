@@ -6,17 +6,29 @@ param(
     [switch]$Verbose = $false
 )
 
+# Admin privilege check (mandatory — includes create-restore-point)
+function Test-AdminPrivilege {
+    [CmdletBinding()]
+    param([switch]$Mandatory)
+    $isAdmin = [Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        if ($Mandatory) {
+            Write-Error "Administrator privileges required. Please run PowerShell as Administrator."
+            exit 2
+        } else {
+            Write-Warning "Running without admin. Some HKLM registry keys may not be readable."
+        }
+    }
+    return $isAdmin
+}
+
 function Main {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 
-    # Admin privilege check (mandatory — includes create-restore-point)
-    if (-not ([Security.Principal.WindowsPrincipal]::new(
-        [Security.Principal.WindowsIdentity]::GetCurrent()
-    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))) {
-        Write-Error "Administrator privileges required. Please run PowerShell as Administrator."
-        exit 2
-    }
+    [void](Test-AdminPrivilege -Mandatory)
 
     $scriptDir = $PSScriptRoot
     $totalStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -55,7 +67,8 @@ function Main {
     if (-not $SkipRestorePoint) {
         Invoke-Step -Name 'Create Restore Point' -ScriptPath "$scriptDir\create-restore-point.ps1"
     } else {
-        Write-Warning "Skipping restore point creation. Cleanup will NOT be recoverable."
+        # 业务日志用 Write-Output（Pester 拦截 warning 流导致测试无法通过 2>&1 捕获）
+        Write-Output "Skipping restore point creation. Cleanup will NOT be recoverable."
     }
 
     # Step 2: Build installed software index
