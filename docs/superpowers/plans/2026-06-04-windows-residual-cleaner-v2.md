@@ -13,7 +13,7 @@
 
 ---
 
-## 实施状态（2026-09-08 更新）
+## 实施状态（2026-09-11 更新）
 
 Layer 0–3 已全部移植到 `fix/test-dotsource-hang` 分支并落地。验证结果：
 
@@ -21,10 +21,9 @@ Layer 0–3 已全部移植到 `fix/test-dotsource-hang` 分支并落地。验�
 - PSScriptAnalyzer：0 error / 0 warning（需带 `-Settings PSScriptAnalyzerSettings.psd1`，该文件仅豁免跨作用域误报的 `PSReviewUnusedParameter`）
 - `setup.ps1` 环境检查：PASSED，exit 0
 - `run-all.ps1` 权限契约：非管理员下正确返回 exit 2
+- `run-all.ps1` 管理员端到端（Task 15 Step 3，2026-09-11）：exit 0，总耗时 144.2s，报告 306 items（Safe 160 / Caution 146 / Danger 0）。winget JSON 解析失败自动回退文本索引（401 entries），属已知回退路径
 
-未完成项（唯一）：
-
-- Task 15 Step 3 —— **管理员权限下的 `run-all.ps1` 端到端验证**。当前环境无 Administrator 令牌，因此本计划中所有扫描计数均来自非管理员运行，`registry_residuals` / `path_residuals` / `ghost_services` / `startup_residuals` 恒为 0，不可作为结论。
+未完成项：无。
 
 两条注意事项：
 
@@ -957,7 +956,7 @@ Expected: 0 failures
 Run: `pwsh -Command "Invoke-ScriptAnalyzer -Path references/scripts/ -Severity Error,Warning"`
 Expected: 0 errors, 0 warnings
 
-- [ ] **Step 3: Verify run-all.ps1 end-to-end (requires admin)** — 未完成：开发环境无 Administrator 令牌，仅验证了非管理员下的 exit 2 契约与手工逐脚本链路
+- [x] **Step 3: Verify run-all.ps1 end-to-end (requires admin)** — 2026-09-11 管理员运行通过：exit 0，144.2s，306 items（Safe 160 / Caution 146 / Danger 0）；winget JSON 解析失败回退文本索引（401 entries）
 
 Run: `pwsh -File references/scripts/run-all.ps1`
 Expected: Generates final-report.json
