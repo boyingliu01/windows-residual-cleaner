@@ -1,0 +1,35 @@
+# Architecture constraints for the Windows Residual Cleaner monorepo.
+# The PowerShell pipeline (references/scripts) predates this file and is
+# covered by Pester/PSSA gates; these layers govern the TypeScript UI.
+layers:
+  - name: types
+    paths: ["ui/src/types/**"]
+    allowed_imports: []
+
+  - name: lib
+    paths: ["ui/src/lib/**"]
+    allowed_imports: [types]
+
+  - name: hooks
+    paths: ["ui/src/hooks/**"]
+    allowed_imports: [types, lib]
+
+  - name: ui-primitives
+    paths: ["ui/src/components/ui/**"]
+    allowed_imports: [lib]
+
+  - name: components
+    paths: ["ui/src/components/**"]
+    allowed_imports: [ui-primitives, hooks, lib, types]
+
+  - name: app
+    paths: ["ui/src/App.tsx", "ui/src/main.tsx"]
+    allowed_imports: [components, ui-primitives, hooks, lib, types]
+
+  - name: test-support
+    paths: ["ui/src/test/**"]
+    allowed_imports: [hooks, lib, types]
+
+  - name: server
+    paths: ["ui/server/**"]
+    allowed_imports: []

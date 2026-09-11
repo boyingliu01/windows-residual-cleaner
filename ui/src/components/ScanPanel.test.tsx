@@ -1,0 +1,42 @@
+import { describe, expect, it, vi, afterEach } from 'vitest'
+import { fireEvent, screen } from '@testing-library/react'
+import { fixtureReport, jsonResponse, renderWithApp, sseResponse } from '@/test'
+import { ScanPanel } from './ScanPanel'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+describe('ScanPanel', () => {
+  it('streams the scan, loads the report and moves to review', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      sseResponse([
+        { text: '正在扫描文件系统残留', type: 'step' },
+        { type: 'done', report: fixtureReport },
+      ]),
+    ))
+    const { app } = renderWithApp(<ScanPanel />)
+
+    fireEvent.click(screen.getByText('开始扫描'))
+
+    expect(await screen.findByText('正在扫描文件系统残留')).toBeTruthy()
+    expect(await screen.findByText(/已有扫描报告/)).toBeTruthy()
+    expect(app.current?.state.phase).toBe('review')
+    expect(app.current?.state.report?.summary.total_residuals).toBe(3)
+  })
+
+  it('shows an error when loading an existing report fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(null, false)))
+    renderWithApp(<ScanPanel />)
+
+    fireEvent.click(screen.getByText('加载已有报告'))
+
+    expect(await screen.findByText('未找到现有报告，请先执行扫描')).toBeTruthy()
+  })
+
+  it('renders the six pipeline steps up front', () => {
+    renderWithApp(<ScanPanel />)
+    expect(screen.getByText(/正在创建系统还原点/)).toBeTruthy()
+    expect(screen.getByText(/正在生成最终报告/)).toBeTruthy()
+  })
+})

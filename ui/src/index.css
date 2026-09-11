@@ -1,0 +1,119 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Windows blue primary */
+    --primary: 206 100% 42%;
+    --primary-light: 206 80% 55%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Neutral palette */
+    --background: 210 20% 98%;
+    --foreground: 222 20% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 20% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 20% 12%;
+    --secondary: 210 16% 93%;
+    --secondary-foreground: 222 20% 12%;
+    --muted: 210 16% 96%;
+    --muted-foreground: 215 14% 46%;
+    --accent: 210 16% 93%;
+    --accent-foreground: 222 20% 12%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Border & Ring */
+    --border: 214 16% 88%;
+    --input: 214 16% 88%;
+    --ring: 206 100% 42%;
+
+    /* Sidebar */
+    --sidebar: 222 18% 11%;
+    --sidebar-foreground: 0 0% 85%;
+    --sidebar-border: 222 12% 18%;
+
+    /* Status colors */
+    --safe: 120 60% 34%;
+    --safe-bg: 120 55% 92%;
+    --caution: 33 100% 46%;
+    --caution-bg: 33 100% 92%;
+    --danger: 358 64% 51%;
+    --danger-bg: 358 80% 94%;
+
+    /* Step indicator */
+    --step-active: 206 100% 42%;
+    --step-completed: 120 60% 34%;
+    --step-pending: 214 16% 80%;
+
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Code style */
+code, .code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8125rem;
+}
+
+/* Risk badge styles */
+@layer components {
+  .risk-safe {
+    @apply bg-safe-bg text-safe;
+  }
+  .risk-caution {
+    @apply bg-caution-bg text-caution;
+  }
+  .risk-danger {
+    @apply bg-danger-bg text-danger;
+  }
+}
+
+/* Step connector line */
+.step-line {
+  @apply h-px flex-1 mx-2;
+  background: hsl(var(--step-pending));
+}
+.step-line.active {
+  background: hsl(var(--step-active));
+}
+.step-line.completed {
+  background: hsl(var(--step-completed));
+}
+
+/* Scan output animation */
+@keyframes fadeInLine {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 0.7; transform: translateX(0); }
+}
+.scan-line {
+  animation: fadeInLine 0.2s ease-out;
+}
