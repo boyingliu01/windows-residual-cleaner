@@ -245,7 +245,11 @@ app.post('/api/cleanup', (req, res) => {
     return;
   }
 
-  const args = ['-ConfirmFile', '../../confirmed-ids.json'];
+  // clean-residuals.ps1 is invoked with -File (does NOT change the process cwd,
+  // which stays PROJECT_ROOT). Pass an ABSOLUTE path so the ConfirmFile resolves
+  // deterministically; a wrong relative path previously escaped the repo and,
+  // combined with the script's old fail-open branch, silently over-deleted.
+  const args = ['-ConfirmFile', confirmPath];
   if (dryRun) args.push('-DryRun');
 
   emit('step', dryRun ? '正在执行 DryRun 预览...' : '正在执行清理...');
@@ -325,9 +329,13 @@ if (fs.existsSync(DIST_DIR)) {
 }
 
 // Server start
+// Bind loopback ONLY: this server spawns admin-privileged, destructive
+// clean-residuals.ps1. Default app.listen() binds 0.0.0.0 (all interfaces),
+// exposing those endpoints to the LAN. Override via HOST only deliberately.
+const HOST = process.env.HOST || '127.0.0.1';
 const PORT = process.env.PORT || 3456;
-app.listen(PORT, () => {
-  console.log(`API server running on http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`API server running on http://${HOST}:${PORT}`);
   console.log(`Project root: ${PROJECT_ROOT}`);
   console.log(`Scripts dir: ${SCRIPTS_DIR}`);
 });

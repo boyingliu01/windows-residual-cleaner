@@ -151,8 +151,12 @@ function Main {
 
     [void](Test-AdminPrivilege -Mandatory)
 
-    # B-M7 修复：清理前检查还原点是否已创建
-    if ($Mode -ne 'D') {
+    # B-M7 修复：清理前检查还原点是否已创建。
+    # 仅在"将真正删除"时强制：非 DryRun 且 (走 ConfirmFile 或 Mode A/B/C)。
+    # 注意 UI(/api/cleanup) 通过 ConfirmFile 触发、Mode 保持默认 'D'，旧条件 ($Mode -ne 'D')
+    # 会让 UI 的真实删除绕过备份门——故改用"意图删除"判定，堵住该缺口。
+    $willDelete = (-not $DryRun) -and ($ConfirmFile -ne '' -or $Mode -ne 'D')
+    if ($willDelete) {
         $restoreFiles = Get-ChildItem -Path "$PSScriptRoot\..\..\backup-*" -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
         if (-not $restoreFiles) {
             Write-Error "No restore point or backup found. Please run create-restore-point.ps1 first."
@@ -202,13 +206,27 @@ function Main {
     # 注意：变量名必须用 $cleanupItems 而非 $itemsToClean，因为参数 $ItemsToClean
     # 是 [string] 类型，PS 变量不区分大小写，会导致类型约束冲突
     if ($ConfirmFile -ne '') {
-        # ConfirmFile 模式：用户已通过 confirm-cleanup.ps1 交互确认，跳过 Mode 筛选
-        $cleanupItems = @()
-        foreach ($item in $allItems) {
-            if ($item.risk -ne 'danger') {
-                $cleanupItems += $item
-            }
+        # ConfirmFile 模式：ConfirmFile 是唯一删除依据（用户已通过 confirm-cleanup.ps1 确认）。
+        # 安全关键（fail-closed）：文件缺失 / 无法解析 / 内容为空时必须立即中止。
+        # 否则 cleanupItems 会回退到"全部非 danger"集合，导致越界删除所有残留
+        # （历史 Critical 缺陷：调用方传入错误的相对路径 → Test-Path 失败 → 静默全清）。
+        if (-not (Test-Path $ConfirmFile)) {
+            Write-Error "ConfirmFile not found: '$ConfirmFile'. Aborting to prevent over-deletion. Pass an absolute path."
+            exit 1
         }
+        try {
+            $confirmedIds = Get-Content $ConfirmFile -Raw | ConvertFrom-Json
+        } catch {
+            Write-Error "Failed to parse ConfirmFile '$ConfirmFile': $_. Aborting."
+            exit 1
+        }
+        if (-not $confirmedIds) {
+            Write-Error "ConfirmFile '$ConfirmFile' contains no confirmed IDs. Aborting (nothing to clean)."
+            exit 1
+        }
+        # 以确认 ID 为权威集合，并保留 danger 双层拦截作为纵深防御
+        $cleanupItems = @($allItems | Where-Object { $confirmedIds -contains $_.id -and $_.risk -ne 'danger' })
+        Write-Output "Loaded $(@($confirmedIds).Count) confirmed IDs from $ConfirmFile, matched $($cleanupItems.Count) items"
     } else {
         switch ($Mode) {
             'A' { $cleanupItems = @($allItems | Where-Object { $_.risk -eq 'safe' }) }
@@ -216,19 +234,6 @@ function Main {
             'C' { $cleanupItems = @($allItems | Where-Object { $_.risk -ne 'danger' }) }
             'D' { Write-Output "Report-only mode. No cleanup performed."; return }
         }
-    }
-
-    # 如果指定了 ConfirmFile（来自 confirm-cleanup.ps1），则以此为筛选依据
-    if ($ConfirmFile -and (Test-Path $ConfirmFile)) {
-        try {
-            $confirmedIds = Get-Content $ConfirmFile -Raw | ConvertFrom-Json
-            $cleanupItems = @($cleanupItems | Where-Object { $confirmedIds -contains $_.id })
-            Write-Output "Loaded $($confirmedIds.Count) confirmed IDs from $ConfirmFile, matched $($cleanupItems.Count) items"
-        } catch {
-            Write-Warning "Failed to load ConfirmFile: $_"
-        }
-    } elseif ($ConfirmFile) {
-        Write-Warning "ConfirmFile not found: $ConfirmFile"
     }
 
     # 如果指定了具体 ID，则进一步过滤（B-m3 修复：try/catch）
@@ -292,7 +297,9 @@ function Main {
     foreach ($item in $eligibleItems) {
         try {
             # Clean files/dirs
-            if ($item.path) {
+            # path_entry 的 .path 是"指向不存在目录的 PATH 片段"，其清理方式是移除 PATH 条目
+            # （见下方 path_entry 分支），绝不能当作文件系统目录去删除，否则会误删同名真实目录并产生虚假日志。
+            if ($item.path -and $item.type -ne 'path_entry') {
                 Write-Output "$prefix   Deleting path: $($item.path)"
                 if (-not $DryRun) {
                     if (Test-Path $item.path) {
@@ -363,19 +370,40 @@ function Main {
     foreach ($item in $eligibleItems) {
         try {
             if ($item.key) {
-                Write-Output "$prefix   Deleting registry key: $($item.key)"
-                if (-not $DryRun) {
-                    $regKey = $item.key
-                    cmd /c "reg query `"$regKey`" 2>&1"
-                    if ($LASTEXITCODE -ne 0) {
-                        Write-Output "  → Registry key does not exist (already removed), skipping"
-                        $log.Add(@{ id=$item.id; action='registry_skip'; key=$item.key; success=$true; note='key not found' })
-                        continue
+                if ($item.type -eq 'startup' -or $item.value_name) {
+                    # 启动项残留：.key 是共享的 Run/RunOnce 父键，真正的残留只是其中一个 VALUE。
+                    # 若按整键 reg delete 会连带删除机器上所有程序的自启动项（灾难性 collateral damage），
+                    # 因此只能用 /v 精确删除该 value。
+                    if (-not $item.value_name) {
+                        throw "startup item missing value_name; refuse to delete shared Run key"
                     }
-                    reg delete "$regKey" /f 2>&1
-                    if ($LASTEXITCODE -ne 0) { throw "reg delete failed with exit code $LASTEXITCODE" }
+                    Write-Output "$prefix   Deleting startup value: $($item.key) /v $($item.value_name)"
+                    if (-not $DryRun) {
+                        cmd /c "reg query `"$($item.key)`" /v `"$($item.value_name)`" 2>&1" | Out-Null
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-Output "  → Startup value not found (already removed), skipping"
+                            $log.Add(@{ id=$item.id; action='registry_skip'; key=$item.key; value=$item.value_name; success=$true; note='value not found' })
+                            continue
+                        }
+                        reg delete "$($item.key)" /v "$($item.value_name)" /f 2>&1
+                        if ($LASTEXITCODE -ne 0) { throw "reg delete /v failed with exit code $LASTEXITCODE" }
+                    }
+                    $log.Add(@{ id=$item.id; action='startup_value_deleted'; key=$item.key; value=$item.value_name; success=$true })
+                } else {
+                    Write-Output "$prefix   Deleting registry key: $($item.key)"
+                    if (-not $DryRun) {
+                        $regKey = $item.key
+                        cmd /c "reg query `"$regKey`" 2>&1"
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-Output "  → Registry key does not exist (already removed), skipping"
+                            $log.Add(@{ id=$item.id; action='registry_skip'; key=$item.key; success=$true; note='key not found' })
+                            continue
+                        }
+                        reg delete "$regKey" /f 2>&1
+                        if ($LASTEXITCODE -ne 0) { throw "reg delete failed with exit code $LASTEXITCODE" }
+                    }
+                    $log.Add(@{ id=$item.id; action='registry_deleted'; key=$item.key; success=$true })
                 }
-                $log.Add(@{ id=$item.id; action='registry_deleted'; key=$item.key; success=$true })
             }
         } catch {
             $log.Add(@{ id=$item.id; action='cleanup_failed'; error=$_.Exception.Message; success=$false })

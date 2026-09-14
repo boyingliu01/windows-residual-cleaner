@@ -424,3 +424,62 @@ Describe 'clean-residuals.ps1 ConfirmFile integration' {
         Remove-Item $backupDir -ErrorAction SilentlyContinue
     }
 }
+
+Describe 'clean-residuals.ps1 destructive-safety regressions (DryRun)' {
+    BeforeAll {
+        $global:_wrcScript = "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
+        function global:New-WrcFixture {
+            param([string]$Name, [hashtable]$Categories, [string[]]$Ids)
+            $reportPath = "$PSScriptRoot\..\..\wrc-$Name-report.json"
+            $report = @{
+                scan_time = '2026-01-01T00:00:00'
+                summary   = @{ total_residuals=1; safe=0; caution=1; danger=0; estimated_space_recoverable_mb=0 }
+                filesystem_residuals = @()
+                registry_residuals   = @()
+                ghost_services       = @()
+                ghost_tasks          = @()
+                startup_residuals    = @()
+                shell_residuals      = @()
+                path_residuals       = @()
+                uninstalled_software = @()
+            }
+            foreach ($k in $Categories.Keys) { $report.$k = @($Categories[$k]) }
+            [System.IO.File]::WriteAllText($reportPath, ($report | ConvertTo-Json -Depth 4))
+            $confirmPath = "$PSScriptRoot\..\..\wrc-$Name-confirm.json"
+            [System.IO.File]::WriteAllText($confirmPath, ($Ids | ConvertTo-Json -Compress))
+            @{ report = $reportPath; confirm = $confirmPath }
+        }
+    }
+    AfterAll {
+        Remove-Item "$PSScriptRoot\..\..\wrc-*-report.json","$PSScriptRoot\..\..\wrc-*-confirm.json" -ErrorAction SilentlyContinue
+        Remove-Item function:global:New-WrcFixture -ErrorAction SilentlyContinue
+    }
+
+    It 'Deletes only the startup VALUE, never the shared Run key' {
+        $fx = New-WrcFixture -Name 'startup' -Ids @('str_001') -Categories @{
+            startup_residuals = @(@{ id='str_001'; type='startup'; key='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'; value_name='GhostApp'; value='C:\missing\x.exe'; risk='caution'; reason='test' })
+        }
+        . $global:_wrcScript
+        Mock Test-AdminPrivilege { return $true }
+        # 关闭白名单（指向不存在文件 → $script:whitelist 保持 null → 不遮蔽），
+        # 否则默认 whitelist.json 会命中共享 Run 键，item 被 SKIP，测不到值级删除分支。
+        $ReportPath = $fx.report; $ConfirmFile = $fx.confirm; $DryRun = $true
+        $WhitelistPath = "$PSScriptRoot\..\..\wrc-no-whitelist.json"
+        $output = (Main 2>&1) -join "`n"
+        $output | Should -Match 'Deleting startup value: .*\\Run /v GhostApp'
+        $output | Should -Not -Match 'Deleting registry key: HKLM'
+    }
+
+    It 'Removes a dead PATH entry without treating it as a filesystem delete' {
+        $fx = New-WrcFixture -Name 'pathentry' -Ids @('path_001') -Categories @{
+            path_residuals = @(@{ id='path_001'; type='path_entry'; path='C:\GhostBin'; risk='caution'; reason='test' })
+        }
+        . $global:_wrcScript
+        Mock Test-AdminPrivilege { return $true }
+        $ReportPath = $fx.report; $ConfirmFile = $fx.confirm; $DryRun = $true
+        $WhitelistPath = "$PSScriptRoot\..\..\wrc-no-whitelist.json"
+        $output = (Main 2>&1) -join "`n"
+        $output | Should -Match 'Removing dead PATH entry: C:\\GhostBin'
+        $output | Should -Not -Match 'Deleting path: C:\\GhostBin'
+    }
+}
