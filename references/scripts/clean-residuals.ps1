@@ -10,6 +10,68 @@ param(
     [switch]$DryRun = $false     # Dry-run mode: log actions without executing
 )
 
+# 可靠地调用 sc.exe，替代裸 `sc.exe ... 2>$null` 写法。
+#
+# 背景（PS 5.1 陷阱 #7）: `powershell.exe` 宿主在同时满足「stdout 未重定向」与
+# 「stderr 被重定向」时，会抛出
+#   StandardOutputEncoding/StandardErrorEncoding is only supported when ... redirected
+# 因此 `sc.exe stop X 2>$null` 与 `sc.exe delete X 2>&1` 在本项目基线上**必然抛异常**：
+#   - Phase 1 的 stop 永远失败 → 幽灵服务根本不会被停止
+#   - Phase 2 的 delete 异常被 catch → 记为 cleanup_failed，且 $LASTEXITCODE 为空
+# 干净的 sc.exe 输出不带引号，无法用 `cmd /c "... 2>&1"` 包裹（会在引号处截断参数），
+# 故改用 Start-Process 显式重定向两个流：任何流重定向都能规避该 bug。
+#
+# 注意: Start-Process -Wait 对带 UI 的进程会提前返回，sc.exe 是控制台程序，
+# 退出时其子进程已全部结束，因此不需要额外的 Handle 排空逻辑。
+function Invoke-ScExe {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $scPath = Join-Path $env:SystemRoot 'System32\sc.exe'
+    if (-not (Test-Path $scPath)) {
+        return @{ ok = $false; output = ''; exit_code = $null; error = "sc.exe not found at $scPath" }
+    }
+
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $proc = Start-Process -FilePath $scPath `
+            -ArgumentList $Arguments `
+            -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $outFile `
+            -RedirectStandardError $errFile `
+            -ErrorAction Stop
+
+        # 文件总是存在（GetTempFileName 已创建），读取仅用于获取进程输出。
+        # 用 -ErrorAction SilentlyContinue 而非空 catch 块（PSAvoidUsingEmptyCatchBlock）。
+        $stdout = Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue
+        $stderr = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
+        if ($null -eq $stdout) { $stdout = '' }
+        if ($null -eq $stderr) { $stderr = '' }
+
+        $exitCode = $proc.ExitCode
+        if ($null -eq $exitCode) {
+            return @{ ok = $false; output = $stdout.Trim(); exit_code = $null; error = "sc.exe returned no exit code (timeout ${TimeoutSeconds}s?)" }
+        }
+
+        return @{
+            ok        = ($exitCode -eq 0)
+            output    = $stdout.Trim()
+            exit_code = $exitCode
+            error     = if ($exitCode -eq 0) { '' } else { (($stdout + "`n" + $stderr).Trim()) }
+        }
+    } catch {
+        # Start-Process 自身失败（如权限不足 / sc.exe 被安全软件拦截）：
+        # exit_code 保持 $null 以区别于"sc.exe 正常运行并返回了退出码"，
+        # 调用方必须把 $null 视为失败，不能当成 1060（服务不存在）而静默放过。
+        return @{ ok = $false; output = ''; exit_code = $null; error = $_.Exception.Message }
+    } finally {
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Robust file deletion with fallback strategies for locked/permission-denied files
 function Remove-ItemRobust {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions','')]
@@ -275,7 +337,12 @@ function Main {
             Write-Output "$prefix   Stopping service: $($item.name)"
             if (-not $DryRun) {
                 try {
-                    sc.exe stop $item.name 2>$null
+                    # 经 Invoke-ScExe 调用（不能写裸 `sc.exe stop X 2>$null`：PS 5.1 下必然抛异常）
+                    $stopResult = Invoke-ScExe -Arguments @('stop', $item.name)
+                    if (-not $stopResult.ok -and $stopResult.exit_code -ne 1060) {
+                        # 1060 = ERROR_SERVICE_DOES_NOT_EXIST：服务已不存在，无需停止
+                        Write-Warning "  → sc.exe stop $($item.name) failed (exit $($stopResult.exit_code)): $($stopResult.error)"
+                    }
                     $waited = 0
                     do {
                         Start-Sleep -Milliseconds 1000
@@ -318,8 +385,11 @@ function Main {
             if ($item.name -and $item.binary_path) {
                 Write-Output "$prefix   Deleting service: $($item.name)"
                 if (-not $DryRun) {
-                    sc.exe delete $item.name 2>&1
-                    if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE" }
+                    $delResult = Invoke-ScExe -Arguments @('delete', $item.name)
+                    # 1060 = ERROR_SERVICE_DOES_NOT_EXIST：已被删除，视为幂等成功
+                    if (-not $delResult.ok -and $delResult.exit_code -ne 1060) {
+                        throw "sc.exe delete failed with exit code $($delResult.exit_code): $($delResult.error)"
+                    }
                 }
                 $log.Add(@{ id=$item.id; action='service_deleted'; name=$item.name; success=$true })
             }

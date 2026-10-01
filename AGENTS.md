@@ -10,7 +10,7 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 98 个测试，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 141 个测试，目标 0 失败）
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -133,6 +133,84 @@ $idx = @($doc)
 > **不要改回一行式**: PowerShell 7 起 `ConvertFrom-Json` 已改为逐元素展开，同样的一行式代码在 `pwsh` 下是正确的，容易让人误判此处冗余。本项目运行时基线是 PS 5.1。
 
 **影响**: `main-flow.Tests.ps1` 有 8 个集成测试因此失败（索引条数恒为 1、风险分级断言拿到整表、`-Contain` 匹配不到 id）。产品脚本不受波及，因为它们都先赋值再访问属性。
+
+---
+
+### 7. 幽灵服务清理：裸 `sc.exe` + `$LASTEXITCODE` 判定把「幂等成功」当失败
+
+> **2026-10-01 更正说明**：本条最初（提交 `a386132`）表述为「裸 `sc.exe ... 2>$null`
+> 在 PS 5.1 下**必然**抛 `StandardOutputEncoding` 异常」。后续复核**无法稳定复现**该
+> 异常为无条件行为，因此下面区分「可复现的主缺陷」与「环境相关的次要风险」。
+> 请以本节为准。
+
+#### 7a. 主缺陷（已复现，真实存在）
+
+旧代码（`b08162b`）：
+
+```powershell
+sc.exe delete $item.name 2>&1
+if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE" }
+```
+
+问题在于 **`$LASTEXITCODE` 的语义**：删除一个**已经不存在**的服务，`sc.exe` 返回
+`1060`（`ERROR_SERVICE_DOES_NOT_EXIST`）。这是**幂等成功**，但 `1060 -ne 0` 成立，
+于是抛异常 → 被外层 `catch` 吞成 `cleanup_failed`。
+
+实测（PS 5.1）：
+
+```
+sc.exe delete <不存在的服务>  ->  正常返回，$LASTEXITCODE = 1060
+1060 -ne 0                    ->  throw  ->  日志记 cleanup_failed
+```
+
+**影响**：重复清理、或服务已被 SCM 移除时，清理恒记失败。**已由 `Invoke-ScExe` 的
+`exit_code -eq 1060` 幂等判定修复**（见 `clean-residuals.ps1`）。
+
+#### 7b. 环境相关风险：部分流重定向可能抛异常
+
+若代码设置了 `StandardOutputEncoding` 而 stdout **未**重定向，`.NET` 会抛：
+
+```
+StandardOutputEncoding is only supported when standard output is redirected.
+```
+
+该错误**真实存在且可复现**，但触发条件是「显式设置 `StandardOutputEncoding` +
+stdout 未重定向」，**并非**裸 `2>$null` / `2>&1` 的无条件行为：
+
+```powershell
+# 实测：在正常控制台宿主下，下列写法并不会抛该异常
+sc.exe query wuauserv 2>$null     # OK，$LASTEXITCODE 正常
+sc.exe query wuauserv 2>&1        # OK
+
+# 但下面这种会抛（stdout 未重定向却设了编码）
+$psi.RedirectStandardError = $true
+$psi.RedirectStandardOutput = $false
+$psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8   # -> THROW
+```
+
+宿主不同（stdout 是否为真实控制台句柄、是否被 UI 管道接管）会影响是否命中。
+`ui/server/index.cjs` 以管道方式拉起 `powershell.exe`，属于高风险场景。
+
+#### 统一修复方式
+
+```powershell
+# ✅ 用 Start-Process 同时重定向「两个」流，拿到真实退出码，并显式处理 1060
+$outFile = [System.IO.Path]::GetTempFileName()
+$errFile = [System.IO.Path]::GetTempFileName()
+$proc = Start-Process -FilePath "$env:SystemRoot\System32\sc.exe" `
+    -ArgumentList @('delete', $name) -NoNewWindow -Wait -PassThru `
+    -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+$exitCode = $proc.ExitCode
+if ($exitCode -ne 0 -and $exitCode -ne 1060) { throw "sc.exe delete failed ($exitCode)" }
+```
+
+**为何不用 `cmd /c "... 2>&1"` 包裹**: `sc.exe` 的成功输出（`SERVICE_NAME: ...`）不带引号，一旦服务名或路径含空格就会在引号处截断参数。
+
+> **测试设计教训**: 断言「日志里打印了某个字符串」不能证明副作用真的发生。涉及系统交互的分支必须断言**可观测副作用**（调用参数、返回结构、退出码语义），或先封装成可 mock 的接缝再测。旧测试只断言打印了 `Deleting service: X` 并 Mock 掉 `Get-CimInstance`，因此 100% 漏检。
+
+> **根因复核教训**: 报告根因前必须能**稳定复现**，并区分「无条件必然」与「环境相关」。
+> 本次一开始把一条环境相关的风险写成了「必然抛异常」，后来在自己环境里复现不出来，
+> 只能回头更正提交信息与本文档。写下「必然/100%」时，请附上可复现的命令。
 
 ---
 
@@ -274,6 +352,16 @@ It 'Works against real registry data' {
 - 系统 PATH 损坏（如 `C:\Program Fi;es\Memurai\`）会被如实报告，但不会被自动修复
 - 计划任务中的 bare exe 名（如 `sc.exe`）需要 PATH 解析，当前策略是跳过而非解析
 - `confirm-cleanup.ps1` 在 OpenCode 内置终端中无法交互（`Read-Host` 闪退），必须在独立 Windows Terminal 中运行
+- **`confirm-cleanup.ps1` 的 TUI 命令循环无法被单测覆盖**：它由 `Read-Host` 驱动，且 `Main` 内共有 13 处 `exit`，
+  在 Pester 进程内调用会终止宿主（实测套件从 109 个用例静默降到 66 个）。6 个纯展示函数已覆盖；
+  若要提升该文件覆盖率，应把「命令分发」抽成不依赖 `Read-Host`/`exit` 的纯函数，而非 Mock 控制台。
+- **任何 `Main` 内含 `exit` 的脚本都不能在 Pester 进程内直接调用**。这既影响测试写法，也影响覆盖率统计：
+  只有「dot-source + 进程内调用 `Main`」才会被插桩；用 `& script.ps1` 会起子进程，执行一行都不计入覆盖率
+  （`main-flow.Tests.ps1` 曾因此长期存在「测试通过但覆盖率不动」的假象）。
+- `setup.ps1` 的 `Main` 末尾为 `exit`，因此**结构性不可插桩**，已在
+  `.xp-gate-powershell-coverage-ignore` 中排除；它仍有子进程端到端测试覆盖。
+- `references/scripts` 行覆盖率约 **70%**，低于 pre-commit 门禁的 80%。缺口是结构性的（见上两条），
+  不宜用 Mock 控制台/管理员路径的方式强拉；提升方向见 CHANGELOG 1.4.1.0 的「覆盖率现状」一节。
 
 ---
 
@@ -351,3 +439,14 @@ if ($MyInvocation.InvocationName -ne '.') {
   - `scan-filesystem-residuals.ps1` 补齐 Main 包装，10 个脚本架构完全统一
   - `rollback.ps1` 补只读权限警告，权限分级覆盖全部脚本
   - 集成测试改为「fixture 驱动 + 真实只读扫描」，98 个测试 0 失败
+- 2026-09-30: v1.4.1.0 接管审计
+  - 陷阱清单新增第 7 条：幽灵服务清理的 `$LASTEXITCODE` 幂等判定缺陷（+ 部分流重定向的环境相关风险）
+  - 修复 `clean-residuals.ps1` 幽灵服务清理（裸 `sc.exe ... 2>&1` + `-ne 0` → `Invoke-ScExe` + 1060 幂等判定）
+  - 新增 `service cleanup (sc.exe regression)` 测试组，断言可观测副作用而非打印字符串
+  - 测试数 98 → 141，PSScriptAnalyzer 维持 0 error / 0 warning
+  - 修正 `main-flow.Tests.ps1` 的覆盖率盲区（`&` 子进程执行不计入插桩 → dot-source + 进程内 `Main`）
+  - 记录 `references/scripts` 行覆盖率约 70% 及其结构性原因（见「已知限制」）
+  - 真实环境演练：非管理员范围（文件/注册表/计划任务）3/3 通过；管理员范围
+    （服务删除 + HKLM）经用户实测 2/2 通过（`cleanup-log.json`: `service_deleted` + `registry_deleted`）
+  - **更正**：本条最初把 7b 的 `StandardOutputEncoding` 风险写成「必然抛异常」，
+    复核后无法稳定复现，已拆分为 7a（已复现主缺陷）与 7b（环境相关风险）

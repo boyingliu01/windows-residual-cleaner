@@ -1,9 +1,19 @@
 # Pester Integration Tests - Main flow coverage for all reference scripts (v2)
 # 目标：每个脚本至少一次真实 Main 执行（fixture 数据驱动可控分支 + 真实只读系统扫描），
 # 使 references/scripts 覆盖率 ≥ 80%（pre-commit 门禁）
+#
+# 覆盖率关键（此前这里是"测试通过但覆盖率不动"的根因）：
+#   用 `& script.ps1` 会在**子作用域/新进程**里执行，Pester 的代码覆盖率插桩
+#   只看当前进程，因此那些执行一行都不计入覆盖率。
+#   正确做法：dot-source 脚本（只加载函数，执行守卫拦住 Main），
+#   再在当前进程内直接调用 Main —— 这样每一行才被插桩统计。
+#   前提是被调用脚本的 `exit` 只出现在执行守卫里（本项目 10 个脚本均已如此，
+#   见 AGENTS.md「函数/执行分离模式」）。若 Main 内部含 exit，则**不要**这样做，
+#   它会终止 Pester 宿主（表现为后续用例静默不执行）。
 # 模式约定：
-#   - 只读脚本（build-installed-index / scan-* / rollback / confirm-cleanup）：直接 & 执行
-#   - 写操作脚本（clean-residuals / create-restore-point / run-all）：dot-source + Mock 权限检查后调用 Main
+#   - 只读脚本（build-installed-index / scan-*）：dot-source + 进程内 Main
+#   - 写操作脚本（clean-residuals / create-restore-point / run-all）：
+#     dot-source + Mock 权限检查后进程内调用 Main
 
 # 屏蔽外部包管理器（winget/scoop/choco）真实调用：CI/沙箱下慢或不稳定。
 # build-installed-index.ps1 会 Get-Command + 调用它们；同名函数遮蔽外部 exe，
@@ -20,12 +30,14 @@ function global:scoop { param([Parameter(ValueFromRemainingArguments = $true)]$r
 function global:choco { param([Parameter(ValueFromRemainingArguments = $true)]$rest) }
 
 # ---------------------------------------------------------------------------
-# build-installed-index.ps1: 真实注册表扫描
+# build-installed-index.ps1: 真实注册表扫描（进程内 Main → 覆盖率可见）
 # ---------------------------------------------------------------------------
 Describe 'Main-flow: build-installed-index.ps1 real scan' {
     It 'Builds installed software index from real registry' {
+        . "$PSScriptRoot\..\..\references\scripts\build-installed-index.ps1"
         $out = "$TestDrive\installed-software-index.json"
-        & "$PSScriptRoot\..\..\references\scripts\build-installed-index.ps1" -OutputPath $out 2>&1 | Out-Null
+        $OutputPath = $out
+        Main 2>&1 | Out-Null
         Test-Path $out | Should -Be $true
         # PS 5.1: ConvertFrom-Json 把 JSON 数组作为单个 Object[] 输出，
         # 必须先赋值给变量再 @()，否则 @(cmd | ConvertFrom-Json) 恒为 Count=1
@@ -42,12 +54,17 @@ Describe 'Main-flow: build-installed-index.ps1 real scan' {
 Describe 'Main-flow: scan-uninstalled.ps1 real scan' {
     BeforeAll {
         # 生成真实索引作为输入（独立于仓库中的历史产物）
-        & "$PSScriptRoot\..\..\references\scripts\build-installed-index.ps1" -OutputPath "$TestDrive\idx.json" 2>&1 | Out-Null
+        . "$PSScriptRoot\..\..\references\scripts\build-installed-index.ps1"
+        $OutputPath = "$TestDrive\idx.json"
+        Main 2>&1 | Out-Null
     }
 
     It 'Scans real registry and filesystem against real index' {
+        . "$PSScriptRoot\..\..\references\scripts\scan-uninstalled.ps1"
         $out = "$TestDrive\uninstalled-list.json"
-        & "$PSScriptRoot\..\..\references\scripts\scan-uninstalled.ps1" -IndexPath "$TestDrive\idx.json" -OutputPath $out 2>&1 | Out-Null
+        $IndexPath = "$TestDrive\idx.json"
+        $OutputPath = $out
+        Main 2>&1 | Out-Null
         Test-Path $out | Should -Be $true
         $result = Get-Content $out -Raw | ConvertFrom-Json
         # 真实扫描结果可能为空数组，但结构必须完整
