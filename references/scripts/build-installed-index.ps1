@@ -5,7 +5,173 @@ param(
     [string]$OutputPath = "$PSScriptRoot\..\..\installed-software-index.json"
 )
 
+# dot-source 时把顶层 param 的默认值固化下来，供 Main 的 -OutputPath 参数做默认值。
+# 直接用 `$OutputPath` 不行：Main 的参数与顶层参数同名会互相干扰（PS 5.1 变量名大小写不敏感）。
+$script:DefaultOutputPath = $OutputPath
+
+# =========================================================
+# 包管理器输出解析器（纯函数，便于单测）
+#
+# 这三个解析器原本内联在 Main 里，且整体被 `Get-Command winget/scoop/choco`
+# 守卫包住 —— 机器上没装对应工具时，解析逻辑一行都不会被执行，
+# 也就永远无法被单测覆盖。抽成顶层纯函数后，可以用真实输出样本直接测。
+# =========================================================
+
+function ConvertFrom-WingetJson {
+    <#
+    .SYNOPSIS
+        解析 `winget list --output json` 的输出。
+    .DESCRIPTION
+        winget 的 JSON 是顶层数组；PS 5.1 不会被 @() 展开（见 AGENTS.md 陷阱 #6），
+        所以此处直接 foreach 可枚举对象。无 Name 的包被跳过。
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Json)
+
+    $result = @()
+    if ([string]::IsNullOrWhiteSpace($Json)) { return $result }
+    $data = $Json | ConvertFrom-Json -ErrorAction Stop
+    foreach ($pkg in $data) {
+        if ($pkg.Name) {
+            $result += [PSCustomObject]@{
+                name             = $pkg.Name
+                version          = $pkg.Version
+                publisher        = $pkg.Publisher
+                install_location = ''
+                uninstall_string = ''
+                source           = 'winget'
+            }
+        }
+    }
+    return $result
+}
+
+function ConvertFrom-WingetText {
+    <#
+    .SYNOPSIS
+        解析 `winget list` 的文本表格（JSON 不可用时的回退路径）。
+    .DESCRIPTION
+        调用方已用 Select-Object -Skip 3 跳过标题栏，此处按 2+ 空格分列。
+    #>
+    param([AllowEmptyCollection()][string[]]$Lines = @())
+
+    $result = @()
+    foreach ($line in $Lines) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $parts = $line -split '\s{2,}'
+        if ($parts.Count -ge 1 -and $parts[0] -ne '') {
+            $result += [PSCustomObject]@{
+                name             = $parts[0].Trim()
+                version          = if ($parts.Count -ge 2) { $parts[1].Trim() } else { '' }
+                publisher        = ''
+                install_location = ''
+                uninstall_string = ''
+                source           = 'winget'
+            }
+        }
+    }
+    return $result
+}
+
+function ConvertFrom-ScoopJson {
+    <#
+    .SYNOPSIS
+        解析 `scoop list --json` 的输出。
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Json)
+
+    $result = @()
+    if ([string]::IsNullOrWhiteSpace($Json)) { return $result }
+    $data = $Json | ConvertFrom-Json -ErrorAction Stop
+    foreach ($app in $data) {
+        $result += [PSCustomObject]@{
+            name             = $app.Name
+            version          = $app.Version
+            publisher        = ''
+            install_location = ''
+            uninstall_string = ''
+            source           = 'scoop'
+        }
+    }
+    return $result
+}
+
+function ConvertFrom-ScoopText {
+    <#
+    .SYNOPSIS
+        解析 `scoop list` 的文本表格（JSON 不可用时的回退路径）。
+    .DESCRIPTION
+        调用方已过滤表头（'Installed' 与 '----' 开头行），此处按空白分列。
+    #>
+    param([AllowEmptyCollection()][string[]]$Lines = @())
+
+    $result = @()
+    foreach ($line in $Lines) {
+        $parts = $line.Trim() -split '\s+'
+        if ($parts.Count -ge 2 -and $parts[0] -ne '') {
+            $result += [PSCustomObject]@{
+                name             = $parts[0]
+                version          = $parts[1]
+                publisher        = ''
+                install_location = ''
+                uninstall_string = ''
+                source           = 'scoop'
+            }
+        }
+    }
+    return $result
+}
+
+function ConvertFrom-ChocoText {
+    <#
+    .SYNOPSIS
+        解析 `choco list --local-only --limit-output` 的输出。
+    .DESCRIPTION
+        输出格式为每行 `name|version`。缺少分隔符或空行会被跳过。
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    $result = @()
+    if ([string]::IsNullOrEmpty($Text)) { return $result }
+    foreach ($line in ($Text -split "`n")) {
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrEmpty($trimmed)) { continue }
+        $parts = $trimmed -split '\|'
+        if ($parts.Count -ge 2) {
+            $result += [PSCustomObject]@{
+                name             = $parts[0]
+                version          = $parts[1]
+                publisher        = ''
+                install_location = ''
+                uninstall_string = ''
+                source           = 'chocolatey'
+            }
+        }
+    }
+    return $result
+}
+
 function Main {
+    # 退出码通过 [ref] 回传（ADR-001）：Main 内不得 exit，也不得 `return <数字>`
+    #
+    # 输出路径不声明为 `$OutputPath` 参数：在 param() 里声明同名变量会被
+    # PowerShell **无条件**创建（值为 ''），从而遮蔽调用方作用域的同名变量。
+    # 实测：function F { param([string]$P); "$P" }; $P='CALLER'; F  ->  ''（而非 CALLER）。
+    # 而既有测试与 main-flow 的写法都是「先在调用方作用域设 $OutputPath，再裸调 Main」。
+    # 故此处保留「读作用域变量」的语义，仅当显式传入 -OutputPathOverride 时覆盖。
+    param(
+        [ref]$ExitCode,
+        [string]$OutputPathOverride
+    )
+    $setRc = { param([int]$v) if ($null -ne $ExitCode) { $ExitCode.Value = $v } }
+
+    # 显式传入优先；否则沿用调用方作用域的 $OutputPath（动态作用域查找）；
+    # 再否则回落到脚本顶层 param 的默认值。
+    if (-not [string]::IsNullOrWhiteSpace($OutputPathOverride)) {
+        $OutputPath = $OutputPathOverride
+    } elseif ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        $OutputPath = $script:DefaultOutputPath
+    }
+
     # 头部配置
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -86,39 +252,14 @@ function Main {
         try {
             $wingetJson = winget list --source winget --output json 2>$null | Out-String
             if ($wingetJson -and $wingetJson.Trim() -ne '') {
-                $wingetData = $wingetJson | ConvertFrom-Json -ErrorAction Stop
-                foreach ($pkg in $wingetData) {
-                    if ($pkg.Name) {
-                        $entries.Add([PSCustomObject]@{
-                            name              = $pkg.Name
-                            version           = $pkg.Version
-                            publisher         = $pkg.Publisher
-                            install_location  = ''
-                            uninstall_string  = ''
-                            source            = 'winget'
-                        })
-                    }
-                }
+                foreach ($e in @(ConvertFrom-WingetJson -Json $wingetJson)) { $entries.Add($e) }
             }
         } catch {
             # Fallback: 文本解析
             Write-Warning "winget JSON parse failed, falling back to text: $_"
             try {
                 $wingetText = winget list --source winget 2>$null | Select-Object -Skip 3
-                foreach ($line in $wingetText) {
-                    if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                    $parts = $line -split '\s{2,}'
-                    if ($parts.Count -ge 1 -and $parts[0] -ne '') {
-                        $entries.Add([PSCustomObject]@{
-                            name              = $parts[0].Trim()
-                            version           = if ($parts.Count -ge 2) { $parts[1].Trim() } else { '' }
-                            publisher         = ''
-                            install_location  = ''
-                            uninstall_string  = ''
-                            source            = 'winget'
-                        })
-                    }
-                }
+                foreach ($e in @(ConvertFrom-WingetText -Lines @($wingetText))) { $entries.Add($e) }
             } catch {
                 Write-Warning "winget text parse failed: $_"
             }
@@ -136,36 +277,14 @@ function Main {
         try {
             $scoopJson = scoop list --json 2>$null | Out-String
             if ($scoopJson -and $scoopJson.Trim() -ne '') {
-                $scoopData = $scoopJson | ConvertFrom-Json -ErrorAction Stop
-                foreach ($app in $scoopData) {
-                    $entries.Add([PSCustomObject]@{
-                        name              = $app.Name
-                        version           = $app.Version
-                        publisher         = ''
-                        install_location  = ''
-                        uninstall_string  = ''
-                        source            = 'scoop'
-                    })
-                }
+                foreach ($e in @(ConvertFrom-ScoopJson -Json $scoopJson)) { $entries.Add($e) }
             }
         } catch {
             # Fallback: 文本解析（跳过表头和分隔线）
             Write-Warning "scoop JSON parse failed, falling back to text: $_"
             try {
                 $scoopText = scoop list 2>$null | Where-Object { $_ -notmatch '^(Installed|----|$)' }
-                foreach ($line in $scoopText) {
-                    $parts = $line.Trim() -split '\s+'
-                    if ($parts.Count -ge 2 -and $parts[0] -ne '') {
-                        $entries.Add([PSCustomObject]@{
-                            name              = $parts[0]
-                            version           = $parts[1]
-                            publisher         = ''
-                            install_location  = ''
-                            uninstall_string  = ''
-                            source            = 'scoop'
-                        })
-                    }
-                }
+                foreach ($e in @(ConvertFrom-ScoopText -Lines @($scoopText))) { $entries.Add($e) }
             } catch {
                 Write-Warning "scoop text parse failed: $_"
             }
@@ -183,21 +302,7 @@ function Main {
         try {
             $chocoOutput = choco list --local-only --limit-output 2>$null
             if ($chocoOutput) {
-                foreach ($line in ($chocoOutput -split "`n")) {
-                    $trimmed = $line.Trim()
-                    if ([string]::IsNullOrEmpty($trimmed)) { continue }
-                    $parts = $trimmed -split '\|'
-                    if ($parts.Count -ge 2) {
-                        $entries.Add([PSCustomObject]@{
-                            name              = $parts[0]
-                            version           = $parts[1]
-                            publisher         = ''
-                            install_location  = ''
-                            uninstall_string  = ''
-                            source            = 'chocolatey'
-                        })
-                    }
-                }
+                foreach ($e in @(ConvertFrom-ChocoText -Text ($chocoOutput -join "`n"))) { $entries.Add($e) }
             }
         } catch {
             Write-Warning "chocolatey scan failed: $_"
@@ -293,11 +398,13 @@ function Main {
     )
 
     Write-Output "Installed software index: $($unique.Count) entries → $resolvedOutputPath"
+    & $setRc 0
 }
 
 # Execution guard — only runs when script is directly executed, not when dot-sourced
 # $MyInvocation.InvocationName is '.' when dot-sourced, empty when run via -File
 if ($MyInvocation.InvocationName -ne '.') {
-    Main
-    exit 0
+    $exitCode = 0
+    Main -ExitCode ([ref]$exitCode)
+    exit $exitCode
 }

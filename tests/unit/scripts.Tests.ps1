@@ -140,6 +140,85 @@ Describe 'Set-Id (generate-report.ps1)' {
     }
 }
 
+Describe 'generate-report.ps1 Main input validation' {
+    # Main 读的是**作用域内**的 $DataDir/$OutputPath（不是参数），
+    # 这与既有 pipeline.Tests.ps1 的 `-DataDir` 传参调用是两条路径。
+    # 这里覆盖「必需输入缺失 → 退出码 3」的分支（原本 100% 未覆盖）。
+    BeforeEach {
+        . "$PSScriptRoot\..\..\references\scripts\generate-report.ps1" *>$null
+        $script:emptyDir = Join-Path $env:TEMP ('wrc-gr-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        New-Item -ItemType Directory -Force -Path $script:emptyDir | Out-Null
+    }
+    AfterEach {
+        Remove-Item $script:emptyDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'returns 3 when all three input files are missing' {
+        $DataDir = $script:emptyDir
+        $rc = 0
+        Main -ExitCode ([ref]$rc) *>&1 | Out-Null
+        $rc | Should -Be 3
+    }
+
+    It 'returns 3 and names each missing input file' {
+        $DataDir = $script:emptyDir
+        $rc = 0
+        $out = (Main -ExitCode ([ref]$rc) *>&1) -join "`n"
+        $rc | Should -Be 3
+        $out | Should -Match 'uninstalled-list\.json'
+        $out | Should -Match 'fs-residuals\.json'
+        $out | Should -Match 'other-residuals\.json'
+    }
+
+    It 'returns 3 when only one of the three inputs is missing' {
+        $DataDir = $script:emptyDir
+        '[]' | Set-Content (Join-Path $script:emptyDir 'uninstalled-list.json') -Encoding UTF8
+        '[]' | Set-Content (Join-Path $script:emptyDir 'fs-residuals.json') -Encoding UTF8
+        # 故意不建 other-residuals.json
+        $rc = 0
+        $out = (Main -ExitCode ([ref]$rc) *>&1) -join "`n"
+        $rc | Should -Be 3
+        $out | Should -Match 'other-residuals\.json'
+        $out | Should -Not -Match 'uninstalled-list\.json,'
+    }
+
+    It 'does not kill the host: a second in-process call still returns a code' {
+        # ADR-001 回归：Main 内不得 exit。若 exit 了，第二个断言不会被执行。
+        $DataDir = $script:emptyDir
+        $rc = 0
+        Main -ExitCode ([ref]$rc) *>&1 | Out-Null
+        $rc | Should -Be 3
+        $again = 0
+        Main -ExitCode ([ref]$again) *>&1 | Out-Null
+        $again | Should -Be 3
+    }
+
+    It 'emits an empty candidate_directories array when the scan output omits it' {
+        # 覆盖 generate-report.ps1 的 `else { @() }` 分支：
+        # 当 uninstalled-list.json 没有 candidate_directories 字段时，
+        # 报告里该字段必须是空数组而不是 $null（下游 confirm/clean 依赖它是数组）。
+        $DataDir = $script:emptyDir
+        $OutputPath = Join-Path $script:emptyDir 'final-report.json'
+        # uninstalled-list.json 故意不带 candidate_directories
+        '{"uninstalled_software":[]}' |
+            Set-Content (Join-Path $script:emptyDir 'uninstalled-list.json') -Encoding UTF8
+        '[]' | Set-Content (Join-Path $script:emptyDir 'fs-residuals.json') -Encoding UTF8
+        '{}' | Set-Content (Join-Path $script:emptyDir 'other-residuals.json') -Encoding UTF8
+
+        $rc = 0
+        Main -ExitCode ([ref]$rc) *>&1 | Out-Null
+        $rc | Should -Be 0
+        Test-Path $OutputPath | Should -Be $true
+
+        $doc = Get-Content $OutputPath -Raw | ConvertFrom-Json
+        $doc.PSObject.Properties.Name | Should -Contain 'candidate_directories'
+        # 关键不变式：字段存在、且 @() 规整后元素数为 0
+        # （JSON 里是 []；不能是缺字段或 null，否则下游 confirm/clean 遍历会出错）
+        @($doc.candidate_directories).Count | Should -Be 0
+        (Get-Content $OutputPath -Raw) | Should -Match '"candidate_directories"\s*:\s*\[\s*\]'
+    }
+}
+
 Describe 'Get-EffectiveFileCount (scan-filesystem-residuals.ps1)' {
     BeforeAll {
         . "$PSScriptRoot\..\..\references\scripts\scan-filesystem-residuals.ps1" *>$null
@@ -205,6 +284,61 @@ Describe 'Test-AllSubdirsEmpty (scan-filesystem-residuals.ps1)' {
         $result = Test-AllSubdirsEmpty -path $d
         $result | Should -Be $false
         Remove-Item $d -Recurse -Force
+    }
+
+    It 'Returns true (fail-safe) when the path cannot be enumerated' {
+        # catch 分支：不可读路径必须保守返回 $true（视为「无可清理内容」，
+        # 宁可不清理也不要误删）。用一个不存在的路径触发。
+        $result = Test-AllSubdirsEmpty -path "$env:TEMP\nope-$([guid]::NewGuid().ToString('N'))"
+        $result | Should -Be $true
+    }
+}
+
+Describe 'Get-DirectorySizeMB (scan-filesystem-residuals.ps1)' {
+    BeforeEach {
+        . "$PSScriptRoot\..\..\references\scripts\scan-filesystem-residuals.ps1" *>$null
+        $script:sizeDir = Join-Path $env:TEMP ('wrc-size-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        New-Item -ItemType Directory -Force -Path $script:sizeDir | Out-Null
+    }
+    AfterEach {
+        Remove-Item $script:sizeDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'returns 0 for an empty directory' {
+        Get-DirectorySizeMB -path $script:sizeDir | Should -Be 0
+    }
+
+    It 'sums files recursively, including nested subdirectories' {
+        # 1 MB 的文件（用 SetLength 避免真的写 1MB 数据）
+        $f1 = Join-Path $script:sizeDir 'a.bin'
+        [IO.File]::WriteAllBytes($f1, (New-Object byte[] 1048576))
+        New-Item -ItemType Directory -Force -Path (Join-Path $script:sizeDir 'nested') | Out-Null
+        $f2 = Join-Path $script:sizeDir 'nested\b.bin'
+        [IO.File]::WriteAllBytes($f2, (New-Object byte[] 1048576))
+        # 递归统计：两个 1MB 文件 → 约 2 MB
+        Get-DirectorySizeMB -path $script:sizeDir | Should -Be 2
+    }
+
+    It 'returns a rounded value with 2 decimals' {
+        [IO.File]::WriteAllBytes((Join-Path $script:sizeDir 'half.bin'), (New-Object byte[] 524288))
+        Get-DirectorySizeMB -path $script:sizeDir | Should -Be 0.5
+    }
+
+    It 'returns $null when the path does not exist (catch branch)' {
+        # catch 分支返回的是 & $setRc 0 的输出；这里只断言不抛异常。
+        { Get-DirectorySizeMB -path "$env:TEMP\nope-$([guid]::NewGuid().ToString('N'))" } |
+            Should -Not -Throw
+    }
+}
+
+Describe 'Get-EffectiveFileCount (scan-filesystem-residuals.ps1) error branch' {
+    BeforeAll {
+        . "$PSScriptRoot\..\..\references\scripts\scan-filesystem-residuals.ps1" *>$null
+    }
+
+    It 'does not throw for a non-existent path (catch branch)' {
+        { Get-EffectiveFileCount -path "$env:TEMP\nope-$([guid]::NewGuid().ToString('N'))" -excluded @() } |
+            Should -Not -Throw
     }
 }
 
@@ -873,6 +1007,19 @@ Describe 'clean-residuals.ps1 destructive-safety regressions (DryRun)' {
 Describe 'clean-residuals.ps1 service cleanup (sc.exe regression)' {
     BeforeAll {
         $global:_svcScript = "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
+
+        # 密闭性：非 DryRun 清理会走「还原点/备份门」，需要存在 backup-* 目录。
+        # backup-* 是 gitignored，在新克隆 / CI / worktree 中必然缺失——此前这些
+        # 测试是靠主仓里遗留的 backup-* 才「碰巧通过」；缺了它 Main 会提前中止，
+        # scCalls 恒为 0。这里自建自清 fixture，使测试不依赖外部状态。
+        $global:_svcBackupDir = "$PSScriptRoot\..\..\backup-svcregress"
+        if (-not (Test-Path $global:_svcBackupDir)) {
+            New-Item -Path $global:_svcBackupDir -ItemType Directory -Force | Out-Null
+        }
+    }
+
+    AfterAll {
+        Remove-Item $global:_svcBackupDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     Context 'Invoke-ScExe' {

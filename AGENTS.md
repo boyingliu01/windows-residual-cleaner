@@ -10,7 +10,7 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 141 个测试，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 287 个测试，目标 0 失败）
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -214,6 +214,52 @@ if ($exitCode -ne 0 -and $exitCode -ne 1060) { throw "sc.exe delete failed ($exi
 
 ---
 
+### 8. dot-source 会把顶层 `param()` 的默认值绑进调用方作用域（覆盖同名变量）
+
+**两个独立但常一起出现的坑**，都会让测试静默跑错路径：
+
+#### 8a. dot-source 覆盖调用方同名变量
+
+脚本顶层 `param()` 一旦被 dot-source，它声明的**所有**参数名都会在调用方作用域被赋值
+（未传参时为默认值）。因此先设 `$IndexPath` 再 dot-source 另一个同名参数脚本，
+刚设好的值会被**冲掉**：
+
+```powershell
+# ❌ 错误: dot-source 后 $IndexPath 变成脚本默认值
+$IndexPath = 'C:\my\index.json'
+. other-script.ps1        # 该脚本顶层也是 param([string]$IndexPath = ...)
+Main                      # 内部读到的是默认值，不是 C:\my\index.json
+```
+
+实测输出（PS 5.1）：
+
+```
+before dot-source: IndexPath = C:\Users\...\Temp\wrc-dbg2-idx.json
+after  dot-source: IndexPath = ...\references\scripts\..\..\installed-software-index.json
+```
+
+**规避**：不要跨脚本复用同名变量名；或在 dot-source **之后**再赋值；或全程用显式实参。
+
+#### 8b. 函数 `param()` 无条件遮蔽调用方变量
+
+在函数里声明一个与调用方变量同名的参数，PowerShell 会**无条件**在当前作用域创建它
+（未传值时为空串），**不会**沿作用域链找到调用方的值：
+
+```powershell
+function F { param([string]$P); "P='$P'" }
+function G { "P='$P'" }        # 无 param，走动态作用域查找到调用方的 $P
+$P = 'CALLER'
+G    # -> P='CALLER'
+F    # -> P=''      ← 不是 CALLER
+```
+
+**影响与规避**：`build-installed-index.ps1` / `scan-uninstalled.ps1` / `rollback.ps1` 的既有
+调用契约是「在作用域内设 `$OutputPath` 等变量，再调 `Main`」。若把 `$OutputPath` 加进
+`Main` 的 `param()`，这些调用**全部静默写去默认路径**（实测一次踩掉 6 个用例）。
+现在的写法是：`Main` **不**声明这些名字，改用 `-XxxOverride` 参数显式覆盖，其余情况读作用域变量。
+
+---
+
 ## 多条件检测逻辑设计原则
 
 ### 核心规则: 权威信号必须 gate 辅助信号
@@ -352,16 +398,50 @@ It 'Works against real registry data' {
 - 系统 PATH 损坏（如 `C:\Program Fi;es\Memurai\`）会被如实报告，但不会被自动修复
 - 计划任务中的 bare exe 名（如 `sc.exe`）需要 PATH 解析，当前策略是跳过而非解析
 - `confirm-cleanup.ps1` 在 OpenCode 内置终端中无法交互（`Read-Host` 闪退），必须在独立 Windows Terminal 中运行
-- **`confirm-cleanup.ps1` 的 TUI 命令循环无法被单测覆盖**：它由 `Read-Host` 驱动，且 `Main` 内共有 13 处 `exit`，
-  在 Pester 进程内调用会终止宿主（实测套件从 109 个用例静默降到 66 个）。6 个纯展示函数已覆盖；
-  若要提升该文件覆盖率，应把「命令分发」抽成不依赖 `Read-Host`/`exit` 的纯函数，而非 Mock 控制台。
-- **任何 `Main` 内含 `exit` 的脚本都不能在 Pester 进程内直接调用**。这既影响测试写法，也影响覆盖率统计：
-  只有「dot-source + 进程内调用 `Main`」才会被插桩；用 `& script.ps1` 会起子进程，执行一行都不计入覆盖率
-  （`main-flow.Tests.ps1` 曾因此长期存在「测试通过但覆盖率不动」的假象）。
-- `setup.ps1` 的 `Main` 末尾为 `exit`，因此**结构性不可插桩**，已在
-  `.xp-gate-powershell-coverage-ignore` 中排除；它仍有子进程端到端测试覆盖。
-- `references/scripts` 行覆盖率约 **70%**，低于 pre-commit 门禁的 80%。缺口是结构性的（见上两条），
-  不宜用 Mock 控制台/管理员路径的方式强拉；提升方向见 CHANGELOG 1.4.1.0 的「覆盖率现状」一节。
+- **`confirm-cleanup.ps1` 的 TUI 命令循环仍难被单测覆盖**：它由 `Read-Host` 驱动，
+  6 个纯展示函数已覆盖。**注意**：`Main` 内原有的 12 处 `exit` 已于 2026-10-01 全部改为
+  `[ref]` 回传（ADR-001），所以「在 Pester 进程内调用会杀死宿主」这一障碍**已消除**；
+  剩下的只是 `Read-Host` 本身需要重定向 stdin 才能驱动。
+- ~~任何 `Main` 内含 `exit` 的脚本都不能在 Pester 进程内直接调用~~
+  → **已于 2026-10-01 修复（ADR-001）**：全部 8 个含 `Main` 的脚本都不再于 `Main` 内 `exit`，
+  改为 `[ref]$ExitCode` 回传。因此「dot-source + 进程内调用 `Main`」对**所有**脚本都可用，
+  覆盖率插桩不再有「执行一行都不计入」的盲区。
+- `setup.ps1` 仍是例外：它没有 `Main`/`[ref]` 结构，末尾直接 `exit`，因此**结构性不可插桩**，
+  已在 `.xp-gate-powershell-coverage-ignore` 中排除；它仍有子进程端到端测试覆盖。
+- `references/scripts` 行覆盖率 **80.0%**（1065/1331），**已达到** pre-commit 门禁的 80% 阈值
+  （ADR-001 前为 70.4%，ADR-001 后为 77%，随后靠补真实测试拉到 80.0%）。剩余 266 行缺口
+  已定位且是**结构性**的，不是「懒得写测试」：
+  - `confirm-cleanup.ps1` —— 未覆盖行中绝大多数是 `Read-Host` 交互式 TUI 循环
+    （`Show-Page` 之后的命令分发）；只有少量属于可单测范围，已补测。
+  - `clean-residuals.ps1` —— 未覆盖行集中在 `Remove-ItemRobust` 的 **tier 2-4**
+    （takeown/icacls/cmd/delayed-delete，需管理员 + ACL 受限文件）与 HKLM/PATH 写入分支。
+  这两块属于 AGENTS.md 明确划给「管理员环境集成演练」的范围，**不用 Mock 硬拉**。
+  达到 80% 靠的是把可测逻辑抽成纯函数并补真实测试，**未使用 `--no-verify`、
+  未向 `.xp-gate-powershell-coverage-ignore` 添加任何文件**。
+- **测试与门禁的双引擎要求**：pre-commit 的 Gate 5 用 **`pwsh` 7** 跑 Pester，
+  而项目运行时基线是 **PS 5.1**。两者对 `ConvertFrom-Json` 的处理不同
+  （见陷阱 6），因此**测试断言必须在两个引擎下都成立**。
+  实测踩坑：断言 `restore-status.json` 的 `timestamp` 精确匹配
+  `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$`，在 PS 5.1 下通过（保持字符串），
+  在 pwsh 7 下失败（被解析成 `[datetime]` 再序列化为 `...T21:39:42.0000000`）。
+  **改法**：断言「可被 `[datetime]::Parse` 解析」+ 断言**原始 JSON 文本**里的 ISO 形态，
+  不要断言 `ConvertFrom-Json` 之后的类型/格式。
+  提交前请两个引擎各跑一次：
+  ```powershell
+  powershell.exe -NoProfile -Command "Invoke-Pester tests"   # 5.1
+  pwsh -NoProfile -Command "Invoke-Pester tests"             # 7（门禁用的引擎）
+  ```
+- **测试密闭性**：`backup-*` 是 gitignored 的运行时目录。任何「非 DryRun + 走 ConfirmFile/Mode A-C」
+  的清理测试都需要它存在，否则 `Main` 会在备份门提前中止。**测试必须自建自清该 fixture**，
+  不得依赖主仓里遗留的 `backup-*`（否则新克隆 / CI 下会出现假绿或假红）。
+  见 `tests/unit/hermeticity.Tests.ps1`、`tests/unit/rollback.Tests.ps1`（`BackupRoot` 可注入）
+  与 `scripts.Tests.ps1` 的 `backup-svcregress` fixture。
+- **覆盖率门禁的口径**：`xp-gate` 的 80% 阈值写死在共享 hook 里，唯一受支持的调节手段是
+  `.xp-gate-powershell-coverage-ignore`（**按文件**排除）。该文件的注释已明确写下
+  「Do NOT add files here merely because they are hard to test」——所以**不要**为了过门禁
+  而把 `clean-residuals.ps1` / `confirm-cleanup.ps1` 整文件排除：那会连同已覆盖的
+  163/170 行一起丢掉。正确方向是把可测逻辑抽成纯函数（`ConvertFrom-*`、`Get-*Verdict`、
+  `Get-MatchingRestorePoint` 等，本次已示范）并补测。
 
 ---
 
@@ -374,13 +454,19 @@ It 'Works against real registry data' {
 ```powershell
 function Main {
     # 所有执行逻辑在此函数内（编码设置、权限检查、扫描/清理、输出）
+    # 退出码用 [ref] 回传 —— 不得 exit，也不得 `return <数字>`
+    param([ref]$ExitCode)
+    $setRc = { param([int]$v) if ($null -ne $ExitCode) { $ExitCode.Value = $v } }
+    # ... & $setRc 1; return   （错误路径）
+    # ... & $setRc 0           （成功路径）
 }
 
 # 执行守卫 — 仅当脚本被直接执行时运行
 # $MyInvocation.InvocationName 在 dot-source 时为 '.'，-File 调用时为空
 if ($MyInvocation.InvocationName -ne '.') {
-    Main
-    exit 0
+    $exitCode = 0
+    Main -ExitCode ([ref]$exitCode)
+    exit $exitCode
 }
 ```
 
@@ -397,15 +483,28 @@ if ($MyInvocation.InvocationName -ne '.') {
 | 2 | 权限错误 | 非管理员运行写入脚本 |
 | 3 | 依赖缺失 | 必需的 JSON 输入文件不存在 |
 
-`exit 0` 放在执行守卫处（`Main` 调用之后），**不在 `Main` 内部**，以避免 dot-source 测试时终止 Pester。
+退出码由 `Main` 通过 `[ref]$ExitCode` 回传，**在执行守卫处**统一 `exit`：
+
+```powershell
+if ($MyInvocation.InvocationName -ne '.') {
+    $exitCode = 0
+    Main -ExitCode ([ref]$exitCode)
+    exit $exitCode
+}
+```
+
+**`Main` 内部不得出现 `exit`，也不得出现 `return <数字>`** —— 理由见 ADR-001：
+前者在 dot-source + 进程内调用时杀死 Pester 宿主（整份套件静默塌掉），
+后者把整数写进输出流污染调用方断言。
 
 ### 权限分级
 
 | 脚本类型 | 权限检查 | 脚本 |
 |----------|----------|------|
-| 写入操作 | 强制 Admin（`Test-AdminPrivilege -Mandatory` → `exit 2`） | `clean-residuals.ps1`、`create-restore-point.ps1`、`run-all.ps1` |
+| 写入操作 | 强制 Admin（`Test-AdminPrivilege -Mandatory` → `Main` 回传 2） | `clean-residuals.ps1`、`create-restore-point.ps1`、`run-all.ps1` |
 | 只读操作 | 仅警告（`Write-Warning`） | `build-installed-index.ps1`、`scan-uninstalled.ps1`、`scan-filesystem-residuals.ps1`、`scan-residuals.ps1`、`generate-report.ps1`、`confirm-cleanup.ps1`、`rollback.ps1` |
 
+`Test-AdminPrivilege -Mandatory` 不再自行 `exit 2`，而是 `return $false`，由调用方决定退出码。
 权限检查放在 `Main` 顶部，因此对独立调用生效、对 dot-source 不可见。经 `run-all.ps1` 调用的子脚本继承父进程权限，检查必然通过——这里的检查是为**用户直接运行单个脚本**兜底的。
 
 ### run-all.ps1 统一入口
@@ -450,3 +549,54 @@ if ($MyInvocation.InvocationName -ne '.') {
     （服务删除 + HKLM）经用户实测 2/2 通过（`cleanup-log.json`: `service_deleted` + `registry_deleted`）
   - **更正**：本条最初把 7b 的 `StandardOutputEncoding` 风险写成「必然抛异常」，
     复核后无法稳定复现，已拆分为 7a（已复现主缺陷）与 7b（环境相关风险）
+- 2026-10-01: ADR-001 —— 退出码统一 `[ref]` 回传 + 测试密闭性修复
+  - 陷阱清单新增第 8 条：dot-source 覆盖调用方同名变量 / 函数 `param()` 无条件遮蔽调用方变量
+  - **Critical**：修复测试套件在干净 worktree / 新克隆 / CI 下**整份静默塌掉**的假绿
+    （`Main` 内 `exit 1` 杀死 Pester 宿主 → `Passed= Failed= Total=` 全空 → CI 显示绿色）
+  - 8 个脚本的 `Main` 退出码改为 `[ref]$ExitCode` 回传，移除 `Main` 内共 25 处 `exit`
+  - `Test-AdminPrivilege -Mandatory` 改为 `return $false`，由调用方决定退出码 2
+  - 新增 `tests/unit/hermeticity.Tests.ps1`（AST 契约：`Main` 内不得 `exit`、不得 `return <数字>`）
+  - 新增 `docs/decisions/ADR-001-main-ref-exit-code.md`（含三种被实测否决的写法）
+  - 可测逻辑抽成纯函数并补测：`ConvertFrom-WingetJson/Text`、`ConvertFrom-ScoopJson/Text`、
+    `ConvertFrom-ChocoText`、`Test-PathMissing`、`Get-UninstallExePath`、
+    `Get-ResidualVerdict`、`Get-ResidualEvidence`、`Get-BackupDirectory`、
+    `Get-RegistryBackupFile`、`Get-MatchingRestorePoint`
+  - 顺带修复：`scan-uninstalled.ps1` 里一段**不可达的重复代码**（`& $setRc 3; return` 写了两遍）
+  - 顺带修复：`build-installed-index.ps1` / `scan-uninstalled.ps1` / `rollback.ps1` 的
+    `Main` 此前**静默忽略** `-OutputPath` 之类的实参（改为 `-XxxOverride` 显式参数）
+  - `rollback.ps1` 补 `try/catch`：清理日志或 `restore-status.json` 损坏时不再中断指引输出
+  - 测试数 141 → **254**；覆盖率 70.4% → **77%**；PSScriptAnalyzer 维持 0 error / 0 warning
+  - 剩余覆盖率缺口为结构性（`Read-Host` TUI 109 行 + 管理员专属 ACL/HKLM 分支），已记录于「已知限制」
+- 2026-10-02: 覆盖率补到 80%（真实测试，零 `--no-verify`）+ 又抓到 3 个真实产品缺陷
+  - **门禁口径**：用户明确否决「`--no-verify` 先提交」与「向 ignore 文件加文件」两条捷径，
+    要求把门禁做成**名副其实**的通过。本次靠补真实测试把覆盖率 77% → **80.0%**
+    （1065/1331），**未使用 `--no-verify`，未改 `.xp-gate-powershell-coverage-ignore`**。
+  - 测试数 254 → **287**（PS 5.1 与 pwsh 7 双引擎均 287/287 通过）
+  - **真实缺陷 1（PS 5.1 哈希表 + 空数组）**：`generate-report.ps1` 里
+    `candidate_directories = if (...) { ... } else { @() }` 会让
+    `final-report.json` 写出 `"candidate_directories": {}`（**空对象**，不是空数组）。
+    根因：`if` 语句**作为表达式**产出空数组时结果是 `$null`，`ConvertTo-Json` 把 `$null`
+    渲染成 `{}`。另外 `@($null)` 也不是空数组（Count=1、唯一元素为 `$null`）。
+    修复：先判空赋变量再 `[array]` 转型。**注意不能写 `[array]( if ... )`——那是语法错误**
+    （`if` 不是表达式），本次先踩了这个坑，且由于脚本加载失败时旧定义仍在作用域内，
+    一度产生「改好了」的假象。
+  - **真实缺陷 2（辅助函数依赖调用方变量）**：`scan-filesystem-residuals.ps1` 的
+    `Get-EffectiveFileCount` / `Get-DirectorySizeMB` 在 `catch` 里调用 `& $setRc 0`，
+    但它是**顶层纯函数**，被单测或其它脚本直接调用时 `$setRc` 并不存在 →
+    抛 `The expression after '&' ... was not valid`。改为 `return 0`。
+  - **真实缺陷 3（不可达重复代码 ×3）**：`generate-report.ps1` / `scan-residuals.ps1` /
+    `scan-filesystem-residuals.ps1` 各有一处 `& $setRc 3; return` 被写了两遍，
+    第二份永不执行。已删除。
+  - **双引擎断言教训**：pre-commit Gate 5 用 **pwsh 7** 跑 Pester，而运行时基线是 PS 5.1。
+    `restore-status.json` 的 timestamp 断言在 5.1 下通过、在 pwsh 7 下失败
+    （7 会把 ISO 串解析成 `[datetime]` 再序列化出小数秒）。已改为断言
+    「可 `[datetime]::Parse`」+ 断言**原始 JSON 文本**。**提交前必须两个引擎各跑一次。**
+  - 新增测试文件：`tests/unit/create-restore-point.Tests.ps1`（注册表备份 + 还原点分支）、
+    `tests/unit/rollback.Tests.ps1`（备份目录/注册表备份/还原点匹配 + 单条匹配计数回归）
+  - `generate-report.ps1` 与 `rollback.ps1` 现已 **100% 行覆盖**
+- 2026-10-02: Gate 11（Sprint Flow Enforcement）状态校正
+  - `.sprint-state/sprint-state.json` 的 `phase` 由 `1` 改为 `0`：Phase 1 PLAN 尚未产出
+    经 delphi 评审的 auto-rollback 设计，此前填 `1` 会让 Gate 11 误以为可以要求
+    `.sprint-state/delphi-reviewed.json`。**如实记录相位，不伪造评审产物。**
+  - 阻塞项 B1（测试不密闭）标记为 `resolved`，并附复查证据：本 worktree 内
+    `backup-*` 目录数为 **0**，而 287 个测试全绿 —— 原先的隐藏前置依赖确已消除。

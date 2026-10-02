@@ -113,6 +113,13 @@ function Get-PageRange {
 }
 
 function Main {
+    # ADR-001: Main 通过 [ref] 回传退出码，绝不调用 exit，也绝不 `return <code>`。
+    # 原因见 docs/decisions/ADR-001：exit 会杀死测试宿主致整份套件静默塌掉；
+    # `return <code>` 会把整数写进 stdout 污染调用方的输出断言。
+    param([ref]$ExitCode)
+
+    $setRc = { param([int]$v) if ($null -ne $ExitCode) { $ExitCode.Value = $v } }
+
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -125,19 +132,22 @@ function Main {
 
     if (-not $NonInteractive -and -not [Environment]::UserInteractive) {
         Write-Warning "非交互终端，无法运行交互式确认。请在 Windows Terminal 中运行此脚本，或使用 -NonInteractive 参数。"
-        exit 0
+        & $setRc 0
+        return
     }
 
     if (-not (Test-Path $ReportPath)) {
         Write-Error "未找到报告文件: $ReportPath"
-        exit 1
+        & $setRc 1
+        return
     }
 
     try {
         $report = Get-Content $ReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
     } catch {
         Write-Error "无法解析报告文件: $_"
-        exit 1
+        & $setRc 1
+        return
     }
 
     $categoryLabels = @{
@@ -220,7 +230,8 @@ function Main {
                 }
             } catch {
                 Write-Error "Invalid SelectIds JSON: $_"
-                exit 1
+                & $setRc 1
+                return
             }
         } elseif ($AutoSelect -ne 'none') {
             foreach ($item in $script:sorted) {
@@ -231,7 +242,8 @@ function Main {
             }
         } else {
             Write-Error "NonInteractive mode requires -AutoSelect or -SelectIds"
-            exit 1
+            & $setRc 1
+            return
         }
 
         $safeCount = 0
@@ -257,14 +269,16 @@ function Main {
 
         if ($confirmedIds.Count -eq 0) {
             Write-Warning "No items selected. Exiting without saving."
-            exit 0
+            & $setRc 0
+            return
         }
 
         $jsonArray = ConvertTo-Json -InputObject $confirmedIds -Compress
         $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
         [System.IO.File]::WriteAllText($OutputPath, $jsonArray, $utf8NoBom)
         Write-Output "Saved $($confirmedIds.Count) items to: $OutputPath"
-        exit 0
+        & $setRc 0
+        return
     }
 
     Write-Output ""
@@ -281,7 +295,8 @@ function Main {
             $inputStr = Read-Host "请输入命令"
         } catch {
             Write-Warning "无法读取输入(非交互终端?)，退出不保存。"
-            exit 0
+            & $setRc 0
+            return
         }
 
         $inputStr = $inputStr.Trim()
@@ -353,7 +368,8 @@ function Main {
             }
             'X' {
                 Write-Output "退出，未保存。"
-                exit 0
+                & $setRc 0
+                return
             }
             default {
                 if ($upper.StartsWith('D ')) {
@@ -439,7 +455,8 @@ function Main {
 
     if ($confirmedIds.Count -eq 0) {
         Write-Warning "未选择任何项。退出不保存。"
-        exit 0
+        & $setRc 0
+        return
     }
 
     $confirmInput = ''
@@ -447,12 +464,14 @@ function Main {
         $confirmInput = Read-Host "确认保存? (Y/N)"
     } catch {
         Write-Warning "无法读取输入，退出不保存。"
-        exit 0
+        & $setRc 0
+        return
     }
 
     if ($confirmInput.Trim().ToUpper() -ne 'Y') {
         Write-Output "取消，未保存。"
-        exit 0
+        & $setRc 0
+        return
     }
 
     $jsonArray = ConvertTo-Json -InputObject $confirmedIds -Compress
@@ -466,6 +485,7 @@ function Main {
 # Execution guard — only runs when script is directly executed, not when dot-sourced
 # $MyInvocation.InvocationName is '.' when dot-sourced, empty when run via -File
 if ($MyInvocation.InvocationName -ne '.') {
-    Main
-    exit 0
+    $exitCode = 0
+    Main -ExitCode ([ref]$exitCode)
+    exit $exitCode
 }

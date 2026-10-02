@@ -15,6 +15,10 @@ function Set-Id {
 }
 
 function Main {
+    # ADR-001: 用 [ref] 回传退出码；不得 exit（会杀死测试宿主），也不得 `return <code>`
+    param([ref]$ExitCode)
+    $setRc = { param([int]$v) if ($null -ne $ExitCode) { $ExitCode.Value = $v } }
+
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -32,7 +36,8 @@ function Main {
     if (-not (Test-Path "$DataDir\other-residuals.json")) { $missingFiles += "other-residuals.json" }
     if ($missingFiles.Count -gt 0) {
         Write-Error "Required input files not found: $($missingFiles -join ', ')"
-        exit 3
+        & $setRc 3
+        return
     }
     $uninstalled = Get-Content "$DataDir\uninstalled-list.json" -Raw | ConvertFrom-Json
     $fs = Get-Content "$DataDir\fs-residuals.json" -Raw | ConvertFrom-Json
@@ -103,6 +108,31 @@ function Main {
     $estimatedSpace = [math]::Round(($fsItems | Measure-Object -Property size_mb -Sum -ErrorAction SilentlyContinue).Sum, 1)
 
     # Generate report
+    #
+    # PS 5.1 陷阱（已实测，会让 final-report.json 的数组字段变成脏数据）：
+    #
+    #   用 `if` 语句**作为表达式**产出空数组时，结果其实是 $null，而不是 @()：
+    #       $x = if ($cond) { @() } else { @() }   # $x 为 $null
+    #   把这样的 $null 放进哈希表，ConvertTo-Json 渲染成 `{}`（空对象）而非 `[]`。
+    #
+    #   `@($null)` 同样不是空数组：它是 Count = 1、唯一元素为 $null 的数组，
+    #   序列化成 `[null]`，下游遍历会拿到一个 $null 元素。
+    #
+    # 正确写法：先判空赋给变量，再用 **[array]** 显式转型（**不能**写成
+    # `[array]( if ... )` —— `if` 不是表达式，那样是语法错误）。
+    # 实测：`[array]@()` → `[]`；`,@()` 会多套一层变成 `[[]]`；不转型可能得到 `{}`。
+    $candidateDirectories = @()
+    if ($null -ne $uninstalled.candidate_directories) {
+        $candidateDirectories = @($uninstalled.candidate_directories)
+    }
+    $candidateDirectories = [array]$candidateDirectories
+
+    $softwareList = @()
+    if ($null -ne $uninstalled.uninstalled_software) {
+        $softwareList = @($uninstalled.uninstalled_software)
+    }
+    $softwareList = [array]$softwareList
+
     $report = @{
         scan_time = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
         summary = @{
@@ -112,11 +142,9 @@ function Main {
             danger = $dangerCount
             estimated_space_recoverable_mb = $estimatedSpace
         }
-        uninstalled_software = $uninstalled.uninstalled_software
+        uninstalled_software = $softwareList
         # Include candidate_directories from scan-uninstalled.ps1 (L1-T8 fix)
-        candidate_directories = if ($uninstalled.candidate_directories) {
-            $uninstalled.candidate_directories
-        } else { @() }
+        candidate_directories = $candidateDirectories
         filesystem_residuals = $fsItems
         registry_residuals = $regItems
         ghost_services = $svcItems
@@ -132,10 +160,12 @@ function Main {
 
     Write-Output "Report generated: $($allItems.Count) items (Safe: $safeCount, Caution: $cautionCount, Danger: $dangerCount)"
     Write-Output "Output: $OutputPath"
+    & $setRc 0
 }
 
 # Execution guard — only runs when script is directly executed, not when dot-sourced
 if ($MyInvocation.InvocationName -ne '.') {
-    Main
-    exit 0
+    $exitCode = 0
+    Main -ExitCode ([ref]$exitCode)
+    exit $exitCode
 }

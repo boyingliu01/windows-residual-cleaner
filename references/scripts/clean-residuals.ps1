@@ -199,7 +199,10 @@ function Test-AdminPrivilege {
     if (-not $isAdmin) {
         if ($Mandatory) {
             Write-Error "Administrator privileges required. Please run PowerShell as Administrator."
-            exit 2
+            # 注意：这里**不能** exit。exit 在 Pester 进程内会终止宿主，
+            # 导致整份测试套件静默塌掉（见 docs/decisions/ADR-001）。
+            # 由调用方检查返回值并决定退出码。
+            return $false
         } else {
             Write-Warning "Running without admin. Some HKLM registry keys may not be readable."
         }
@@ -208,10 +211,30 @@ function Test-AdminPrivilege {
 }
 
 function Main {
+    # ADR-001: Main 通过 [ref] 回传退出码，绝不调用 exit，也绝不 `return <code>`。
+    #
+    # 为什么不用 `return 1` / `exit (Main)`：
+    #   1. `return 1` 会把整数写进**输出流**（PowerShell 函数返回语义），污染调用方
+    #      stdout —— 现有测试用 `(Main 2>&1) -join` 断言输出文本，会被数字污染。
+    #   2. `exit (Main)` 会让 PowerShell 先求值 `Main`，其输出被吞进 exit 的参数
+    #      表达式，宿主随即退出，**此前的 Write-Output 全部丢失**（实测确认）。
+    #   3. `exit` 在 dot-source + 进程内调用（测试 / 覆盖率插桩）时会杀死宿主，
+    #      使 Pester 收尾崩溃、整份套件静默消失（本 sprint 的 blocker B1）。
+    #
+    #   `[ref]` 方案：stdout 保持纯净，退出码单独回传，进程内调用完全安全。
+    #   注意 AGENTS.md 陷阱 #1（[ref]+[CmdletBinding] 失效）不适用于此：Main 无该注解。
+    param([ref]$ExitCode)
+
+    # 设置退出码的便捷脚本块（未传 [ref] 时静默忽略，便于旧调用方兼容）
+    $setRc = { param([int]$v) if ($null -ne $ExitCode) { $ExitCode.Value = $v } }
+
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 
-    [void](Test-AdminPrivilege -Mandatory)
+    if (-not (Test-AdminPrivilege -Mandatory)) {
+        & $setRc 2
+        return
+    }
 
     # B-M7 修复：清理前检查还原点是否已创建。
     # 仅在"将真正删除"时强制：非 DryRun 且 (走 ConfirmFile 或 Mode A/B/C)。
@@ -223,7 +246,8 @@ function Main {
         if (-not $restoreFiles) {
             Write-Error "No restore point or backup found. Please run create-restore-point.ps1 first."
             Write-Output "Run: powershell -ExecutionPolicy Bypass -File '$PSScriptRoot\create-restore-point.ps1'"
-            exit 1
+            & $setRc 1
+            return
         }
         Write-Output "Restore backup found: $($restoreFiles[0].Name)"
     }
@@ -244,7 +268,8 @@ function Main {
     } catch {
         $errMsg = $_.Exception.Message
         Write-Error ("Failed to load report from {0}: {1}" -f $ReportPath, $errMsg)
-        exit 1
+        & $setRc 1
+         return
     }
 
     # 汇总所有项目到统一列表（含 shell_residuals 分类）
@@ -274,17 +299,20 @@ function Main {
         # （历史 Critical 缺陷：调用方传入错误的相对路径 → Test-Path 失败 → 静默全清）。
         if (-not (Test-Path $ConfirmFile)) {
             Write-Error "ConfirmFile not found: '$ConfirmFile'. Aborting to prevent over-deletion. Pass an absolute path."
-            exit 1
+            & $setRc 1
+             return
         }
         try {
             $confirmedIds = Get-Content $ConfirmFile -Raw | ConvertFrom-Json
         } catch {
             Write-Error "Failed to parse ConfirmFile '$ConfirmFile': $_. Aborting."
-            exit 1
+            & $setRc 1
+             return
         }
         if (-not $confirmedIds) {
             Write-Error "ConfirmFile '$ConfirmFile' contains no confirmed IDs. Aborting (nothing to clean)."
-            exit 1
+            & $setRc 1
+             return
         }
         # 以确认 ID 为权威集合，并保留 danger 双层拦截作为纵深防御
         $cleanupItems = @($allItems | Where-Object { $confirmedIds -contains $_.id -and $_.risk -ne 'danger' })
@@ -294,7 +322,7 @@ function Main {
             'A' { $cleanupItems = @($allItems | Where-Object { $_.risk -eq 'safe' }) }
             'B' { $cleanupItems = @($allItems | Where-Object { $_.risk -eq 'safe' }) }
             'C' { $cleanupItems = @($allItems | Where-Object { $_.risk -ne 'danger' }) }
-            'D' { Write-Output "Report-only mode. No cleanup performed."; return }
+            'D' { Write-Output "Report-only mode. No cleanup performed."; & $setRc 0; return }
         }
     }
 
@@ -498,10 +526,16 @@ function Main {
     $logJson = @{ summary = $summary; entries = $log } | ConvertTo-Json -Depth 3
     [System.IO.File]::WriteAllText($outputPath, $logJson, [System.Text.UTF8Encoding]::new($false))
     Write-Output "Cleanup log saved to: $outputPath"
+
+    & $setRc 0
 }
 
 # Execution guard — only runs when script is directly executed, not when dot-sourced
+# ADR-001: Main 用 [ref] 回传退出码；Main 内**不得**有 exit，也不得 `return <code>`
+# （前者会杀死测试宿主致套件静默塌掉，后者会把整数写进 stdout 污染输出）。
+# 注意：不能用 `exit (Main)` —— 那会吞掉 Main 的全部 Write-Output（实测）。
 if ($MyInvocation.InvocationName -ne '.') {
-    Main
-    exit 0
+    $exitCode = 0
+    Main -ExitCode ([ref]$exitCode)
+    exit $exitCode
 }

@@ -4,6 +4,9 @@ param(
     [string]$BackupRoot = "$PSScriptRoot\..\.."
 )
 
+# 固化顶层 param 默认值，供 Main 在调用方未提供时回落
+$script:DefaultBackupRoot = $BackupRoot
+
 # Admin privilege check (mandatory for write operations)
 function Test-AdminPrivilege {
     [CmdletBinding()]
@@ -14,7 +17,8 @@ function Test-AdminPrivilege {
     if (-not $isAdmin) {
         if ($Mandatory) {
             Write-Error "Administrator privileges required. Please run PowerShell as Administrator."
-            exit 2
+            # ADR-001: 不得 exit（会杀死测试宿主）；由调用方据返回值决定退出码
+            return $false
         } else {
             Write-Warning "Running without admin. Some HKLM registry keys may not be readable."
         }
@@ -23,10 +27,27 @@ function Test-AdminPrivilege {
 }
 
 function Main {
+    # ADR-001: 用 [ref] 回传退出码；不得 exit（会杀死测试宿主），也不得 `return <code>`
+    #
+    # $BackupRoot 不声明为参数（会遮蔽调用方作用域的同名变量，见 AGENTS.md 陷阱第 8b 条）；
+    # 显式覆盖走 -BackupRootOverride。
+    param(
+        [ref]$ExitCode,
+        [string]$BackupRootOverride,
+        [switch]$SkipRestorePoint
+    )
+    $setRc = { param([int]$v) if ($null -ne $ExitCode) { $ExitCode.Value = $v } }
+
+    if (-not [string]::IsNullOrWhiteSpace($BackupRootOverride)) {
+        $BackupRoot = $BackupRootOverride
+    } elseif ([string]::IsNullOrWhiteSpace($BackupRoot)) {
+        $BackupRoot = $script:DefaultBackupRoot
+    }
+
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 
-    [void](Test-AdminPrivilege -Mandatory)
+    if (-not (Test-AdminPrivilege -Mandatory)) { & $setRc 2; return }
 
     # B-C3 修复：正确检测系统还原是否启用
     # Get-ComputerRestorePoint 在还原禁用时返回空而非抛异常
@@ -115,11 +136,14 @@ function Main {
     $jsonContent = $result | ConvertTo-Json -Depth 3
     [System.IO.File]::WriteAllText($statusPath, $jsonContent, [System.Text.UTF8Encoding]::new($false))
     Write-Output "Status saved to: $statusPath"
+
+    & $setRc 0
 }
 
 # Execution guard — only runs when script is directly executed, not when dot-sourced
 # $MyInvocation.InvocationName is '.' when dot-sourced, empty when run via -File
 if ($MyInvocation.InvocationName -ne '.') {
-    Main
-    exit 0
+    $exitCode = 0
+    Main -ExitCode ([ref]$exitCode)
+    exit $exitCode
 }

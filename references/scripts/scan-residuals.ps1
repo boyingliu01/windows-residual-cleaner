@@ -16,6 +16,10 @@ function Get-ExecutablePath {
 }
 
 function Main {
+    # ADR-001: 用 [ref] 回传退出码；不得 exit（会杀死测试宿主），也不得 `return <code>`
+    param([ref]$ExitCode)
+    $setRc = { param([int]$v) if ($null -ne $ExitCode) { $ExitCode.Value = $v } }
+
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -29,7 +33,8 @@ function Main {
     # 加载已卸载列表
     if (-not (Test-Path $UninstalledPath)) {
         Write-Error "Uninstalled software list not found: $UninstalledPath"
-        exit 3
+        & $setRc 3
+        return
     }
     $uninstalled = Get-Content $UninstalledPath -Raw | ConvertFrom-Json
     $uninstalledNames = @{}
@@ -205,11 +210,13 @@ function Main {
     Write-Output "  Registry: $($registryResiduals.Count) | Ghost Services: $($ghostServices.Count)"
     Write-Output "  Ghost Tasks: $($ghostTasks.Count) | Startup: $($startupResiduals.Count)"
     Write-Output "  COM/Shell: $($shellResiduals.Count) | PATH: $($pathResiduals.Count)"
+    & $setRc 0
 }
 
 # Execution guard — only runs when script is directly executed, not when dot-sourced
 # $MyInvocation.InvocationName is '.' when dot-sourced, empty when run via -File
 if ($MyInvocation.InvocationName -ne '.') {
-    Main
-    exit 0
+    $exitCode = 0
+    Main -ExitCode ([ref]$exitCode)
+    exit $exitCode
 }

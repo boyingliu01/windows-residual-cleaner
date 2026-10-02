@@ -23,6 +23,9 @@ function Get-EffectiveFileCount {
         }
         return $count
     } catch {
+        # 辅助函数不得依赖调用方的 $setRc（它不是 Main 的一部分，
+        # 被单测或其它脚本直接调用时该变量并不存在 → `& $setRc 0` 会抛
+        # "The expression after '&' ... was not valid"）。保守返回 0。
         return 0
     }
 }
@@ -42,6 +45,7 @@ function Get-DirectorySizeMB {
         }
         return [math]::Round($size / 1MB, 2)
     } catch {
+        # 同上：辅助函数不得依赖调用方的 $setRc，返回 0 表示「无法测量」。
         return 0
     }
 }
@@ -61,6 +65,10 @@ function Test-AllSubdirsEmpty {
 }
 
 function Main {
+    # ADR-001: 用 [ref] 回传退出码；不得 exit（会杀死测试宿主），也不得 `return <code>`
+    param([ref]$ExitCode)
+    $setRc = { param([int]$v) if ($null -ne $ExitCode) { $ExitCode.Value = $v } }
+
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -74,7 +82,8 @@ function Main {
     # 加载配置
     if (-not (Test-Path $ConfigPath)) {
         Write-Error "Configuration file not found: $ConfigPath"
-        exit 3
+        & $setRc 3
+        return
     }
     $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
     $maxFileCount = $config.file_thresholds.max_file_count
@@ -170,10 +179,12 @@ function Main {
     Write-Output "Filesystem residuals found: $($residuals.Count)"
     Write-Output "  Safe: $($residuals | Where-Object { $_.risk -eq 'safe' } | Measure-Object | Select-Object -ExpandProperty Count)"
     Write-Output "  Caution: $($residuals | Where-Object { $_.risk -eq 'caution' } | Measure-Object | Select-Object -ExpandProperty Count)"
+    & $setRc 0
 }
 
 # Execution guard — only runs when script is directly executed, not when dot-sourced
 if ($MyInvocation.InvocationName -ne '.') {
-    Main
-    exit 0
+    $exitCode = 0
+    Main -ExitCode ([ref]$exitCode)
+    exit $exitCode
 }
