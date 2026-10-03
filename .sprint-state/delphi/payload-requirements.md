@@ -1,3 +1,736 @@
+# REQUIREMENTS REVIEW PAYLOAD (Round 3 — revised specification) — auto-rollback
+
+## The requirement as stated by the user
+
+> 全自动回滚：清理前自动创建还原点+注册表备份，失败时自动执行回滚。
+> (Fully automatic rollback: automatically create a restore point + registry backup before
+> cleanup, and automatically execute a rollback when cleanup fails.)
+
+The user explicitly REJECTED a semi-automatic (user-triggered) variant in favour of fully automatic.
+
+## All prior-round findings that were ACCEPTED and fixed
+
+R1: AC-009 vs AC-019 exit-code contradiction -> REQ-011 now explicitly exit-code independent.
+R1: REQ-016 added for the previously orphaned AC-016.
+R2 critical: no per-item fail-closed rule -> REQ-006/REQ-007 now require the export to succeed
+  BEFORE deleting, else the deletion is skipped and logged export_failed (AC-024).
+R2 critical: REQ-012/AC-012 said '-NoAutoRollback behaves exactly like today', which would
+  resurrect the known-unsafe behaviour that REQ-001..004/015 fix. Rewritten: the switch disables
+  ONLY the automatic rollback trigger; all safety/honesty fixes still apply.
+R2 critical: journal state machine undefined -> REQ-018 (planned/backup_created/
+  mutation_succeeded) + AC-025/AC-026. Rollback restores ONLY mutation_succeeded entries, so a
+  crash-after-journal-write-before-mutation cannot cause a false restore.
+R2 critical: stale/wrong journal unaddressed -> REQ-019 + AC-027 (self-validating journal,
+  reject previous-run/mismatched/unverifiable journals without touching the system).
+R2 high: REQ-017 'protection' ambiguous (restore point vs targeted backup) -> REQ-017 now
+  defines two distinct tiers: mandatory targeted protection fails closed; the optional system
+  restore point only warns. AC-022/AC-013 aligned.
+R2 high: no requirement defined WHO invokes auto-rollback -> REQ-020 + AC-028 (in-process).
+R2 high: REQ-003 depended on an undefined restore-status.json -> REQ-022 + AC-030 add the
+  writer, schema and first-run semantics.
+R2 high: startup-value restore untested -> AC-031 (re-query the value + assert sibling values
+  in the shared Run/RunOnce key are untouched).
+R2 medium: PATH rollback algorithm under-specified -> REQ-021 + AC-029 (whole-scope restore
+  from the captured original; never blind-overwrite if PATH changed concurrently).
+R2 medium: AC-016 implied Tier-4 renamed content was restorable, contradicting DD-006 ->
+  AC-016 now states renamed content is reported for MANUAL recovery only (AC-032).
+R2 low: AC-020 mapped to REQ-005 though it is cross-cutting -> REQ-023 added.
+R2 low: REQ-015 addresses typo AC-002 -> AC-019.
+
+R3 critical (technical + feasibility): REQ-003/AC-017 still made the LEGACY restore-status.json
+  a hard pre-flight gate, contradicting REQ-017's tiering -> REQ-003 rescoped to validate only
+  the MANDATORY targeted protection; AC-017 now asserts restore-point unavailability does NOT abort.
+R3 critical: registry/value restore had no conflict detection (asymmetric with the PATH rule) ->
+  REQ-024 + AC-034 (absent -> restore; identical -> already_present; different -> conflict, no
+  overwrite).
+R3 critical: clean-residuals handling of create-restore-point's non-zero was unspecified ->
+  REQ-025 + AC-035 (optional-layer failure warns and continues; mandatory-layer failure aborts).
+R3 high: T3 had NO invoker - after a crash no process exists to run rollback, so 'fully automatic'
+  was an over-promise -> REQ-016 rewritten as 'recover on NEXT launch' + AC-033, and the design
+  forbids claiming instant crash rollback.
+R3 high: the crash window between mutation and the mutation_succeeded write made AC-026
+  unimplementable -> REQ-018 now defines a recovery protocol where the TARGET'S CURRENT STATE
+  decides (marker is supporting evidence only); AC-026 rewritten to test that protocol.
+R3 high: exit codes after auto-rollback were untestable -> REQ-026 + DD-013 give a fixed matrix
+  (0/1/2/3 preserved; 10 = rollback fully OK; 11 = rollback partial/failed; 12 = no journal) + AC-036.
+R3 medium: first-run semantics were asserted as 'defined' rather than defined -> REQ-022/AC-030 now
+  state them exactly (no prior cleanup-log => skip the newer-than comparison).
+R3 medium: personas/entry points were implicit -> design doc section 4 now enumerates them.
+R3 medium: REQ-007 trim-failure path -> trimming failure is treated as export failure (AC-040).
+
+R4 high (feasibility): REQ-018 and REQ-024 CONTRADICTED each other ('divergent -> restore' vs
+  'different -> conflict, no overwrite') -> REQ-018 now defers entirely to REQ-024's conflict
+  rule; the two are explicitly the same rule.
+R4 high: the exit-code matrix had no code for -NoAutoRollback -> 13 added (REQ-026/DD-013/AC-036).
+R4 high: no AC proved the global fail-closed path -> AC-041 covers unwritable backup dir, reg
+  export unavailable, and Machine PATH capture failure, each asserting NOTHING was modified.
+R4 high: 'target absent -> restore' could resurrect a key the USER deliberately deleted later ->
+  REQ-029/AC-039 require proving the absence was caused by THIS run, else conflict/manual.
+R4 medium: journal self-validation was unverifiable -> REQ-027/AC-037 define the exact schema
+  and the precise self-validation predicate (version + guid + parseable time + existing files).
+R4 medium: T3 sequencing vs the new run's backup was ambiguous -> REQ-028/AC-038 fix the order
+  (consume journal -> recover -> pre-flight -> create new backup).
+R4 medium: registry comparison semantics were undefined -> REQ-024 now specifies structural
+  comparison (subkey set + all (name,type,data) tuples; metadata ignored) vs exact PATH equality.
+R4 low: AC-029's drift detection mechanism -> REQ-021 defines expected = original minus removed.
+
+R5 CRITICAL (all three experts): REQ-024 ('absent -> restore') contradicted REQ-029 ('must prove
+  this run caused it') -> REQ-024 is now the SINGLE authoritative 4-rule decision table; REQ-018
+  and REQ-029 explicitly defer to it and no longer define their own rules. Absent targets are
+  restored ONLY with this-run causal evidence (state mutation_succeeded + pre_existing), else
+  conflict/manual. AC-026 and AC-039 no longer assert opposite outcomes.
+R5 high: journal integrity binding was too weak (a copied/replaced journal passed) -> REQ-027 now
+  requires machine_fingerprint + per-backup SHA-256 + pre_existing, with AC-044 for copied/
+  tampered/foreign journals.
+R5 high: failure of a PRIOR run's recovery had no gate -> REQ-030 + AC-042 (abort the new run
+  before pre-flight rather than cleaning on top of unrepaired damage).
+R5 medium: state-name inconsistency (AC-003 said 'pending', AC-025 said 'planned') -> AC-003
+  now uses 'planned'; REQ-027 pins the enum to REQ-018's.
+R5 medium: AC-008 vs REQ-028 ordering ambiguity -> AC-008 scoped to the CURRENT run only;
+  AC-038 still asserts the prior-run journal is consumed first.
+R5 medium: AC-005 vs AC-029 could not both hold under drift -> AC-005 scoped to no-drift.
+R5 medium: pre-flight failure exit codes were unmapped -> REQ-026/AC-036/AC-041 assert them.
+R5 low: REQ-007 export subcases -> AC-043 (IO failure, reg.exe missing, permission denied).
+
+R6 CRITICAL (all three experts, same item): AC-026(b)/AC-034 still asserted 'target absent ->
+  restore' UNCONDITIONALLY, contradicting REQ-024 rule 3's causal requirement. Both ACs rewritten
+  to assert BOTH branches: restore only with mutation_succeeded + pre_existing, else conflict.
+R6 CRITICAL: REQ-024 rule 3 clarified - pre_existing ALONE is not causal proof; it requires
+  mutation_succeeded as well. planned/backup_created falls to rule 4 (conflict) regardless.
+R6 CRITICAL: REQ-007/AC-040 trim-failure did not mirror the fail-closed wording -> REQ-007 now
+  says a trim failure SKIPS the deletion, and AC-040 asserts the value still exists.
+R6 high: machine_fingerprint was undefined -> REQ-027 defines it (MachineGuid, fallback
+  hostname+volume serial) and adds cleanup_log_sha256 to the self-validation predicate.
+R6 high: REQ-030 'completely successful' was undefined for not_restorable items -> REQ-030 now
+  defines success as 'no restore_failed'; not_restorable is an honest report that warns but
+  does not block. Also fixed the REQ-028/REQ-030 ordering (consume -> recover -> abort if
+  failed, BEFORE pre-flight and BEFORE creating a new backup).
+R6 high: -NoAutoRollback vs prior-run T3 recovery was unspecified -> REQ-030 makes T3 recovery
+  mandatory regardless of the switch; REQ-012/AC-012 carve it out explicitly.
+R6 medium: REQ-003 did not list Machine PATH capture among mandatory protection -> added (c),
+  making AC-041 traceable.
+R6 medium: REQ-022 still claimed REQ-003 depended on restore-status.json -> corrected: that
+  file is informational for the OPTIONAL restore-point layer only.
+R6 medium: DD-003 claimed a 'pure function' while AC-040 tests failure -> DD-003 now specifies
+  the trim function takes/returns .reg TEXT (no IO), with the caller owning IO and error path.
+R6 medium: REQ-024 registry comparison depth was unbounded -> scoped to the reg-export scope.
+R6 medium: added AC-045 (per-action not_restorable reasons end-to-end).
+
+R7 high: T3 journal DISCOVERY was undefined -> REQ-019 now defines where journals are found
+  (backup-*/rollback-journal.json), the unfinished predicate (completed_at == null + >=1 real
+  entry), the selection rule (newest created_at, warn about others; tie => reject all), and a
+  completion marker (completed_at + consumed_by_run_id) so a stale journal is never replayed.
+  AC-046/AC-047 test selection and non-replay.
+R7 high: no exit code existed for 'prior-run recovery failed' -> code 14 added to REQ-026/
+  DD-013/AC-036, distinct from 13 (-NoAutoRollback) and 11 (rollback of THIS run failed).
+R7 medium: the all-not_restorable edge case was ambiguous -> REQ-030 states explicitly that even
+  if EVERY entry is not_restorable it counts as complete success (warn, do not abort); AC-048.
+R7 medium: REQ-024 comparison scope for trimmed startup-value exports -> scoped to the trimmed
+  minimal .reg's structural content, not the whole Run/RunOnce tree.
+R7 medium: machine_fingerprint fallback was weaker than AC-044 claimed -> REQ-027 records
+  fingerprint_source and adds an extra binding requirement when the fallback is used.
+R7 medium: DD-016 overstated crash-window recovery -> rationale now states plainly that the
+  ambiguous window becomes conflict/manual, NOT automatic restoration.
+
+R8 CRITICAL (all three experts): REQ-024 rule 3 was STILL insufficient - mutation_succeeded +
+  pre_existing only proves 'this run deleted something', not that the CURRENT absence is ours;
+  an external delete/recreate-delete satisfies both, so the tool could resurrect user action.
+  Fixed with a THIRD mandatory flag: absent_confirmed_after_mutation (re-check immediately after
+  deleting). All three are now required. AC-050 asserts the negative case.
+R8 critical/high: 'copied journal' rejection was unachievable - a same-machine full copy is
+  byte-identical and self-consistent, so content cannot distinguish it. DD-017 + REQ-027 now
+  state the achievable rule honestly: refuse all journals sharing a run_id and require manual
+  intervention, and do NOT promise to reject a self-consistent same-machine copy. AC-044 scoped.
+R8 high: the self-validation predicate omitted cleanup_log_sha256 -> predicate now includes it
+  (when non-null), plus the completed_at==null requirement.
+R8 high: the journal had no Machine PATH original, so T3 (no cleanup log) could not restore PATH
+  -> REQ-027 adds machine_path_original + machine_path_scope; AC-021 asserts PATH restore from
+  the journal alone.
+R8 high: no rule for a mid-run journal FLUSH failure after a mutation -> REQ-005 now makes it
+  fail-closed: stop further destructive actions, roll back from the last durable state, distinct
+  exit code. AC-049.
+R8 high: the schema could not express not_restorable entries (backup_file required) -> REQ-027
+  defines nullability rules for path/service/task vs registry entries. AC-051.
+R8 medium: AC-025 invented an undefined 'unchanged' verdict -> REQ-009 now fixes the enum to
+  four values and maps 'unchanged' to already_present; AC-025 rewritten.
+
+R9 CRITICAL (all three experts, same item): even the three-flag chain cannot prove the CURRENT
+  absence is ours - an external delete/recreate/delete after our post-mutation check satisfies
+  every flag. This is not fixable by adding flags. RESOLVED BY BOUNDING THE CLAIM (DD-018):
+  auto-restore only within a 24h window of created_at; outside it, or with any sign of external
+  change, degrade to conflict/manual. The spec now explicitly documents this limit instead of
+  over-promising. AC-050 asserts both the window and the missing-flag branches.
+R9 CRITICAL: REQ-005 'roll back from the last durable state' implied an unjournaled mutation was
+  recoverable - contradiction with REQ-018's state machine. Rewritten: in-process best effort +
+  explicit restore_failed/'not recorded' marking; never a silent unrepaired deletion. AC-052.
+R9 high: completion-marker write failure could replay a stale journal -> REQ-019 requires an
+  atomic durable marker; failure => abort with 14, never re-consume. AC-053.
+R9 high: self-validation failure and zero-entry journals were unmapped in REQ-030 -> now explicit
+  (self-validation failure/duplicate run_id => 14 before pre-flight; zero processable entries =>
+  complete success, continue). AC-054.
+R9 high: AC-044 overclaimed rejection of a byte-identical same-machine copy -> rescoped to the
+  five mechanically verifiable cases; DD-017 remains the honest statement of the limit.
+R9 high: REQ-027's hostname_fallback clone-resistance was aspirational -> now states plainly that
+  clone detection is NOT guaranteed under that fallback.
+R9 medium: REQ-021 'expected value' was ambiguous for multiple PATH deletions -> defined as
+  original minus entries with success=true in the cleanup log.
+R9 medium: AC-026(c)/AC-034(3) did not list all three flags -> updated to match REQ-024 exactly.
+
+R10 high: REQ-005's 'distinct exit code' was never mapped -> code 15 (journal flush failed,
+  fail-closed, reports ahead of 10/11/12/13) added to REQ-026/DD-013/AC-036.
+R10 high: a permanent prior-run conflict could BRICK all future cleanup, since completed_at is
+  only written on success -> REQ-030 now has a required manual acknowledgement path
+  (-AcknowledgeConflicts or removing the backup dir) that marks the journal
+  consumed_with_failure=true and lets cleanup resume, always keeping the unrepaired list in the
+  report. AC-055 proves cleanup is not permanently blocked.
+R10 high: 'any sign of external change' was undefined -> REQ-024 now enumerates five
+  mechanically detectable signs ((i) target present-but-different, (ii) parent key/dir last-write
+  newer than this run, (iii) PATH drift, (iv) duplicate run_id, (v) hash mismatch) and AC-056
+  asserts each degrades to conflict. The residual (undetectable) risk is recorded, not denied.
+R10 high: a marker-write failure would re-select the journal next launch, so AC-053 was
+  untestable -> REQ-019 adds a sidecar rollback-consumed.json; either marker suppresses
+  re-consumption; if BOTH fail, refuse the journal and return 14. AC-057.
+R10 high: only the newest of several unfinished journals was consumed, so later runs could fall
+  back to an OLDER journal -> REQ-019 now marks all other candidates consumed_with_failure=true
+  and returns 14, preserving the 'only the immediately preceding run' non-goal.
+R10 high: AC-014 ('second rollback reports already_present') contradicted the no-replay rule ->
+  rescoped to an in-process retry before the marker is written; a cross-process second call
+  reports 'already completed' and changes nothing.
+R10 medium: REQ-019's unfinished predicate required a non-skipped entry, which made AC-054
+  untestable -> discovery now selects all completed_at==null journals and lets REQ-030 classify
+  zero processable entries as success.
+R10 medium: PATH drift detection had no time bound -> REQ-021 states the 24h window applies only
+  to REQ-024's auto-restore decision; PATH drift is unbounded and always degrades to manual.
+R10 low: fingerprint_source was not itself validated -> added to the REQ-027 predicate.
+R10 low: created_at tie behaviour had no exit code -> REQ-019 states it returns 14 and routes to
+  the same acknowledgement path.
+
+R11 CRITICAL: external-change sign (ii) SELF-TRIGGERED - our own registry deletion necessarily
+  updates the parent key LastWriteTime, so comparing it to the run start timestamp made every
+  own-mutation look external and rendered rule 3 auto-restore UNREACHABLE. Fixed: the journal now
+  records parent_lastwrite_after_mutation immediately AFTER the delete, and sign (ii) compares
+  against that baseline. AC-056 asserts our own mutation is not misflagged.
+R11 high: REQ-021's expected-PATH formula needed the cleanup log, but T3 has only the journal ->
+  REQ-021 now defines the journal-only derivation (machine_path_original minus entries with
+  state=mutation_succeeded); if neither source is usable, degrade to conflict and never
+  overwrite. AC-059.
+R11 high: journal updates were not atomic, so a crash mid-write leaves malformed JSON that
+  REQ-027 rejects - defeating T3 recovery. REQ-005 now requires temp-file + fsync + atomic
+  replace, and fallback to the last parseable state. AC-058.
+R11 high: deleting the backup dir as an acknowledgement would destroy the only copy of the
+  unrepaired list -> REQ-030 now requires the list be persisted OUTSIDE the backup dir first,
+  and -AcknowledgeConflicts is the confirmation path (dir removal is last resort, with the list
+  emitted and its location reported). The ack path explicitly covers all three code-14 cases.
+  AC-060.
+R11 medium: exit code 14 covered only 'recovery incomplete' while REQ-019 also returns 14 for
+  ambiguity -> REQ-026 now defines 14 as 'prior journal could not be safely consumed' covering
+  incomplete recovery, self-validation failure/duplicate run_id, and created_at tie/multiple
+  journals.
+R11 medium: exit code 15 precedence was stated in DD-013 but not REQ-026 -> REQ-026 now says a
+  run returns exactly one code and 15 is terminal (10/11/12/13 are not evaluated).
+R11 medium: REQ-024's 'structural content' for a trimmed .reg was undefined -> now (value name,
+  type, data) with metadata ignored, symmetric with registry comparison.
+R11 low: REQ-027 machine_path_original nullability -> null is allowed only when the journal has
+  no successful path_entry_removed entry; otherwise self-validation fails.
+R11 low: REQ-005's unjournaled-mutation verdict -> explicitly restore_failed(unjournaled) +
+  manual, NOT silently skipped via rule 4.
+
+R12 critical: sign (ii)'s baseline was in-process only, so it was UNIMPLEMENTABLE for T3
+  (recovery runs in a different process) -> REQ-027 now requires
+  parent_lastwrite_after_mutation to be PERSISTED per entry, nullable for path/service/task
+  (no parent-key semantics) where sign (ii) does not apply.
+R12 critical: the created_at tie case had no working acknowledgement path (nothing was
+  SELECTED, so there was nothing to mark consumed) -> REQ-030 defines -AcknowledgeConflicts
+  for ties as: mark ALL candidate journals consumed_with_failure, emit each backup_dir/run_id/
+  created_at for review, then continue. Without confirmation the tool stays at 14. AC-063.
+R12 high: signs (iv)/(v) were listed as PER-ENTRY conflict signs while REQ-019/REQ-027/REQ-030
+  treat them as whole-journal rejection -> REQ-024 now separates per-entry signs (i)-(iii) from
+  journal-level rejections (iv)/(v); AC-056 asserts 14/abort for the latter.
+R12 high: the 24h window's reference point was ambiguous -> measured from created_at to the
+  RECOVERY ATTEMPT time; comparison is strictly < 24h. AC-050 asserts 24h and 24h+1s degrade
+  while 23h59m restores. The delayed-recovery tradeoff is stated explicitly.
+R12 high: -DryRun vs mandatory T3 recovery was contradictory -> REQ-030 states -DryRun stays
+  zero-side-effect (does not consume, recover, or rewrite markers; only reports) and never
+  returns 14. AC-061.
+R12 high: non-admin ordering would have produced 14 instead of 2 -> REQ-030 puts the admin
+  check BEFORE T3 recovery; permission errors during recovery also report 2. AC-062.
+R12 high: REQ-005's 'last parseable state' was undefined -> concrete protocol: keep one
+  previous generation as rollback-journal.prev.json, fall back to it, depth fixed at 1
+  generation. AC-058.
+R12 medium: rollback-consumed.json had no schema -> REQ-019 fixes it to
+  {run_id, consumed_at} with the same atomic write protocol; unparseable counts as absent.
+  AC-064.
+R12 medium: AC-046 did not assert the return code or the side-effect marking -> extended.
+R12 high (feasibility): the restore-point product promise conflicted with the verified
+  unreliability of System Restore -> REQ-017 now revises the user-facing promise to
+  'mandatory per-item protection + best-effort restore point', and forbids the unconditional
+  'backed up via restore point' wording. AC-065.
+
+R13 high: sign (ii) self-triggered EVEN AFTER the post-mutation baseline fix, when multiple
+  entries share one parent (each later delete advances the parent's LastWriteTime, invalidating
+  earlier entries' baselines) -> the baseline is now aggregated PER PARENT
+  (parent_baseline = last recorded for that parent, i.e. the max) and written at run end.
+  AC-056(c) now covers the multi-entry-same-parent case.
+R13 high: REQ-018's state machine was undefined for null-backup path/service/task entries
+  (they cannot legitimately enter backup_created) -> they now travel planned -> mutation_succeeded,
+  skipping backup_created, and are always not_restorable. AC-066.
+R13 high: REQ-019 marked all other candidate journals consumed BEFORE proving the selected one
+  self-valid, so one tampered newer journal could destroy a valid older recovery record ->
+  REQ-019 now validates ALL candidates first and, if any fails, marks/consumes NONE and returns
+  14. AC-067.
+R13 medium: the 24h window's configurability was undefined -> fixed at 24h with NO config
+  switch, because a tunable safety boundary invites 'widen it for more automation'.
+R13 medium: PATH auto-restore's window relation was ambiguous -> REQ-021 now states PATH auto-
+  restore is subject to the SAME 24h window (drift detection itself is unbounded). AC-069.
+R13 medium: cleanup_log_timestamp was required but never validated -> the REQ-027 predicate now
+  checks cleanup_log_path exists and its last-write time matches within 2s. AC-068.
+R13 low: the 1-generation fallback depth had no rationale -> DD-019 records why 1 generation
+  suffices (it covers the atomic-replace crash) and why deeper chains are not worth it.
+
+R14 critical: parent_baseline was written only at run END, which is precisely the case T3
+  excludes (the run crashed) -> REQ-027 now persists it per mutation and the RECOVERY side
+  re-derives it as the MAX across entries sharing that parent; a missing field skips sign (ii)
+  for that entry and is noted in the report.
+R14 critical: the cleanup-log self-validation checks contradicted T3 recovery (they required
+  cleanup_log_path to exist, which T3 by definition lacks) -> all three cleanup-log checks are
+  now gated on cleanup_log_sha256 being non-null; AC-068 asserts both branches.
+R14 high: AC-060's acknowledgement could not work for an UNPARSEABLE journal (you cannot edit
+  it in place) -> REQ-030 now defines a sidecar rollback-acknowledged.json written by the
+  HUMAN, distinct from rollback-consumed.json written by the TOOL.
+R14 high: the unrepaired-list had no schema/location -> REQ-030 fixes it to
+  output/rollback-unrepaired-<run_id>.json with an atomic write and a defined item shape.
+R14 high: REQ-019's 'validate all then select' order was ambiguously worded -> restated as an
+  explicit 5-step sequence with the two terminal branches.
+R14 medium: AC-053 vs AC-057 disagreed about re-consumption -> AC-053 now scoped to the case
+  where the sidecar write SUCCEEDS; if both fail, the next run sees it again and returns 14
+  (intended conservative behaviour).
+R14 medium: multiple-journal 14 semantics were inconsistent (auto vs ack) -> clarified:
+  DIFFERENT created_at auto-converges via REQ-019 (next run does not return 14); a TIE requires
+  -AcknowledgeConflicts. AC-063 asserts the distinction.
+R14 medium: AC-059 vs REQ-027 disagreed on null machine_path_original -> reconciled: null + a
+  successful path_entry_removed is a self-validation failure (14); null + none is fine and
+  PATH restore is skipped.
+R14 medium: REQ-024's trimmed-.reg comparison algorithm was under-specified -> now only the
+  target value's (name,type,data) is compared; the version line, parent-key line, blank lines
+  and metadata never participate.
+
+R15 CRITICAL: a SUCCESSFUL cleanup never closed its journal, so the next launch would treat a
+  correctly-finished run as unfinished T3 and RE-INSTALL everything it had just deleted ->
+  new REQ-031 requires every normal termination path (all-success, partial+rollback-ok,
+  -NoAutoRollback) to atomically write completed_at before exit. AC-070.
+R15 high: 'atomic' was specified as Move-Item -Force, which in PS 5.1 deletes-then-moves and
+  therefore has a window where the journal does not exist -> REQ-005 now mandates
+  [System.IO.File]::Replace() (or ReplaceFile), with first-write falling back to write+Move.
+  AC-071 asserts the target always exists and the previous generation survives.
+R15 high: -AcknowledgeConflicts' 'human writes the sidecar' vs 'the tool writes it' was
+  contradictory -> clarified: the switch is a HUMAN authorization; the tool performs the
+  mechanical write only when the human supplied it. Decision by human, persistence by tool.
+R15 high: REQ-003(c) required PATH capture unconditionally, which made 'null + no PATH change'
+  a false failure -> scoped to 'only when PATH entries are actually to be removed'; the
+  null+successful-entry self-validation failure is documented as a defensive check.
+R15 medium: REQ-019's ordering was prose -> now explicit numbered Steps 1..5 with the two
+  terminal branches (4a all-pass -> restore newest, mark rest, 14; 4b any-fail -> mark nothing).
+R15 medium: output/ was ambiguous (project root vs backup subdir) -> pinned to
+  <project_root>/output/, sibling of backup-*/, so deleting a backup dir cannot lose the list.
+R15 medium: the 24h delayed-recovery tradeoff was not surfaced to users -> REQ-014/AC-065 now
+  require UI and docs to state that crash recovery must happen within 24h or it degrades to
+  manual.
+
+R16 high: Step 1 collected ALL journals including COMPLETED ones, and REQ-027 requires
+  completed_at==null, so a prior successful run's journal failed self-validation and Step 4b
+  made EVERY subsequent cleanup return 14 - the tool would never run again. Step 1 now filters
+  completed candidates (completed_at set, or a consumed/acknowledged sidecar) before Step 3.
+  AC-072.
+R16 high: sign (ii) also self-triggered during ROLLBACK, because restoring several entries
+  under one parent advances that parent's LastWriteTime, making later entries look externally
+  modified -> recovery is now TWO-PHASE (compute all Rule-3 verdicts first, then execute), so
+  our own writes cannot influence the verdicts. AC-074.
+R16 high: Step 4b (ALL candidates corrupt) had no unlock - nothing was selected, so nothing
+  could be acknowledged -> -AcknowledgeConflicts now writes rollback-acknowledged.json for all
+  self-failing candidates. AC-073.
+R16 high: consumed_with_failure was used throughout but absent from the schema -> added to
+  REQ-027 with default false.
+R16 high: fingerprint_source was added to the predicate but not enumerated in its bullets ->
+  now explicit, and AC-037 asserts a missing/illegal value fails.
+R16 high: parent_baseline could be missing mid-crash, and recovery had to tolerate it -> REQ-027
+  now states per-entry tolerance: skip sign (ii) for that entry, mark its evidence incomplete,
+  but do NOT reject the whole journal. AC-075.
+R16 medium: AC-041 required PATH-capture failure to abort unconditionally, contradicting
+  REQ-003(c)'s conditional -> AC-041 now aborts only when PATH entries are actually to be
+  removed.
+R16 medium: AC-071's 'previous generation survives' was untestable on a first write -> carve-out
+  added.
+R16 medium: DD-003's trim output was not contractually single-value -> DD-003 now fixes the
+  contract (exactly one value definition + the parent key line), asserted by AC-002.
+
+R17 CRITICAL: a crash AFTER a successful cleanup but BEFORE the completion marker would make
+  the next launch treat a finished run as unfinished T3 and resurrect everything just deleted.
+  REQ-031 now adds the fallback: completed_at==null BUT cleanup log present AND
+  summary.failed==0 => SUPPRESS auto-restore, report 'completed (marker missing)', treat as
+  consumed. AC-076.
+R17 CRITICAL: exit 11 (partial failure, rollback incomplete) had no defined journal state ->
+  REQ-031 now requires the journal to REMAIN UNFINISHED and the unrepaired list to be persisted,
+  so the next launch retries T3 instead of treating a still-damaged system as finished. AC-077.
+R17 high: -AcknowledgeConflicts' ordering and failure handling were undefined -> REQ-030 fixes
+  the order (atomically write the unrepaired list FIRST; only on success write the marker), and
+  a list-write failure aborts without writing any marker, returning 15. AC-078. 'Confirmed but
+  the list is lost' is now impossible.
+R17 high: the ack sidecar's path for an unparseable journal was undefined -> pinned to the
+  backup-* dir the candidate physically lives in (run_id from the dir name, 'unknown' if
+  undeterminable).
+R17 high: MAX(parent_baseline) with a null element was undefined -> nulls are skipped; if all
+  entries for a parent are null, sign (ii) is skipped for that parent and noted. AC-075(a).
+R17 high: REQ-027 made parent_baseline mandatory while REQ-024 tolerated its absence ->
+  reconciled: registry entries may have null (T3 tolerance) and skip sign (ii) for that entry.
+R17 high: AC-036 asserted only one of the four code-14 branches -> now all four have cases.
+R17 medium: Step 4a marked older journals consumed without persisting their unrepaired lists ->
+  REQ-019 now requires a list for those too. AC-079.
+
+R18 high: REQ-031's fallback was not wired into REQ-019's fixed 5-step flow, so a literal
+  implementation of Step 5 would still resurrect -> new Step 3.5 applies the suppression
+  BEFORE Step 4/5. AC-076 now names Step 3.5, and adds the contrast case (failed>0 still T3).
+R18 high: REQ-031's fallback didn't state the converse -> explicitly: completed_at==null AND
+  summary.failed>0 (e.g. exit 11) still goes through T3 recovery; the only discriminator is
+  whether summary.failed is 0.
+R18 high: AC-044 listed completed_at non-empty as a self-validation rejection, but Step 1
+  silently FILTERS such journals before validation -> AC-044 rescoped to the four real
+  rejection cases; AC-072 covers the filtering.
+R18 high: exit code 14 vs AC-048 conflicted when multiple journals exist AND all entries are
+  not_restorable -> precedence defined: multiple-candidate 14 wins; AC-048 scoped to a single
+  candidate.
+R18 high: Step 4a marked the OTHER journals consumed without their unrepaired lists -> REQ-019
+  now writes each list BEFORE marking (same order rule as REQ-030). AC-079.
+R18 high: Step 4b's acknowledgement did not say which directory/run_id to use for an
+  unparseable journal -> one sidecar per candidate in its own backup-* dir, run_id from the
+  directory name or 'unknown'; if the directory cannot be identified, instruct manual removal.
+  AC-073 asserts per-candidate sidecars.
+R18 medium: sign (ii) said 'parent key/parent directory' while parent_baseline is null for
+  path/service/task -> sign (ii) is now explicitly registry-key only.
+R18 medium: sign (ii)'s comparison was ambiguous -> strictly later than the baseline (equal
+  counts as our own operation).
+R18 medium: machine_path_original nullability vs REQ-003(c) -> null is a self-validation
+  failure only if a path_entry_removed SUCCEEDED; all-failed removals make null legitimate.
+
+R19 CRITICAL: the suppression step ran AFTER self-validation, so a journal whose
+  cleanup_log_sha256 was non-null while the log itself had vanished would fail Step 3 and
+  return 14, never reaching suppression - the exact opposite of the intent. The step is now
+  Step 2.5, BEFORE Step 3, and reads the REAL cleanup log rather than trusting the journal's
+  sha256 field. The converse branch (failed>0 => normal T3) is stated explicitly.
+R19 CRITICAL: AC-056(c)'s multi-entry aggregation cannot hold under T3 (no baseline written if
+  the run died) -> marked best-effort and scoped to normal completion.
+R19 high: AC-074 conflated cleanup-time (continuous per-entry writes, required for T3 survival)
+  with recovery-time (two-phase compute-then-execute) -> AC-074 scoped to recovery only.
+R19 high: REQ-030's Step 4b acknowledgement needed a run_id for an UNPARSEABLE journal, but the
+  backup-* naming convention was never defined -> new REQ-032 fixes directory naming to
+  backup-<run_id>, making the directory name the run_id and making duplicate-run_id detection
+  directly implementable. Legacy dirs degrade to run_id=unknown, deduped by path. AC-080.
+R19 high: Step 1 filtered candidates by sidecar EXISTENCE, contradicting AC-064's
+  'unparseable counts as absent' -> Step 1 now PARSES sidecars; a corrupt sidecar no longer
+  suppresses mandatory T3 recovery. AC-082.
+R19 medium: cleanup_log_path/timestamp/sha256 nullability was asymmetric -> the three must be
+  all-null or all-non-null. AC-083.
+R19 medium: exit 12 had no reachable trigger -> defined concretely as 'summary.failed>0 and the
+  journal file is missing/unreadable at rollback time', with a constructible fixture. AC-081.
+R19 medium: exit 15 covered only journal flush failure but AC-078 required it for an
+  unrepaired-list write failure -> broadened to 'persistence-record write failure'.
+
+R20 CRITICAL: Step 2.5 trusted ANY existing successful cleanup log, so a tampered journal
+  pointing at ANOTHER run's successful log could skip mandatory T3 recovery entirely -> the
+  cleanup log must now be BOUND to this candidate (path exists; if cleanup_log_sha256 is
+  non-null the hash must match or the candidate is rejected; run_id must agree). AC-084.
+R20 CRITICAL: if ALL entries for a parent lack parent_baseline (crash before the first
+  baseline write), sign (ii) is now explicitly skipped for that whole parent, symmetric with
+  the per-entry tolerance in REQ-027/AC-075(a). AC-087. AC-056(c) is best-effort.
+R20 high: rollback-consumed.json was not covered by REQ-005's atomic protocol -> a crash
+  mid-write would leave a malformed sidecar that Step 1 treats as absent, causing
+  RE-CONSUMPTION of an already-consumed journal. Now uses File.Replace like the journal.
+R20 high: REQ-030's unrepaired-list item_id had no defined relationship to the journal's
+  entries -> REQ-027 now enumerates kind (registry_key|startup_value|path_entry|service|task)
+  and fixes item_id = '<kind>:<normalized target>'. AC-085.
+R20 high: sidecars were accepted as proof of consumption without checking run_id -> the parsed
+  sidecar run_id must match the journal or the directory-derived run_id; mismatches count as
+  absent, so a copied sidecar cannot skip mandatory recovery. AC-086.
+R20 medium: AC-076 referenced a non-existent 'Step 3.5' -> corrected to Step 2.5.
+R20 medium: REQ-026 enumerated three code-14 branches while AC-036 required four -> REQ-026 now
+  lists all four, including 'both consumption markers failed to write'.
+R20 medium: cleanup-log success=true vs journal state=mutation_succeeded equivalence was
+  undefined -> they must correspond one-to-one; on disagreement the journal wins and the
+  discrepancy is reported. AC-059.
+R20 medium: AC-072 did not cover the 'marker written but sidecar missing' branch -> added the
+  mutual-exclusion assertion (Step 1 filters; Step 2.5 is not reached).
+
+R21 CRITICAL: the kind enum omitted file/directory deletion, so path/file cleanup actions
+  (REQ-018, AC-045/066, DD-006) could not be journaled at all -> kind now has SIX values,
+  adding path_deleted (distinct from path_entry, which is PATH-environment-entry removal).
+  AC-085 updated.
+R21 CRITICAL: Step 2.5's binding required the cleanup log to EXIST, but T3 is defined by that
+  log being absent - so the REQ-031 fallback could never fire. Binding is now graded by
+  evidence availability: (1) readable -> verify hash+run_id, may suppress; (2) gone and sha256
+  null -> do not suppress; (3) gone but sha256 non-null -> do not reject, do not suppress,
+  defer to Step 3. AC-090.
+R21 CRITICAL: Step 2.5 is stated to read ONLY the cleanup log's summary.failed and must NOT
+  depend on the journal's parent_baseline (that aggregation belongs to Step 5's sign-(ii)
+  evaluation, consistent with AC-074's two-phase design).
+R21 high: REQ-027 tolerates a missing cleanup log with non-null sha256, but AC-068 asserted it
+  fails self-validation -> AC-068 rewritten to match REQ-027 (three branches).
+R21 high: Step 2.5's run_id binding was unimplementable because cleanup-log.json had no run_id
+  -> new REQ-033 requires it to carry the same run_id as the journal; legacy logs without it
+  degrade to the 'insufficient evidence' branch. AC-088.
+R21 high: if BOTH consumption markers failed to write, the next launch would pass
+  self-validation and RE-CONSUME the journal, making AC-053 untestable -> a small durable
+  rollback-consumed.failed.json is now written, and that candidate requires
+  -AcknowledgeConflicts. AC-089.
+R21 high: Step 4a's unrepaired list for OLDER journals had no valid reason code (they were
+  never restored, so conflict/not_restorable are wrong) -> reason is fixed to
+  skipped_older_journal. AC-091.
+R21 high: AC-050 overclaimed that no branch resurrects user-deleted content, contradicting
+  REQ-024/DD-018's admitted residual risk -> the overclaim is removed and the residual risk is
+  cited explicitly instead.
+R21 medium: REQ-021's 24h window constraint was only in a note -> now in the body, with a fixed
+  evaluation order (window first, then drift).
+R21 medium: duplicate test_type keys existed on AC-075/AC-087 (and duplicate priority/addresses
+  on REQ-019) -> all duplicates removed; the file now has zero duplicate YAML keys.
+
+## Verified ground truth about the existing system (all read from code / executed)
+
+# Auto-Rollback — Requirements Analysis (R1 input)
+
+- **Sprint**: `sprint-2026-10-01-01`
+- **Feature**: 自动回滚（auto-rollback）—— 清理前自动建立还原点 + 备份；清理失败时自动回滚
+- **Author**: Lead (sprint-flow Phase 2 DESIGN, Part A Step 1–2 input)
+- **Status**: draft → feeds `/delphi-review --mode requirements`
+- **Method**: direct code reading + executed experiments. Every claim about *existing*
+  behaviour cites file:line. Every claim about *mechanics* was executed on this machine
+  and the observed output is quoted.
+
+---
+
+## 1. Ground truth about the current system
+
+These are not assumptions; they were read out of the code and/or executed.
+
+### 1.1 Cleanup never signals failure via its exit code
+
+`clean-residuals.ps1` sets a non-zero code **only in pre-flight gates**:
+
+| line | code | condition |
+|------|------|-----------|
+| 235 | 2 | not admin (mandatory) |
+| 249/271/302/309/314 | 1 | bad input / report unreadable / bad ConfirmFile |
+| 325 | 0 | report-only mode |
+| **530** | **0** | **end of a real cleanup run — always 0** |
+
+Per-item failures are recorded **only** in `cleanup-log.json` as
+`{ action = 'cleanup_failed', error = ..., success = $false }` (lines 462, 507), and the
+summary counts them (`summary.failed`, line 516) — but **the process still exits 0**.
+
+> **Consequence for design**: "cleanup failed" cannot be defined by exit code alone.
+> The authoritative failure signal is `cleanup-log.json → summary.failed > 0`.
+
+### 1.2 The complete set of cleanup actions (the rollback contract)
+
+Everything `clean-residuals.ps1` can do, from the `$log.Add(...)` sites:
+
+| action | line | payload logged | reversible? |
+|--------|------|----------------|-------------|
+| `path_deleted` | 409 | `path` | **partially** — see §2.1 |
+| `service_deleted` | 422 | `name` | **no** (binary already deleted first) |
+| `task_deleted` | 440 | `name` | **no** |
+| `path_entry_removed` | 459 | `path` | **yes** (string edit) |
+| `registry_deleted` | 503 | `key` | **yes, if exported first** (proved in §1.4) |
+| `startup_value_deleted` | 489 | `key`, `value` | **yes, if exported first** |
+| `registry_skip` | 483, 497 | `key` | n/a (nothing changed) |
+| `skipped_whitelisted` | 350 | `id` | n/a |
+| `skipped_danger` | 355 | `id` | n/a |
+| `cleanup_failed` | 462, 507 | `error` | n/a (the action did not complete) |
+
+Critical **ordering** detail: files are deleted **before** services (line 412 comment:
+"Delete services (after files, so binaries are released)"). So by the time
+`service_deleted` is reached, the service's binaries are already gone — restoring the
+service registration alone yields a **broken** service pointing at a missing binary.
+
+### 1.3 The existing registry backup does NOT cover what cleanup deletes
+
+`create-restore-point.ps1` lines 104–108 export exactly three keys — all of them
+`...\CurrentVersion\Uninstall` keys. But `clean-residuals.ps1` deletes keys of the form
+`HKLM\Software\<Vendor>` / startup **values** (lines 471–503), and edits `PATH`
+(lines 430–459). **None of those are covered by the current backup.**
+
+> **Consequence for design**: the existing backup is adequate for *scanning* safety but
+> **insufficient for rollback**. Auto-rollback must export each key *at the moment it is
+> about to be deleted*, not rely on the pre-flight backup.
+
+### 1.4 Targeted registry restore works — proved by execution
+
+Executed on this machine (HKCU sandbox, no admin needed):
+
+```
+1) created HKCU\Software\WRC_RollbackProbe with Marker=hello and Sub\Nested=0x2a
+2) reg export  -> 376-byte .reg file
+3) reg delete  -> key gone
+4) reg import  -> exit 0
+5) reg query /s -> Marker REG_SZ hello ; Nested REG_DWORD 0x2a   ← fully restored
+```
+
+So **export-before-delete + import-to-restore is a real, working mechanism**, and unlike a
+whole-system restore point it is *targeted*: it restores exactly what we removed.
+
+### 1.5 System Restore availability is not guaranteed, and is throttled
+
+From `create-restore-point.ps1` (§ 38–98): restore-point creation is best-effort.
+It can be **disabled** (System Protection off) and `Checkpoint-Computer` can **throw**;
+on throw the script sets `$restorePointEnabled = $false` and prints
+`"Cleanup will proceed WITHOUT backup protection."` (line 97).
+Windows also throttles restore-point creation (default once per 24h via
+`SystemRestorePointCreationFrequency`), so a second cleanup in a day silently creates none.
+
+---
+
+## 2. Requirements
+
+### 2.1 What auto-rollback can and cannot undo
+
+This is the most important section. Being honest here is what keeps the feature from
+becoming dangerous snake oil.
+
+**CAN be rolled back — reliably**
+
+| item | mechanism | notes |
+|------|-----------|-------|
+| `registry_deleted` | `reg import` of a per-key `.reg` exported immediately before deletion | proved §1.4; covers subkeys/values |
+| `startup_value_deleted` | same, exported at value granularity | must export the **value**, not the shared Run key |
+| `path_entry_removed` | re-append the exact string to the same scope (user/machine) | must record scope + original position |
+
+**CANNOT be rolled back**
+
+| item | why | honest statement to the user |
+|------|-----|------------------------------|
+| `path_deleted` (file/dir contents) | `Remove-ItemRobust` deletes recursively with no archive; tier 4 even renames then schedule-deletes | **contents are gone.** A restore point *would* help, but only if one was successfully created |
+| `service_deleted` | binaries are deleted *before* the service (line 412), so re-creating the registration yields a service pointing at nothing | registration restorable, service **functionality** is not |
+| `task_deleted` | we delete the task but never captured its XML/action | not restorable |
+| anything after a reboot mid-rollback | state is in-memory unless journaled | must journal to disk |
+
+> **Design consequence (non-negotiable)**: auto-rollback must never *claim* to have
+> "undone" the cleanup. It must report **per item** what was restored and what was not.
+> A blanket "Rollback complete ✓" would be a lie for path/service/task deletions.
+
+### 2.2 What counts as "cleanup failed" (triggers rollback)
+
+Three distinct triggers must be considered separately:
+
+- **T1 — hard abort**: a pre-flight gate returns non-zero (exit 2/1). **Nothing was
+  changed**, so **no rollback should run**. (Rolling back here would be pure noise, and
+  worse: it could restore state the user did not ask us to touch.)
+- **T2 — item-level failure**: `summary.failed > 0` in `cleanup-log.json` while the
+  process still exited 0 (§1.1). This is the real case auto-rollback exists for.
+- **T3 — partial completion**: the run died mid-way (power loss, Ctrl-C, crash). The log
+  may be missing entirely or truncated.
+
+**Recommended rule** (needs the user's confirmation, see §4 Q1):
+rollback triggers on **T2 only**, plus **T3 when a journal exists** — and never on T1.
+
+### 2.3 The scariest risk: a system restore point is a blunt instrument
+
+`Restore-Computer` rolls the **entire system** back to the restore point. If the user
+installed software, saved documents, or changed settings *after* the restore point was
+created, auto-executing `Restore-Computer` would **destroy those changes too** — far worse
+than the residue we were trying to clean. It also **forces a reboot**.
+
+> **Design consequence**: `Restore-Computer` must **never** be invoked automatically.
+> Automatic rollback is restricted to **targeted** restoration (registry import + PATH
+> edit + reported-manual steps). The restore point stays a manually-invoked last resort,
+> and the tool must say so explicitly.
+
+This is the single most important safety constraint in the whole feature.
+
+### 2.4 Acceptance criteria (draft)
+
+Each is written to be mechanically verifiable.
+
+| id | criterion | test_type |
+|----|-----------|-----------|
+| AC-001 | Before deleting a registry key, the key is exported to a per-item `.reg` inside the run's backup dir; the filename is recorded in the journal | unit |
+| AC-002 | Before deleting a startup **value**, only that value is exported (the shared Run key is never deleted or wholly re-imported) | unit |
+| AC-003 | A journal file is written **before** the first destructive action and flushed after each item, so a crash leaves a usable record | integration |
+| AC-004 | Rollback restores `registry_deleted` items via `reg import` and each restored key is re-queried to confirm it exists | integration |
+| AC-005 | Rollback restores `path_entry_removed` items and the resulting PATH string equals the pre-cleanup string | integration |
+| AC-006 | Rollback output lists, per item, one of `restored` / `not_restorable` / `restore_failed`, with a reason for the latter two | unit |
+| AC-007 | Rollback **never** invokes `Restore-Computer` automatically; a test asserts the command is never called on the auto path | unit |
+| AC-008 | Pre-flight gate failures (exit 2/1) do **not** trigger rollback, even when a journal is present | unit |
+| AC-009 | `summary.failed > 0` with process exit 0 **does** trigger rollback | integration |
+| AC-010 | `-DryRun` writes no journal and performs no rollback | unit |
+| AC-011 | If rollback itself fails partway, it continues with the remaining items and reports partial success rather than aborting | integration |
+| AC-012 | Auto-rollback can be disabled by an explicit switch, and when disabled the behaviour is exactly today's | unit |
+| AC-013 | The tool warns the user *before* cleanup when it cannot create a restore point, stating that file/dir deletions will be **unrecoverable** | unit |
+| AC-014 | Rollback is idempotent-enough to be re-run: a second run reports already-restored items as `already_present` instead of erroring | integration |
+
+### 2.5 Non-functional requirements
+
+- **NFR-1** PS 5.1 compatible (runtime baseline) and must also pass under pwsh 7 — the
+  pre-commit gate runs Pester on **pwsh 7**. (Learned the hard way this sprint.)
+- **NFR-2** Every new script keeps the ADR-001 shape: `Main` relays via `[ref]$ExitCode`,
+  no `exit` inside `Main`, guard does the single `exit`.
+- **NFR-3** No new `--no-verify`, no additions to `.xp-gate-powershell-coverage-ignore`;
+  new code must arrive with tests that keep coverage ≥ 80%.
+- **NFR-4** Backup/journal artefacts go to the gitignored `backup-*` area, and tests must
+  build/clean their own fixtures (hermeticity — blocker B1's lesson).
+- **NFR-5** Rollback must be usable when the machine is in a bad state: it must not depend
+  on the report/scan JSONs being present or valid.
+
+---
+
+## 3. Recommended shape (for the design doc)
+
+1. **Journal-first**: `clean-residuals.ps1` writes `rollback-journal.json` before its first
+   destructive act, appending one record per item *before* that item is touched.
+2. **Per-item pre-export**: immediately before `reg delete`, `reg export` that exact key;
+   immediately before removing a startup value, export that value.
+3. **Targeted restore** (`rollback.ps1 -Auto`): consume the journal, restore what is
+   restorable, and print an explicit per-item verdict plus a manual-steps list for the rest.
+4. **Never** auto-invoke `Restore-Computer`; surface the restore point as a manual option.
+5. **Report honestly** when protection was unavailable.
+
+---
+
+## 4. Open questions (must be resolved before BUILD)
+
+| id | question | why it matters | lead's recommendation |
+|----|----------|----------------|------------------------|
+| Q1 | Does rollback trigger on T2 only, or also on T3 (crash)? | T3 needs a journal that survives a hard kill; more code, more risk | **T2 + T3-with-journal** |
+| Q2 | If rollback itself fails, should it retry, or stop and report? | retry loops can make things worse | **continue per item, report partial** |
+| Q3 | Should the user be asked before an automatic rollback runs? | the user asked for *fully automatic*; a prompt contradicts that, but silent destructive action is scary | **no prompt** (user's explicit choice), but log loudly and make the run fully auditable |
+| Q4 | Interaction with `-DryRun`? | must be a true no-op | **no journal, no rollback** |
+| Q5 | Should `service_deleted` / `task_deleted` attempt best-effort restore? | a service pointing at a deleted binary is worse than no service — it *looks* installed | **no**; report as `not_restorable` and explain |
+| Q6 | Should auto-rollback be on by default? | default-on turns every cleanup into a potentially destructive re-write | **on by default**, since the user chose fully-automatic, but with an explicit `-NoAutoRollback` switch |
+| Q7 | Where does the journal live, and for how long? | `backup-*` is gitignored; stale journals could trigger a wrong rollback | journal in the run's `backup-<ts>` dir, and rollback only honours a journal whose run id matches the log being rolled back |
+
+---
+
+## 5. Risks
+
+| id | risk | severity | mitigation |
+|----|------|----------|------------|
+| R-1 | User believes "auto-rollback" means everything is undoable; deletes files, loses data | **critical** | explicit per-item verdict + pre-cleanup warning that file deletions are unrecoverable |
+| R-2 | Auto `Restore-Computer` wipes unrelated post-restore-point user changes | **critical** | forbid auto-invocation (AC-007) |
+| R-3 | Restore point silently unavailable (protection off / 24h throttle) → user thinks they're protected | high | surface `restore_point_enabled` prominently; AC-013 |
+| R-4 | Journal written but stale → wrong rollback applied | high | bind journal to run id + verify against cleanup-log timestamp (Q7) |
+| R-5 | Crash mid-rollback leaves half-restored state | medium | per-item verdict + rerunnable (AC-014) |
+| R-6 | `reg import` of a large export partially fails | medium | re-query each key (AC-004) |
+| R-7 | Coverage gate blocks the commit if new branches are untested | medium | TDD from the start; keep ≥80% |
+
+---
+
+## 6. Explicit non-goals
+
+- Recovering deleted **file/directory contents**. Not possible without a file-level archive,
+  which was never built. (Could be a *future* feature: archive paths before deletion.)
+- Rolling back beyond the immediately preceding cleanup run.
+- Restoring services or scheduled tasks to a *functional* state.
+- Anything involving `Restore-Computer` on an automatic path.
+
+
+## The specification under review
+
 specification:
   feature: auto-rollback
   sprint: sprint-2026-10-01-01
@@ -54,22 +787,12 @@ specification:
         中间存在目标缺失的窗口，崩溃即丢失日志——这正好违背本节要保证的性质。
         应使用 .NET 的 `[System.IO.File]::Replace()`（或 Win32 `ReplaceFile`），
         它提供原子换入并自动保留上一代副本；
-        若目标文件尚不存在（首次写入），则退化为「写临时文件 + `[System.IO.File]::Move`」——
-        **临时文件必须与目标同目录（同卷）**：`File.Move` 仅在同卷内是原子重命名，
-        跨卷会退化为「复制 + 删除」并失去原子性；因此禁止写到 `%TEMP%`，
-        必须在 `backup_dir` 内创建后移入；
-        `File.Move` 是**单次原子重命名且目标存在即失败**，因此同样没有「目标缺失」窗口；
-        这正是它与 `Move-Item -Force` 的本质区别（后者先删目标再移动）。
-        已实测：目标存在时 `File.Replace` 直接抛异常，故首次写入必须走 `File.Move`；
-        且 `Replace(tmp, target, $null)` 会抛「The path is not of a legal form」，
-        因此每一代备份路径都必须显式命名（`.prev`），不得传 null。
+        若目标文件尚不存在（首次写入），则退化为「写临时文件 + `File.Move`」，
+        此时不存在需要保留的旧内容，窗口无害。
         绝不原地重写 JSON——崩溃在写入中途会留下畸形日志，而 REQ-027 会拒绝畸形日志，
         反而使 T3 恢复不可用。
         **最后一次完好状态的具体协议**：每次成功原子替换后保留上一代副本
-        `rollback-journal.prev.json`——由 `File.Replace(tmp, target, prev)` **在同一次原子操作内**
-        把旧目标保存为 `.prev`，**不要**手工「先复制当前文件为 `.prev`，再替换」：
-        那会多出一次非原子拷贝，既慢又可能把 `.prev` 写成半新内容，
-        反而破坏「上一代完好状态」这一保证。当下一次读取
+        `rollback-journal.prev.json`（先复制当前文件为 `.prev`，再替换）。当下一次读取
         发现 `rollback-journal.json` 无法解析时，回退读取 `.prev.json`；仍不可解析则视为
         无日志并如实报告。**回退深度固定为 1 代**（不做多代链，避免复杂度失控）。
         **运行中落盘失败必须 fail-closed**：若在某项变更后日志落盘失败（磁盘满、权限变化等），
@@ -170,22 +893,7 @@ specification:
              而非崩溃时刻）。当 `completed_at` 为空且**经过时间严格小于 24 小时**
              （`now - created_at < 24h`；恰好 24h 视为超窗）时，接受三项目标并恢复；
            - **明确的取舍**：延迟恢复（超过 24h 才启动）会失去自动恢复能力，降级为人工。
-             这是为安全付出的代价，必须在设计中写明并让用户可见。
-             **时间原点是唯一的**：窗口起点恒为日志的 `created_at`（日志创建时刻），
-             终点为**本次恢复尝试时刻**——T2 下即进程内回滚时刻，
-             T3 下即**下次启动发现该日志的时刻**。因此「崩溃后超过 24h 才再次启动」
-             必然超窗、降级人工，这是有意为之而非缺陷；
-             用户必须在 UI 与文档中看到这一限制。
-             **必须正视的后果（不得含糊）**：T3 的典型场景正是「崩溃后用户过几天才再跑一次」，
-             此时窗口必然已超、自动恢复**不会发生**，只会产出 conflict 报告。
-             因此 T3 的**主要价值是「如实告知有哪些东西曾被删除、并给出可执行的恢复线索」，
-             而不是「保证能自动装回去」**。设计与 UI 必须按这个口径表述，
-             禁止把 T3 说成「下次启动就会自动恢复」；
-             真要提高 T3 的自动恢复率，只能放宽窗口，
-             而放宽窗口会同时放大「把用户后来删的东西装回去」的风险（DD-018），
-             故本 sprint **不放宽**，只把限制讲清楚。
-             **窗口值固定为 24h，不可配置**：不得提供配置项或开关来延长它——
-             那会把「安全边界」变成「用户嫌麻烦就关掉的设置」。
+             这是为安全付出的代价，必须在设计中写明并让用户可见；
            - **可检测的「外部变更迹象」**（任一命中即降级为 conflict/需人工，**不**自动恢复）：
              (i) 目标当前存在但与备份内容不同（规则 2）；
              (ii) **仅适用于注册表键/value 条目**：备份的**注册表父键**的 LastWriteTime
@@ -195,12 +903,6 @@ specification:
                   **比较对象只有这一个**：恢复端聚合基线。**不**与「本轮开始时间」比较——
                   因为我们自己的删除**必然**会更新父键 LastWriteTime，
                   用开始时间作比较会让本工具的变更被误判为外部变更，规则 3 将永不成立。
-                  **阶段划分（避免与 REQ-027 写入侧混淆）**：`parent_baseline` 由**清理阶段**
-                  逐条写入（见 REQ-027/AC-095）；**恢复阶段只读不写**——把该父键所有条目的
-                  `parent_baseline` 读出取 MAX，在**对任何条目执行恢复写入之前只比较一次**，
-                  然后恢复全部通过判定的条目。故「聚合」是恢复端的**读取**行为，
-                  不是恢复端的写入行为。**两个恢复入口都适用**（进程内 T2 与下次启动 T3），
-                  只有清理阶段才是逐条写后比较。
                   且**比较必须发生在本轮回滚写任何东西之前**——因为回滚自身对同一父键下
                   多个条目的顺序恢复同样会推进父键时间戳，若边恢复边比较，
                   后面的条目会把**我们自己刚做的恢复**误判为外部变更而拒绝恢复。
@@ -274,14 +976,6 @@ specification:
           `restored (evidence_incomplete)`——它**算成功**、会计入已恢复，
           只在报告中标注证据不完整，**不**使本轮退化为 14。
           真正的失败只有：conflict、unjournaled、export_failed（这些才是 restore_failed）。
-          **但「证据不完整」不得成为无限容忍**：报告与 UI 必须**显著列出**
-          evidence_incomplete 的条目数与 item_id 清单（与未修复清单分开呈现），
-          让用户自行决定是否接受；且当**证据不完整的条目占本轮可恢复条目的多数**时，
-          判为 `restored_with_low_confidence` 并按需人工确认，
-          不得以「0 条 restore_failed」静默宣告完全成功。
-          **「多数」而非「全部」**：若要求「全部条目都证据不完整」才算低置信，
-          则一份 100 条日志里只要有 1 条证据齐备，其余 99 条不完整也仍算「完全成功」，
-          这与「显著列出 evidence_incomplete」的告警意图相矛盾。
         - **未修复清单必须先落盘到 backup 目录之外**，再允许日志被标记为已消费。
           执行顺序固定为：(1) 原子写未修复清单 → (2) **成功后才**写日志标记/旁路文件。
           对**自证失败/不可解析**的候选（Step 4b 情形）没有可读的条目列表可展开，
@@ -359,28 +1053,12 @@ specification:
         该码是可构造的，AC-081 用「删除日志后再触发部分失败」的 fixture 覆盖它；
         13=部分失败且 -NoAutoRollback 已显式关闭回滚；
         14=上轮未完成日志未能安全消费，本轮清理**未开始**即中止（REQ-030）。
-        **三个分支并列**（AC-036 逐项断言）：(a) 恢复未完全成功（存在 restore_failed）；
+        **四个分支并列**（AC-036 逐项断言）：(a) 恢复未完全成功（存在 restore_failed）；
         (b) 自证失败或重复 run_id（REQ-019 Step 4b）；
-        (c) 候选日志歧义（created_at 平局或多个不同时刻的未完成日志）。
-        **unjournaled 条目的处理优先级**（REQ-005 与 REQ-030 在此处必须有明确优先级，
-        否则实现者不知该只用 durable 日志还是也该用进程内证据）：
-        对**已成功落盘**的条目 —— 一律按日志回滚；
-        对**未能落盘的最后一条** —— 优先用**进程内证据**尽力恢复该条（它在落盘失败瞬间
-        仍在内存中、且是本轮自己做的变更），并**始终**标记为 `restore_failed(unjournaled)`，
-        因为该恢复**没有 durable 保证**、进程崩溃即丢失。
-        即：进程内证据**补充**而非**取代** durable 日志；两者都可用，
-        但只有 durable 部分能被称为「已记录」。
-        15=**本轮持久化记录写入失败**，已按 fail-closed 停止。涵盖三个时点：
-        (i) 运行中回滚日志落盘失败（REQ-005）；
-        (ii) 回滚已结束、但写未修复清单失败（REQ-030）；
-        (iii) 回滚已结束、但写完成标记或消费标记（`rollback-consumed.json`）失败（REQ-019/REQ-031）。
-        **注意「本轮写失败」归 15，不归 14**：14 只描述「**上一轮**留下的日志能否被安全消费」，
-        且总是在前置检查之前判定。二者的判据是**失败发生在本轮运行之内还是之前**，
-        因此互斥、不可能同时成立（14 在读取阶段就中止，走不到任何写入）。
-        14 分支 (d) 已删除——它原本与 15(iii) 争抢同一事件，实现者无法判定该返回哪个。
-        两个标记都写失败的**善后**仍是先写 `rollback-consumed.failed.json`
-        （使此后的运行不自动重复消费、必须 `-AcknowledgeConflicts`），但**本次**退出码是 15。
-        AC-036 必须为 15 的三个时点各有一条用例，并断言同一事件**只**得到 15。
+        (c) 候选日志歧义（created_at 平局或多个不同时刻的未完成日志）；
+        (d) 消费标记（`rollback-consumed.json` 与日志内 `completed_at`）**两者都写失败**；
+        15=运行中**持久化记录写入失败**（回滚日志落盘失败，或未修复清单写入失败，
+        见 REQ-005/REQ-030），已按 fail-closed 停止。
         **一次运行只返回一个码；15 是终态**：一旦日志落盘失败，立即返回 15 并**不再**判定
         10/11/12/13（后续破坏性操作已停止，回滚判定不再执行）。
         13/14/15 都是必需的：否则调用方无法区分「已修复」「你让我别修」「上一轮还没修好」
@@ -443,16 +1121,6 @@ specification:
         由 REQ-019 Step 4a 与 REQ-030 的确认出口写入，
         以及 `machine_path_original` 与 `machine_path_scope`（本轮捕获的 Machine PATH 原值，
         使其在清理日志缺失的 T3 下仍可恢复 PATH，见 REQ-001/REQ-021）。
-        日志**顶层字段**必须齐备（否则自证失败）：`journal_version`、`run_id`（guid，
-        与该轮清理日志一致）、`created_at`（ISO 8601，**日志创建/本轮开始时刻**，
-        REQ-024 的 24h 窗口以此为起点）、`completed_at`（初始 null）、
-        `machine_fingerprint`、`machine_path_original`（清理前的 Machine PATH 原值，
-        未改 PATH 时为 null）、`cleanup_log_path`、`cleanup_log_timestamp`、
-        `cleanup_log_sha256`（三者同 null 或同非 null，见 AC-083）、
-        `backup_dir`、`entries`。
-        `created_at` 的语义固定为**日志创建时刻**（等价于本轮清理开始时刻），
-        不是「清理结束时刻」——它与结束时刻可能相差数十分钟，
-        用错会让 24h 窗口判定偏移。
         每项条目含 item_id、kind、target、backup_file、backup_file_sha256、pre_existing(bool)、
         absent_confirmed_after_mutation(bool)、
         `parent_baseline`（该条目变更完成后**立即持久化**的父键最后写入时间，ISO 8601）。
@@ -467,16 +1135,6 @@ specification:
         该算法是**唯一权威定义**，REQ-030 的清单必须复用，不得另立），
         因此 item_id 在轮内唯一、可由 target 复现，且 REQ-030 未修复清单里的 item_id
         可直接回指到日志条目。
-        **JSON 读写必须遵守 PS 5.1 的三条陷阱规则**（否则候选计数与条目计数会静默出错，
-        且在本机 pwsh 7 下不复现，极易漏检）：
-        (a) `ConvertFrom-Json` **不展开顶层数组**——必须写成
-        `$doc = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json` 然后
-        `$entries = @($doc.entries)`；直接 `@(... | ConvertFrom-Json)` 会让 `Count` 恒为 1，
-        于是「多份候选日志」被当成 1 份，REQ-030 的歧义判定永久失效。
-        (b) `@($null)` 的 Count 是 **1**——条目列表为空时必须显式判 `$null` 再规整，
-        否则「0 个条目」会被读成「1 个条目」。
-        (c) 单条结果经 `Where-Object` 后 `.Count` 是该对象的**属性个数**而非元素个数，
-        聚合前一律用 `@()` 强制数组化。
         **不依赖运行结束时的统一落盘**——T3 恰恰是运行未结束就崩溃的情形，
         运行结束才写等于在最需要它的场景下缺失。
         **写入载体**：`parent_baseline` 作为该条目 `mutation_succeeded` 那次日志落盘的
@@ -538,33 +1196,6 @@ specification:
       priority: high
       addresses: "AC-033, AC-038, REQ-016"
 
-    - id: REQ-034
-      description: |
-        REQ-024 迹象 (ii) 依赖注册表父键的 LastWriteTime，但**受管 API 不暴露它**：
-        `[Microsoft.Win32.RegistryKey]` 只提供 SubKeyCount/View/Handle/ValueCount/Name，
-        在 PS 5.1 与 pwsh 7 下均无 LastWriteTime，`Get-Item HKCU:\...` 同样没有（已实测）。
-        因此必须提供顶层辅助函数 `Get-RegistryKeyLastWriteTime`，通过 P/Invoke
-        `advapi32!RegQueryInfoKey` 取 FILETIME 并用 `DateTime.FromFileTimeUtc` 转换。
-        两个实现约束（均已实测踩坑）：(a) 必须传 `$key.Handle.DangerousGetHandle()`
-        ——`.Handle` 返回 `SafeRegistryHandle` 而非 `IntPtr`，直接传会抛类型转换异常；
-        (b) 辅助函数不得使用 `ref` 返回成员，PS 5.1 的 C# 编译器不接受。
-        该函数在 PS 5.1 与 pwsh 7 下行为必须一致（双引擎测试）。
-        若取不到时间戳，迹象 (ii) 按「证据不完整」处理（跳过并标注），
-        不得因取不到时间戳而拒绝整份日志。
-      priority: high
-      addresses: "AC-097, REQ-024, REQ-027"
-
-    - id: REQ-035
-      description: |
-        DD-003 的裁剪函数入参是 `reg export` 产生的 `.reg` 文本，而 `reg export` 写出的是
-        **UTF-16LE + BOM**。PS 5.1 的 `Get-Content` 默认按 ANSI/Default 读取，
-        会把内容读成夹 NUL 的乱码，使裁剪必然失败。
-        因此规定：读取 `.reg` 必须显式 `-Encoding Unicode`
-        （或 `[System.IO.File]::ReadAllText($p, [System.Text.Encoding]::Unicode)`），
-        写回同样使用 Unicode；该约束适用于导出、裁剪与导入三处。
-      priority: high
-      addresses: "AC-098, DD-003"
-
     - id: REQ-033
       description: |
         `cleanup-log.json` 必须写入本轮标识 `run_id`（guid，与该轮回滚日志的 `run_id`
@@ -606,18 +1237,6 @@ specification:
         这是比不恢复更严重的错误（用户会看到刚清理掉的残留又回来了）。
         该写入必须发生在所有破坏性操作与回滚都结束之后、进程退出之前，
         且失败时按 REQ-005 的 fail-closed 处理（返回 15）。
-        **逐码明确「正常结束」的判定**（否则实现者无法判断 12/13 要不要写标记）：
-        - 0 / 10 / 12 / 13：**正常结束，写 `completed_at`**。
-          12 是「没有可用的回滚记录」（日志缺失/不可读）、13 是「用户要求不回滚」——
-          两者都是本轮已按预期跑完的终态；日志若存在就必须标记完成，
-          否则下次启动会把一个已结束的轮次当成未完成的 T3 反复重试。
-          注意 12 下日志可能**根本不存在**：此时属于「无可标记对象」，
-          而非「漏写标记」，实现必须区分这两种情况，不得把前者当失败。
-        - 11：**唯一例外**，不写 `completed_at`，并必须持久化未修复清单。
-        - 1 / 2 / 3：发生于前置检查/输入阶段，**尚未改动系统**；
-          若日志已创建则写 `completed_at`，未创建则无对象可标记。
-        - 14：在读取上一轮日志阶段中止，**不是本轮的结束**，不写 `completed_at`。
-        - 15：持久化已失败，**无法**可靠写标记；尽力而为并在退出信息中说明。
         **标记未写入就崩溃的兜底（必需）**：若日志 `completed_at` 为 null，
         但**清理日志存在且 `summary.failed == 0`**，说明本轮清理**已经成功完成**、
         只是标记没来得及写。此时**必须抑制自动恢复**，把该日志报告为
@@ -670,25 +1289,11 @@ specification:
           ① 文件**存在且可读**：校验哈希（`cleanup_log_sha256` 非 null 时必须匹配，
           不匹配即拒绝该候选、不进抑制分支）与 `run_id` 一致（见 REQ-033），
           两者都通过才可抑制；
-          ② 文件**已不存在**：无论 `cleanup_log_sha256` 是 null 还是非 null，
-          一律**不**拒绝该候选、也**不**据其抑制——因为抑制的唯一判据是
-          「清理日志中 `summary.failed == 0`」，读不到日志就没有判据。
-          **必须明说这个后果**：若该日志其实是「清理成功但标记丢失」的路径，
-          它**不会**被抑制，而是交 Step 3 自证；自证通过后按正常 T3 恢复，
-          即**可能把刚清理掉的内容装回去**。这是本设计**已知且接受**的残留风险
-          （与 DD-018 同源，必须在报告中如实标注「抑制依据缺失」），
-          换取的是「不因一个被删的日志就永久拒绝恢复」。
-          两条路都有代价，选择的是**泄漏到人工可见**而非**静默错误**。
-          **为什么合并这两种情况**：实现只能观察到「文件不在」，
-          无法从「文件缺失」反推日志里 sha256 字段当初为何取那个值，
-          因此区分它们会造出一个不可实现的分支。T3 的合法性由 Step 3 自证负责，
-          不由 Step 2.5 承担；**只有 ① 允许抑制**。
-          **抑制 ≠ 消费。** Step 2.5 只**判定**「本轮清理其实已完成」这一结论，
-          **不得**在此写 `completed_at`、也**不得**写 `rollback-consumed.json`——
-          消费动作统一发生在 **Step 3 自证通过之后**（Step 4a）。
-          否则一份**解析成功但自证失败**（例如重复 run_id、字段非法）的日志
-          会在 Step 3 之前就被标记为已消费，从而**永久绕过** REQ-027 的自证，
-          且再也无法重试。抑制结论以标志位在进程内传递到 Step 4a 生效。
+          ② 文件**已不存在**但 `cleanup_log_sha256` **为 null**：无任何可校验证据，
+          **不进**抑制分支（保守），交 Step 3 自证；
+          ③ 文件**已不存在**但 `cleanup_log_sha256` **非 null**：本轮确实写过清理日志，
+          但不**拒绝**该候选，也**不**据其抑制（读不到 `summary.failed`，无法判断成败），
+          交 Step 3 自证；自证通过则按正常 T3 恢复。
           绑定成立后：若 `completed_at` 为 null 且清理日志中 `summary.failed == 0`，
           **本步骤只读取清理日志的 `summary.failed`，不读取也不依赖回滚日志的
           `parent_baseline`**（parent_baseline 的 MAX 聚合属于 Step 5 恢复阶段的迹象 (ii)
@@ -761,10 +1366,6 @@ specification:
         **判定顺序固定为：先看窗口，再看漂移**——窗口内（严格小于 24h，与 REQ-024 同口径）
         且无漂移才自动恢复；超窗或检出漂移一律降级 conflict/人工，**不改写** PATH。
         该顺序要求写在此处（正文）而非仅靠注记，以免实现只做漂移检测而漏掉窗口约束。
-        **两套信号不一致时的仲裁规则（写进正文，不能只留在 AC 里）**：
-        T2 下两套来源都可能存在，若它们推出的预期值**不一致**，
-        一律**以回滚日志为准**（它记录的是本轮实际发生的变更）并在报告中标注不一致；
-        不得因两者不一致就拒绝恢复，也不得默默择一而不报告。
         两种来源都不可用、或推导结果与当前值不一致时，一律降级为 conflict/人工介入，
         **绝不**盲目覆盖当前 PATH。**PATH 自动恢复与 REQ-024 适用同一个 24h 窗口**
         （从 `created_at` 量到恢复尝试时刻，严格小于 24 小时）：窗口内且无漂移才自动恢复；
@@ -924,7 +1525,7 @@ specification:
       test_type: integration
     - id: AC-036
       requirement: REQ-026
-      criteria: 退出码矩阵逐项断言：清理成功=0、部分失败+回滚全成功=10、部分失败+回滚部分失败=11、无可回滚记录=12、-NoAutoRollback 且部分失败=13、运行中落盘失败=15；每个码唯一且固定；15 的优先级高于 10/11/12/13。退出码 14 的**三个**分支各有一条用例：(a) 恢复存在 restore_failed；(b) 自证失败或重复 run_id（Step 4b）；(c) created_at 平局或多个未完成日志。**14 分支 (d)（两个消费标记都写失败）已删除**——该事件属于 15(iii)，同一次失败只产生一个退出码；测试必须断言该事件返回 15 而**非** 14，且断言 14 与 15 互斥
+      criteria: 退出码矩阵逐项断言：清理成功=0、部分失败+回滚全成功=10、部分失败+回滚部分失败=11、无可回滚记录=12、-NoAutoRollback 且部分失败=13、运行中落盘失败=15；每个码唯一且固定；15 的优先级高于 10/11/12/13。退出码 14 的四个分支各有一条用例：(a) 恢复存在 restore_failed；(b) 自证失败或重复 run_id（Step 4b）；(c) created_at 平局或多个未完成日志；(d) 两个消费标记都写失败
       test_type: unit
     - id: AC-037
       requirement: REQ-027
@@ -940,7 +1541,7 @@ specification:
       test_type: integration
     - id: AC-040
       requirement: REQ-007
-      criteria: .reg 裁剪函数抛异常、产出不可解析的 .reg、**或静默产出含多于一个 value 定义的 .reg（后置校验检出）**时，一律视为导出失败：断言该 value 未被删除（注册表中仍存在）且记为 export_failed(trim_error / trim_multivalue)
+      criteria: .reg 裁剪函数抛异常或产出不可解析的 .reg 时，视为导出失败：**断言该 value 未被删除**（注册表中仍存在）且记为 export_failed(trim_error)
       test_type: unit
     - id: AC-041
       requirement: REQ-003
@@ -988,11 +1589,11 @@ specification:
       test_type: unit
     - id: AC-052
       requirement: REQ-005
-      criteria: 落盘失败后立即停止后续破坏性操作；对已成功落盘的条目按日志回滚；未记录的变更被明确标记为 restore_failed(unjournaled)（而非静默留下或按规则 4 静默跳过），且只能从**进程内证据**尽力恢复。退出码 15 且不再判定 10/11/12/13。禁止声称「回到上一个落盘点」——进程内没有时间机器、该证据不 durable、崩溃即丢
+      criteria: 落盘失败后，未记录的变更被明确标记为 restore_failed(unjournaled)/未记录（而非静默留下或按规则 4 静默跳过），已 durable 的部分被回滚，退出码为 15 且不再判定 10/11/12/13
       test_type: integration
     - id: AC-053
       requirement: REQ-019
-      criteria: 完成标记写入失败时不得宣告恢复完成、本轮中止并返回 **15**（不是 14——14 只用于「启动时判定上一轮日志无法安全消费」）；若旁路标记 rollback-consumed.json 写入成功，则下次运行不重复消费该日志。两个标记都写失败时先写 rollback-consumed.failed.json（小型持久失败标记），下次运行不自动重复消费、必须 -AcknowledgeConflicts 确认后才继续。另断言同一次标记写失败只产生 15 一个退出码
+      criteria: 完成标记写入失败时不得宣告恢复完成、本轮中止并返回 14；若旁路标记 rollback-consumed.json 写入成功，则下次运行不重复消费该日志。两个标记都写失败时先写 rollback-consumed.failed.json（小型持久失败标记），下次运行**不**自动重复消费、必须 -AcknowledgeConflicts 确认后才继续
       test_type: integration
     - id: AC-054
       requirement: REQ-030
@@ -1036,7 +1637,7 @@ specification:
       test_type: unit
     - id: AC-059
       requirement: REQ-021
-      criteria: 仅有回滚日志（无清理日志）时，PATH 预期值由 machine_path_original 减去 state=mutation_succeeded 的 path_entry_removed 条目推出；machine_path_original 为 null 且存在**成功的** path_entry_removed 时自证失败并返回 14（无原值不可恢复）；machine_path_original 为 null 且**无成功的** path_entry_removed 时自证通过且跳过 PATH 恢复（本轮未改 PATH）。**两套信号等价性仅对 T2 断言**（清理日志存在时）：清理日志中 `action=path_entry_removed` 且 `success=true` 的条目，与回滚日志中同 `target` 且 `state=mutation_succeeded` 的条目必须一一对应；不一致时以**回滚日志**为准并在报告中标注。**T3 下清理日志不存在（REQ-016），无第二套信号可比对**，故该等价性断言不适用于 T3——若强行断言将永远无法覆盖
+      criteria: 仅有回滚日志（无清理日志）时，PATH 预期值由 machine_path_original 减去 state=mutation_succeeded 的 path_entry_removed 条目推出；machine_path_original 为 null 且存在**成功的** path_entry_removed 时自证失败并返回 14（无原值不可恢复）；machine_path_original 为 null 且**无成功的** path_entry_removed 时自证通过且跳过 PATH 恢复（本轮未改 PATH）。**两套信号等价性**：清理日志中 `action=path_entry_removed` 且 `success=true` 的条目，与回滚日志中同 `target` 且 `state=mutation_succeeded` 的条目**必须一一对应**；若两者不一致，以**回滚日志**为准并在报告中标注不一致
       test_type: integration
     - id: AC-066
       requirement: REQ-018
@@ -1096,7 +1697,7 @@ specification:
       test_type: integration
     - id: AC-085
       requirement: REQ-027
-      criteria: kind 只接受 registry_key/startup_value/path_entry/path_deleted/service/task 六种取值，其它取值自证失败；路径类必须区分 path_deleted（文件/目录删除，not_restorable）与 path_entry（PATH 环境变量条目移除，可经 REQ-021 恢复），二者不得混用；item_id 等于 "<kind>:<规范化 target>"（规范化算法复用 REQ-027 的唯一权威定义），同一 target 在日志与 REQ-030 清单中产生同一 item_id 并可互相回指
+      criteria: kind 只接受 registry_key/startup_value/path_entry/service/task 五种取值，其它取值自证失败；item_id 等于 "<kind>:<规范化 target>"，同一 target 在不同轮次产生同一 item_id，且 REQ-030 清单中的 item_id 能回指日志条目
       test_type: unit
     - id: AC-086
       requirement: REQ-019
@@ -1108,7 +1709,7 @@ specification:
       test_type: unit
     - id: AC-088
       requirement: REQ-033
-      criteria: 新写入的 cleanup-log.json 含 run_id 且与该轮回滚日志的 run_id 相同；**该 run_id 绑定只在 Step 2.5 分支 ①（清理日志存在且可读）生效**——T3 下清理日志本就不存在、无 run_id 可比对，走分支 ②（不抑制、交 Step 3 自证）；缺 run_id 的历史清理日志同样走证据不足分支并在报告中说明原因。断言：不存在「要求 T3 下比对 run_id」的用例（那与 REQ-016 对 T3 的定义矛盾）
+      criteria: 新写入的 cleanup-log.json 含 run_id 且与该轮回滚日志的 run_id 相同，Step 2.5 据此完成绑定；缺该字段的历史清理日志走「证据不足」分支（不抑制、交自证）且报告说明原因
       test_type: unit
     - id: AC-089
       requirement: REQ-019
@@ -1116,7 +1717,7 @@ specification:
       test_type: integration
     - id: AC-090
       requirement: REQ-019
-      criteria: Step 2.5 的两个分支逐项断言：(a) 文件可读且哈希与 run_id 均匹配→可抑制；(b) 文件不存在（无论 sha256 取值）→不抑制、不拒绝，交 Step 3 自证。另断言 REQ-031 的抑制只发生在分支 (a)
+      criteria: Step 2.5 的 ①/②/③ 三分支逐项断言：文件可读且哈希与 run_id 均匹配→可抑制；文件不存在且 sha256 为 null→不抑制；文件不存在但 sha256 非 null→不拒绝、不抑制、交 Step 3
       test_type: integration
     - id: AC-091
       requirement: REQ-019
@@ -1132,7 +1733,7 @@ specification:
       test_type: unit
     - id: AC-094
       requirement: REQ-030
-      criteria: 证据不完整但通过规则 3/4 的条目判定为 restored(evidence_incomplete)、计入已恢复、不使本轮返回 14；仅 conflict/unjournaled/export_failed 才算 restore_failed。另断言：报告中显著列出 evidence_incomplete 的条目数与 item_id（与未修复清单分开）；全部条目都证据不完整时判为 restored_with_low_confidence 并需人工确认，不得静默宣告完全成功
+      criteria: 证据不完整但通过规则 3/4 的条目判定为 restored(evidence_incomplete)、计入已恢复、**不**使本轮返回 14；仅 conflict/unjournaled/export_failed 才算 restore_failed
       test_type: integration
     - id: AC-095
       requirement: REQ-027
@@ -1142,25 +1743,9 @@ specification:
       requirement: REQ-019
       criteria: 自证失败/不可解析的候选在 Step 4b 下写**候选级**清单（unrepaired 为空数组、顶层 candidate_unparseable=true 与 backup_dir），且该清单先于任何旁路标记写入
       test_type: integration
-    - id: AC-097
-      requirement: REQ-034
-      criteria: Get-RegistryKeyLastWriteTime 在 PS 5.1 与 pwsh 7 下均返回合理时间戳；对可写键执行一次 SetValue 后其父键时间戳严格变大（证明信号可用）；取不到时间戳时迹象 (ii) 退化为「证据不完整」而不拒绝整份日志
-      test_type: integration
-    - id: AC-098
-      requirement: REQ-035
-      criteria: 用 -Encoding Unicode 读取 reg export 产物后能正确解析出 value 定义；用默认编码读取同一文件则得到乱码（证明该约束必需而非风格偏好）；导出→裁剪→导入全链路在 Unicode 下成功
-      test_type: integration
-    - id: AC-099
-      requirement: REQ-001
-      criteria: reg export 产物首行与父键行不参与 REQ-024 的结构比较；裁剪函数若静默产出含兄弟 value 的 .reg，调用方的后置校验必须检出并改判为 export_failed
-      test_type: unit
-    - id: AC-100
-      requirement: REQ-026
-      criteria: 退出码 15 的三个时点各有用例：(i) 运行中回滚日志落盘失败；(ii) 回滚结束后未修复清单写入失败；(iii) 回滚结束后完成标记或消费标记写入失败。三者都返回 15，且 15 优先于 10/11/12/13。另断言 14 与 15 互斥：同一失败事件不得同时对应两个退出码——本轮写入失败→15，上一轮日志无法安全消费→14
-      test_type: integration
     - id: AC-071
       requirement: REQ-005
-      criteria: 两条写入路径都要断言，且都不得出现「目标不存在」的窗口：(a) 首次写入（目标不存在）用 File.Move（单次原子重命名，目标存在即失败）；(b) 第二次及以后用 File.Replace(tmp, target, prev)，断言目标路径在替换过程中始终存在且上一代副本被保留。另断言未使用 Move-Item -Force（它先删目标再移动，存在目标缺失窗口）
+      criteria: 落盘使用 [System.IO.File]::Replace（或等价原子原语）而非 Move-Item -Force：断言替换过程中目标路径始终存在；**第二次及以后**的写入保留上一代副本（`.prev`）；**首次**写入无上一代可保留，不适用该断言
       test_type: unit
     - id: AC-072
       requirement: REQ-019
@@ -1172,7 +1757,7 @@ specification:
       test_type: integration
     - id: AC-074
       requirement: REQ-024
-      criteria: 针对两个恢复入口（进程内自动回滚 T2、下次启动恢复 T3）：同一父键下多个条目恢复时，回滚自身的写入不会使后续条目被误判为外部变更（先全判、再全恢复），断言全部条目均被恢复而非仅第一个；且比较发生在对任何条目执行恢复写入之前。清理阶段不适用两阶段——它按条目连续写入基线以保证 T3 存活，行为有意不同（见 AC-095）
+      criteria: 仅针对恢复阶段（rollback -Auto）：同一父键下多个条目顺序恢复时，回滚自身的写入不会使后续条目被误判为外部变更（两阶段判定→执行），断言全部条目均被恢复而非仅第一个。清理阶段（cleanup）不适用两阶段：它按条目连续写入基线以保证 T3 存活，两者是有意不同的行为
       test_type: integration
     - id: AC-075
       requirement: REQ-027
@@ -1193,7 +1778,7 @@ specification:
       rationale: 它是整机回滚，会一并抹掉还原点之后用户的所有无关更改，且强制重启，无法在进程内完成
       alternatives_considered: 自动整机还原（会自行造成数据损失）；完全不建还原点（更糟）
     - id: DD-003
-      decision: 启动项 value 精确备份：对该 value 所在的 Run/RunOnce 键执行 reg export 得到 .reg，再由一个**纯函数**（入参为 .reg 文本，返回最小 .reg 文本；不做 IO，因此可单测）裁剪为「只含目标 value」的最小 .reg。**裁剪输出必须恰好包含一个 value 定义（目标 value）+ 必要的父键行，兄弟 value 一律不得保留**——这是该函数的契约，由 AC-002 断言；REQ-024 的比较因此只需处理单 value。**必须有后置校验**：该单 value 契约不能只靠「函数写对了」保证——若它因逻辑缺陷**静默产出含兄弟 value 的 .reg**（不抛错），调用方无从察觉，REQ-024 的结构比较会把兄弟 value 一并纳入而误判 conflict。因此调用方取得裁剪结果后必须**解析并断言恰好只有一个 value 定义**，否则按 export_failed 处理并跳过该项删除（见 AC-002/AC-040）。文件读写由调用方负责，裁剪抛错/产出不可解析时由调用方按导出失败处理。绝不删除或整键重导共享的 Run/RunOnce 键
+      decision: 启动项 value 精确备份：对该 value 所在的 Run/RunOnce 键执行 reg export 得到 .reg，再由一个**纯函数**（入参为 .reg 文本，返回最小 .reg 文本；不做 IO，因此可单测）裁剪为「只含目标 value」的最小 .reg。**裁剪输出必须恰好包含一个 value 定义（目标 value）+ 必要的父键行，兄弟 value 一律不得保留**——这是该函数的契约，由 AC-002 断言；REQ-024 的比较因此只需处理单 value。文件读写由调用方负责，裁剪抛错/产出不可解析时由调用方按导出失败处理。绝不删除或整键重导共享的 Run/RunOnce 键
       rationale: 删除共享 Run 键是被明令禁止的（clean-residuals.ps1:475-477）；reg export 无 value 粒度，因此用「导出父键 → 裁剪到单 value」实现 value 级备份。裁剪逻辑是纯函数，可单测（AC-002）
       alternatives_considered: 整键删除重建（灾难性）；完全跳过 value 备份（失去可恢复性）；直接导入父键 .reg（会把该键其它程序的启动项一并覆盖）
     - id: DD-004
