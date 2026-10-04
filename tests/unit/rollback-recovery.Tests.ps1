@@ -214,6 +214,20 @@ Describe 'S2 suppression verdict: evidence grading' {
         $r.Reason | Should -Be 'cleanup_succeeded_failed_zero'
     }
 
+    It 'cleanup_log_sha256 为空白字符串（非 null）→ 模式检查按缺失处理，拒绝候选而非凭 run_id 抑制（评审修复）' {
+        $j = $script:BaseJournal.Clone()
+        $log = Join-Path $script:VerdictDir 'blankhash.json'
+        [System.IO.File]::WriteAllText($log,
+            (@{ run_id = $script:runId; summary = @{ failed = 0 } } | ConvertTo-Json -Depth 6))
+        $j['cleanup_log_path'] = $log
+        $j['cleanup_log_timestamp'] = '2026-10-03T10:00:00Z'
+        $j['cleanup_log_sha256'] = ''   # 空白：下游哈希校验会跳过 → 若只认 null 会被误当作已绑定
+        $r = Get-JournalSuppressionVerdict -Journal $j
+        $r.Suppress | Should -BeFalse
+        $r.RejectCandidate | Should -BeTrue
+        $r.Reason | Should -Be 'cleanup_log_fields_pattern_invalid'
+    }
+
     It 'failed > 0 → 不抑制，但 EvidenceMissing 为 false（有判据）' {
         $j = $script:BaseJournal.Clone()
         $log = Join-Path $script:VerdictDir 'fail.json'

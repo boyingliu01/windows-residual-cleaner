@@ -224,12 +224,15 @@ function Get-JournalSuppressionVerdict {
     $clt = $Journal['cleanup_log_timestamp']
     $cls = $Journal['cleanup_log_sha256']
 
-    # 模式检查（AC-083）：逐字段显式判 null（@($null,$null,$null) 的 Count 是 1，不能用计数）
-    $nullCount = 0
-    if ($null -eq $clp) { $nullCount++ }
-    if ($null -eq $clt) { $nullCount++ }
-    if ($null -eq $cls) { $nullCount++ }
-    if ($nullCount -ne 0 -and $nullCount -ne 3) {
+    # 模式检查（AC-083）：逐字段显式判「缺失」（@($null,$null,$null) 的 Count 是 1，不能用计数）。
+    # 「缺失」= $null 或全空白：下游哈希/时间戳校验都用 IsNullOrWhiteSpace 判定是否可校验，
+    # 若此处只认 $null，则 cleanup_log_sha256='' 会被当作「已存在」通过模式检查、却在哈希校验里
+    # 被跳过，导致仅凭 run_id 抑制恢复——即未绑定证据抑制了本应执行的恢复（评审修复）。
+    $missingCount = 0
+    if ($null -eq $clp -or [string]::IsNullOrWhiteSpace([string]$clp)) { $missingCount++ }
+    if ($null -eq $clt -or [string]::IsNullOrWhiteSpace([string]$clt)) { $missingCount++ }
+    if ($null -eq $cls -or [string]::IsNullOrWhiteSpace([string]$cls)) { $missingCount++ }
+    if ($missingCount -ne 0 -and $missingCount -ne 3) {
         $res.RejectCandidate = $true
         $res.Reason = 'cleanup_log_fields_pattern_invalid'
         return $res
