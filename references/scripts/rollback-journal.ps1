@@ -429,6 +429,16 @@ function Test-RollbackJournalSelfValid {
         $reasons += "created_at 不可解析: $created"
     }
 
+    # completed_at 是「唯一未完成判据」：非空即被候选发现当作已完成而永久剔除。若它是损坏/
+    # 篡改的非时间戳串（如 "completed"），会永久阻断恢复却不被报告为无效。故：存在则必须是合法
+    # ISO UTC 时间戳，否则判为无效证据（评审修复：完成状态只在日志有效时才有意义）。
+    $completedAt = $Journal['completed_at']
+    if ($null -ne $completedAt -and -not [string]::IsNullOrWhiteSpace([string]$completedAt)) {
+        if ($null -eq (ConvertFrom-IsoUtc -Text ([string]$completedAt))) {
+            $reasons += "completed_at 非合法时间戳: $completedAt"
+        }
+    }
+
     if ([string]::IsNullOrWhiteSpace([string]$Journal['machine_fingerprint'])) {
         $reasons += "machine_fingerprint 缺失"
     }
@@ -527,21 +537,41 @@ function Test-RollbackJournalSelfValid {
         }
         $bf = $e['backup_file']
         if ($null -ne $bf -and -not [string]::IsNullOrWhiteSpace([string]$bf)) {
-            $bfPath = [string]$bf
-            if (-not [System.IO.Path]::IsPathRooted($bfPath) -and -not [string]::IsNullOrWhiteSpace($backupDir)) {
-                $bfPath = Join-Path $backupDir $bfPath
+            $bfRaw = [string]$bf
+            # 备份文件必须落在本候选的 backup 目录内：绝对路径或 ..\ 穿越会把恢复指向无关文件。
+            # 自证阶段就拒绝越界路径，避免下游按记录路径去动备份目录之外的东西（评审修复）。
+            $outside = $false
+            if ([System.IO.Path]::IsPathRooted($bfRaw)) {
+                $outside = $true
+            } elseif (-not [string]::IsNullOrWhiteSpace($backupDir)) {
+                try {
+                    $rootFull = [System.IO.Path]::GetFullPath($backupDir).TrimEnd('\') + [System.IO.Path]::DirectorySeparatorChar
+                    $candFull = [System.IO.Path]::GetFullPath((Join-Path $backupDir $bfRaw))
+                    if (-not $candFull.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) { $outside = $true }
+                } catch { $outside = $true }
             }
-            if (-not (Test-Path -LiteralPath $bfPath -PathType Leaf)) {
-                $reasons += "条目 backup_file 不存在: $bfPath"
+            if ($outside) {
+                $reasons += "条目 backup_file 越出备份目录（绝对路径或穿越）: $bfRaw"
             } else {
-                $wantHash = $e['backup_file_sha256']
-                if (-not [string]::IsNullOrWhiteSpace([string]$wantHash)) {
-                    $a = Get-Sha256Hex -Path $bfPath
-                    if ($null -eq $a) {
-                        # 备份文件存在却读不出哈希：视为证据不完整，不得默认通过（评审修复）。
-                        $reasons += "条目 backup_file 存在但无法计算哈希: $bfPath"
-                    } elseif ($a -ne [string]$wantHash) {
-                        $reasons += "条目 backup_file 哈希不匹配: $bfPath"
+                $bfPath = $bfRaw
+                if (-not [System.IO.Path]::IsPathRooted($bfPath) -and -not [string]::IsNullOrWhiteSpace($backupDir)) {
+                    $bfPath = Join-Path $backupDir $bfRaw
+                }
+                if (-not (Test-Path -LiteralPath $bfPath -PathType Leaf)) {
+                    $reasons += "条目 backup_file 不存在: $bfPath"
+                } else {
+                    $wantHash = $e['backup_file_sha256']
+                    if ([string]::IsNullOrWhiteSpace([string]$wantHash)) {
+                        # 备份文件在但未记录哈希：内容未绑定，可能已被替换 → 不得默认信任（评审修复）。
+                        $reasons += "条目 backup_file 存在但未记录哈希: $bfPath"
+                    } else {
+                        $a = Get-Sha256Hex -Path $bfPath
+                        if ($null -eq $a) {
+                            # 备份文件存在却读不出哈希：视为证据不完整，不得默认通过（评审修复）。
+                            $reasons += "条目 backup_file 存在但无法计算哈希: $bfPath"
+                        } elseif ($a -ne [string]$wantHash) {
+                            $reasons += "条目 backup_file 哈希不匹配: $bfPath"
+                        }
                     }
                 }
             }

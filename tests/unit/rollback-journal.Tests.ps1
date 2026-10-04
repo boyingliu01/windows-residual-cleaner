@@ -280,6 +280,35 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         $r.Valid | Should -BeFalse
         ($r.Reasons -join ' ') | Should -Match 'timestamp'
     }
+
+    It 'completed_at 非空但非合法时间戳（损坏/篡改）→ 自证失败，不永久静默阻断恢复（评审修复）' {
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $j['completed_at'] = 'completed'
+        $r = Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP'
+        $r.Valid | Should -BeFalse
+        ($r.Reasons -join ' ') | Should -Match 'completed_at'
+    }
+
+    It 'backup_file 存在但未记录哈希 → 自证失败（内容未绑定，评审修复）' {
+        $bf = Join-Path $script:Dir 'nh.reg'
+        [System.IO.File]::WriteAllText($bf, 'x')
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $e = ConvertTo-RollbackJournalEntry -Id 'e1' -Kind 'registry_key' -Target 'HKLM\X' -State 'mutation_succeeded'
+        $e['backup_file'] = 'nh.reg'   # 无 backup_file_sha256
+        $j['entries'] = @($e)
+        (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
+    }
+
+    It 'backup_file 用 ..\\ 穿越备份目录 → 自证失败（评审修复：越界路径拒绝）' {
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $e = ConvertTo-RollbackJournalEntry -Id 'e1' -Kind 'registry_key' -Target 'HKLM\X' -State 'mutation_succeeded'
+        $e['backup_file'] = '..\outside.reg'
+        $e['backup_file_sha256'] = ('A' * 64)
+        $j['entries'] = @($e)
+        $r = Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP'
+        $r.Valid | Should -BeFalse
+        ($r.Reasons -join ' ') | Should -Match '越出|不存在'
+    }
 }
 
 Describe 'rollback-journal: 落盘与回读（REQ-005 / REQ-032）' {

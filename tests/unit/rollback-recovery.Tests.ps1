@@ -364,15 +364,15 @@ Describe 'S2 Get-RecoveryCandidateSet' {
             }
             if ($WithConsumed) {
                 [System.IO.File]::WriteAllText((Join-Path $dir 'rollback-consumed.json'),
-                    (@{ run_id = [guid]::NewGuid().ToString() } | ConvertTo-Json -Depth 4))
+                    (@{ run_id = $Journal['run_id'] } | ConvertTo-Json -Depth 4))
             }
             if ($WithConsumedFailed) {
                 [System.IO.File]::WriteAllText((Join-Path $dir 'rollback-consumed.failed.json'),
-                    (@{ run_id = [guid]::NewGuid().ToString() } | ConvertTo-Json -Depth 4))
+                    (@{ run_id = $Journal['run_id'] } | ConvertTo-Json -Depth 4))
             }
             if ($WithAck) {
                 [System.IO.File]::WriteAllText((Join-Path $dir 'rollback-acknowledged.json'),
-                    (@{ run_id = [guid]::NewGuid().ToString() } | ConvertTo-Json -Depth 4))
+                    (@{ run_id = $Journal['run_id'] } | ConvertTo-Json -Depth 4))
             }
             return $dir
         }
@@ -565,12 +565,21 @@ Describe 'S2 Test-JournalIsStaleOrForeign' {
         $r | Should -Contain 'journal_from_foreign_machine'
     }
 
-    It '存在合法 consumed 标记 → 记为 already_consumed' {
+    It '存在合法且 run_id 匹配的 consumed 标记 → 记为 already_consumed' {
+        $rid = [guid]::NewGuid().ToString()
         [System.IO.File]::WriteAllText((Join-Path $script:FBDir 'rollback-consumed.json'),
-            (@{ run_id = [guid]::NewGuid().ToString() } | ConvertTo-Json -Depth 4))
-        $j = @{ run_id = [guid]::NewGuid().ToString() }
+            (@{ run_id = $rid } | ConvertTo-Json -Depth 4))
+        $j = @{ run_id = $rid }
         $r = @(Test-JournalIsStaleOrForeign -Journal $j -BackupDir $script:FBDir)
         $r | Should -Contain 'already_consumed'
+    }
+
+    It 'consumed 标记 run_id 与日志不符（外来/复制来的）→ 不得据此判已消费（评审修复）' {
+        [System.IO.File]::WriteAllText((Join-Path $script:FBDir 'rollback-consumed.json'),
+            (@{ run_id = [guid]::NewGuid().ToString() } | ConvertTo-Json -Depth 4))
+        $j = @{ run_id = [guid]::NewGuid().ToString() }   # 不同的 run_id
+        $r = @(Test-JournalIsStaleOrForeign -Journal $j -BackupDir $script:FBDir)
+        $r | Should -Not -Contain 'already_consumed'
     }
 
     It '未传 MachineFingerprint → 不判断指纹（允许）' {

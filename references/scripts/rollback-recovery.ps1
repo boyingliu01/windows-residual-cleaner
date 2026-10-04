@@ -48,6 +48,24 @@ function Test-MarkerWellFormed {
     return $true
 }
 
+function Test-MarkerBelongsToJournal {
+    <#
+    .SYNOPSIS
+        旁路标记是否「格式合法」且其 run_id 与这份日志一致（评审修复）。
+    .DESCRIPTION
+        仅格式合法不足以剔除候选：一份从别处复制来的、或写错目录的合法 GUID 标记，
+        会把一个本应恢复的候选永久踢出集合。标记必须绑定到它声称代表的那次运行——
+        与清理日志哈希/run_id 绑定同理（未绑定的证据不得用于抑制恢复）。
+    #>
+    param($Marker, [hashtable]$Journal)
+
+    if (-not (Test-MarkerWellFormed -Marker $Marker)) { return $false }
+    $journalRunId = [string]$Journal['run_id']
+    $markerRunId = [string]$Marker['run_id']
+    if ([string]::IsNullOrWhiteSpace($journalRunId)) { return $false }
+    return ($markerRunId -eq $journalRunId)
+}
+
 function Get-RecoveryCandidateSet {
     <#
     .SYNOPSIS
@@ -109,10 +127,10 @@ function Get-RecoveryCandidateSet {
         }
 
         $consumedMarker = Read-JsonFileSafe -Path (Join-Path $d.FullName 'rollback-consumed.json')
-        if (Test-MarkerWellFormed -Marker $consumedMarker) { continue }
+        if (Test-MarkerBelongsToJournal -Marker $consumedMarker -Journal $journal) { continue }
 
         $ackMarker = Read-JsonFileSafe -Path (Join-Path $d.FullName 'rollback-acknowledged.json')
-        if (Test-MarkerWellFormed -Marker $ackMarker) { continue }
+        if (Test-MarkerBelongsToJournal -Marker $ackMarker -Journal $journal) { continue }
 
         # 第二道闸门：此前「尝试消费但标记都写失败」
         $failedMarker = Read-JsonFileSafe -Path (Join-Path $d.FullName 'rollback-consumed.failed.json')
@@ -370,7 +388,7 @@ function Test-JournalIsStaleOrForeign {
     }
 
     $consumed = Read-JsonFileSafe -Path (Join-Path $BackupDir 'rollback-consumed.json')
-    if (Test-MarkerWellFormed -Marker $consumed) { $reasons += 'already_consumed' }
+    if (Test-MarkerBelongsToJournal -Marker $consumed -Journal $Journal) { $reasons += 'already_consumed' }
 
     return $reasons
 }
