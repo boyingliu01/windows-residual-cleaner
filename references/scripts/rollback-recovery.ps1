@@ -285,7 +285,17 @@ function Get-JournalSuppressionVerdict {
         $res.Reason = 'summary_absent'
         return $res
     }
-    $failed = $summary['failed']
+
+    # 归一化为 hashtable：ConvertFrom-Json 产出的嵌套 summary 是 PSCustomObject，
+    # 其 ['key'] 索引器对 PSCustomObject 恒返回 $null（实测 0 和 2 都返回 null），
+    # 若直接 $summary['failed'] 会把 failed 读成 null，导致 [int]$null -eq 0 恒真，
+    # 无论 summary.failed 是 0 还是 2 都误判为「清理成功」而抑制恢复（REQ-031 失效）。
+    # 与 Get-RollbackJournalEntryList 的条目归一化同理，改为显式读属性。
+    if ($summary -is [hashtable]) {
+        $failed = $summary['failed']
+    } else {
+        $failed = $summary.PSObject.Properties['failed'].Value
+    }
     if ($null -eq $failed) {
         $res.EvidenceMissing = $true
         $res.Reason = 'summary_failed_absent'
