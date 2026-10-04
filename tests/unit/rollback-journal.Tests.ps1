@@ -231,10 +231,8 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         $hash = (Get-FileHash $bf -Algorithm SHA256).Hash
 
         $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
-        $j['entries'] = @(@{
-            kind = 'registry_key'; state = 'mutation_succeeded'
-            backup_file = 'reg-x.reg'; backup_file_sha256 = $hash
-        })
+        $j['entries'] = @(ConvertTo-RollbackJournalEntry -Id 'e1' -Kind 'registry_key' -Target 'HKLM\Software\X' `
+            -State 'mutation_succeeded' -BackupFile 'reg-x.reg' -BackupFileSha256 $hash)
         (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeTrue
 
         $j['entries'][0]['backup_file_sha256'] = 'deadbeef'
@@ -243,8 +241,24 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
 
     It 'backup_file 不存在时自证失败' {
         $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
-        $j['entries'] = @(@{ kind = 'registry_key'; state = 'planned'; backup_file = 'missing.reg' })
+        $j['entries'] = @(ConvertTo-RollbackJournalEntry -Id 'e1' -Kind 'registry_key' -Target 'HKLM\Software\X' -BackupFile 'missing.reg')
         (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
+    }
+
+    It '条目缺 id / item_id / target → 自证失败（评审修复：恢复依赖这些字段）' {
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $j['entries'] = @(@{ kind = 'registry_key'; state = 'planned' })   # 裸条目，无 id/item_id/target
+        (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
+    }
+
+    It '条目 item_id 与 kind+target 不一致（被篡改）→ 自证失败（评审修复 recompute-and-compare）' {
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $e = ConvertTo-RollbackJournalEntry -Id 'e1' -Kind 'registry_key' -Target 'HKLM\Software\X'
+        $e['item_id'] = 'registry_key:hklm\software\victim'   # 指向不同对象
+        $j['entries'] = @($e)
+        $r = Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP'
+        $r.Valid | Should -BeFalse
+        ($r.Reasons -join ' ') | Should -Match 'item_id'
     }
 
     It 'journal_version 非数字（外部畸形 JSON）→ 判不支持且不抛异常（评审修复）' {

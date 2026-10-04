@@ -488,8 +488,13 @@ function Test-RollbackJournalSelfValid {
                     # 非 null 但不可解析的时间戳不得被静默忽略（评审修复：AC-083 一致性）。
                     $reasons += "cleanup_log_timestamp 不可解析: $want"
                 } else {
-                    $lw = (Get-Item -LiteralPath $p).LastWriteTimeUtc
-                    if ([math]::Abs(($lw - $wd).TotalSeconds) -gt $tTol) {
+                    # Get-Item 也可能因 ACL/占用/瞬时 IO 失败；自证契约是「不抛」，
+                    # 读不到 mtime 记为证据不完整而非崩溃（评审修复）。
+                    $lw = $null
+                    try { $lw = (Get-Item -LiteralPath $p).LastWriteTimeUtc } catch { $lw = $null }
+                    if ($null -eq $lw) {
+                        $reasons += "cleanup_log 存在但无法读取最后写入时间，证据不完整: $p"
+                    } elseif ([math]::Abs(($lw - $wd).TotalSeconds) -gt $tTol) {
                         $reasons += "cleanup_log 最后写入时间与记录相差超过 ${tTol} 秒"
                     }
                 }
@@ -505,6 +510,21 @@ function Test-RollbackJournalSelfValid {
         if ($validKinds -notcontains $k) { $reasons += "条目 kind 非法: $k" }
         $st = [string]$e['state']
         if ($validStates -notcontains $st) { $reasons += "条目 state 非法: $st" }
+        # 恢复路径依赖 id / item_id / target：缺失或空白会让后续对 $null/空 target 施操作。
+        # item_id 是权威身份，必须等于 Get-ItemId(kind, target)——否则被篡改的条目可保留合法
+        # kind/state 却指向不同系统对象（评审修复：recompute-and-compare）。
+        if ([string]::IsNullOrWhiteSpace([string]$e['id'])) { $reasons += "条目 id 缺失或为空" }
+        $tgt = $e['target']
+        if ([string]::IsNullOrWhiteSpace([string]$tgt)) {
+            $reasons += "条目 target 缺失或为空"
+        } else {
+            $iid = [string]$e['item_id']
+            if ([string]::IsNullOrWhiteSpace($iid)) {
+                $reasons += "条目 item_id 缺失或为空"
+            } elseif ($validKinds -contains $k -and $iid -ne (Get-ItemId -Kind $k -Target ([string]$tgt))) {
+                $reasons += "条目 item_id 与 kind+target 不一致: $iid"
+            }
+        }
         $bf = $e['backup_file']
         if ($null -ne $bf -and -not [string]::IsNullOrWhiteSpace([string]$bf)) {
             $bfPath = [string]$bf
