@@ -149,8 +149,8 @@ function Select-RecoveryCandidate {
     $unparsable = @()
     foreach ($c in $Candidates) {
         $raw = [string]$c.Journal['created_at']
-        $dt = [datetime]::MinValue
-        if (-not [string]::IsNullOrWhiteSpace($raw) -and [datetime]::TryParse($raw, [ref]$dt)) {
+        $dt = ConvertFrom-IsoUtc -Text $raw
+        if ($null -ne $dt) {
             $sortable += , @{ Cand = $c; Created = $dt }
         } else {
             $unparsable += , $c
@@ -487,8 +487,12 @@ function Complete-RollbackJournal {
     if ([string]::IsNullOrWhiteSpace($CompletedAt)) {
         $CompletedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     }
-    $Journal['completed_at'] = $CompletedAt
-    $path = Write-RollbackJournal -BackupDir $BackupDir -Journal $Journal
+    # 在浅拷贝上写 completed_at，不原地改调用方的 $Journal：若 Write-RollbackJournal
+    # 抛异常，调用方内存里的日志不会谎称「已完成」而跳过恢复（评审修复）。
+    $copy = @{}
+    foreach ($k in $Journal.Keys) { $copy[$k] = $Journal[$k] }
+    $copy['completed_at'] = $CompletedAt
+    $path = Write-RollbackJournal -BackupDir $BackupDir -Journal $copy
     return @{ Written = $true; Path = $path; CompletedAt = $CompletedAt }
 }
 
@@ -515,8 +519,8 @@ function Test-WithinRecoveryWindow {
     $windowHours = 24
 
     if ($Now -eq [datetime]::MinValue) { $Now = (Get-Date).ToUniversalTime() }
-    $created = [datetime]::MinValue
-    if (-not [datetime]::TryParse($CreatedAt, [ref]$created)) {
+    $created = ConvertFrom-IsoUtc -Text $CreatedAt
+    if ($null -eq $created) {
         return @{ Within = $false; Reason = 'created_at_unparsable'; ElapsedHours = $null }
     }
 
@@ -549,8 +553,8 @@ function Get-ParentBaselineMax {
         if ($kind -ne 'registry_key' -and $kind -ne 'startup_value') { continue }
         $pb = $e['parent_baseline']
         if ($null -eq $pb) { continue }
-        $dt = [datetime]::MinValue
-        if (-not [datetime]::TryParse([string]$pb, [ref]$dt)) { continue }
+        $dt = ConvertFrom-IsoUtc -Text ([string]$pb)
+        if ($null -eq $dt) { continue }
         if ($null -eq $max -or $dt -gt $max) { $max = $dt }
     }
     return $max

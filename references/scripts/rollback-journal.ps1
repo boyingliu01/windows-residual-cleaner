@@ -271,19 +271,25 @@ function Read-RollbackJournal {
 
     $target = Join-Path $BackupDir 'rollback-journal.json'
     if (Test-Path -LiteralPath $target) {
-        $txt = [System.IO.File]::ReadAllText($target, [System.Text.Encoding]::UTF8)
-        $j = ConvertFrom-RollbackJournalText -Text $txt
-        if ($null -ne $j) { return $j }
+        # 契约：不抛异常。ACL/共享冲突/瞬时 IO 失败都要吞掉并回退，否则损坏文件会让
+        # 回滚指引整体不可用（评审修复：ReadAllText 必须在 try 内）。
+        try {
+            $txt = [System.IO.File]::ReadAllText($target, [System.Text.Encoding]::UTF8)
+            $j = ConvertFrom-RollbackJournalText -Text $txt
+            if ($null -ne $j) { return $j }
+        } catch { $j = $null }   # 契约：不抛；读失败按「此文件不可用」处理，继续回退
     }
 
     $prev = Join-Path $BackupDir 'rollback-journal.prev.json'
     if (Test-Path -LiteralPath $prev) {
-        $txt = [System.IO.File]::ReadAllText($prev, [System.Text.Encoding]::UTF8)
-        $j = ConvertFrom-RollbackJournalText -Text $txt
-        if ($null -ne $j) {
-            $j['journal_recovered_from_prev'] = $true
-            return $j
-        }
+        try {
+            $txt = [System.IO.File]::ReadAllText($prev, [System.Text.Encoding]::UTF8)
+            $j = ConvertFrom-RollbackJournalText -Text $txt
+            if ($null -ne $j) {
+                $j['journal_recovered_from_prev'] = $true
+                return $j
+            }
+        } catch { $j = $null }   # 同上：回退也读不动则最终返回 $null
     }
 
     return $null
@@ -417,11 +423,8 @@ function Test-RollbackJournalSelfValid {
     $created = [string]$Journal['created_at']
     if ([string]::IsNullOrWhiteSpace($created)) {
         $reasons += "created_at 缺失"
-    } else {
-        $dt = [datetime]::MinValue
-        if (-not [datetime]::TryParse($created, [ref]$dt)) {
-            $reasons += "created_at 不可解析: $created"
-        }
+    } elseif ($null -eq (ConvertFrom-IsoUtc -Text $created)) {
+        $reasons += "created_at 不可解析: $created"
     }
 
     if ([string]::IsNullOrWhiteSpace([string]$Journal['machine_fingerprint'])) {
@@ -465,16 +468,20 @@ function Test-RollbackJournalSelfValid {
             # 但报告证据缺失，由调用方决定。
         } else {
             $actual = Get-Sha256Hex -Path $p
-            if ($null -ne $actual -and $actual -ne [string]$cls) {
+            if ($null -eq $actual) {
+                # 文件存在却读不出哈希（ACL/占用/IO）：不得当作「已校验通过」，
+                # 否则未经验证的内容会被信任（评审修复）。
+                $reasons += "cleanup_log 存在但无法计算哈希，证据不完整: $p"
+            } elseif ($actual -ne [string]$cls) {
                 $reasons += "cleanup_log_sha256 不匹配"
             }
             $tTol = $CleanupLogTimestampToleranceSeconds
             $want = [string]$clt
             if (-not [string]::IsNullOrWhiteSpace($want)) {
-                $wd = [datetime]::MinValue
-                if ([datetime]::TryParse($want, [ref]$wd)) {
+                $wd = ConvertFrom-IsoUtc -Text $want
+                if ($null -ne $wd) {
                     $lw = (Get-Item -LiteralPath $p).LastWriteTimeUtc
-                    if ([math]::Abs(($lw - $wd.ToUniversalTime()).TotalSeconds) -gt $tTol) {
+                    if ([math]::Abs(($lw - $wd).TotalSeconds) -gt $tTol) {
                         $reasons += "cleanup_log 最后写入时间与记录相差超过 ${tTol} 秒"
                     }
                 }
@@ -502,7 +509,10 @@ function Test-RollbackJournalSelfValid {
                 $wantHash = $e['backup_file_sha256']
                 if (-not [string]::IsNullOrWhiteSpace([string]$wantHash)) {
                     $a = Get-Sha256Hex -Path $bfPath
-                    if ($null -ne $a -and $a -ne [string]$wantHash) {
+                    if ($null -eq $a) {
+                        # 备份文件存在却读不出哈希：视为证据不完整，不得默认通过（评审修复）。
+                        $reasons += "条目 backup_file 存在但无法计算哈希: $bfPath"
+                    } elseif ($a -ne [string]$wantHash) {
                         $reasons += "条目 backup_file 哈希不匹配: $bfPath"
                     }
                 }
@@ -550,4 +560,27 @@ function Format-IsoUtc {
     #>
     param([Parameter(Mandatory)][datetime]$Value)
     return $Value.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+}
+
+function ConvertFrom-IsoUtc {
+    <#
+    .SYNOPSIS
+        解析带 Z 的 ISO 8601 UTC 串为 Kind=Utc 的 [datetime]；不可解析返回 $null。
+    .DESCRIPTION
+        必须用 InvariantCulture + RoundtripKind：裸 [datetime]::TryParse 在非 en-US
+        locale 下会把尾部 Z 当作本地时间处理，得到 Kind=Local，随后 ToUniversalTime()
+        套用本地偏移——跨机/跨时区时会把 created_at 判偏几个小时，误伤 24h 窗口判定
+        （评审修复：读侧与写侧 Format-IsoUtc 对齐）。
+    #>
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $dt = [datetime]::MinValue
+    $ok = [datetime]::TryParse(
+        $Text,
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::RoundtripKind,
+        [ref]$dt)
+    if (-not $ok) { return $null }
+    return $dt.ToUniversalTime()
 }

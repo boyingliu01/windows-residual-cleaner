@@ -759,7 +759,9 @@ Describe 'S2 Get-ParentBaselineMax' {
             @{ kind = 'startup_value'; parent_baseline = '2026-10-03T09:00:00Z' }
         ) }
         $m = Get-ParentBaselineMax -Journal $j
-        $m | Should -Be ([datetime]'2026-10-03T12:00:00Z')
+        # 比较 UTC 时刻：Get-ParentBaselineMax 现返回 Kind=Utc（ConvertFrom-IsoUtc），
+        # 而 [datetime]'...Z' 字面量会被解析成 Kind=Local，直接 -Be 会因 Kind 差异误判。
+        $m.ToUniversalTime() | Should -Be ([datetime]'2026-10-03T12:00:00Z').ToUniversalTime()
     }
 
     It '跳过不可解析的 parent_baseline，不把它当 0' {
