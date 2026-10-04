@@ -440,7 +440,7 @@ Describe 'S2 Get-RecoveryCandidateSet' {
         (Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot).Count | Should -Be 2
     }
 
-    It '主文件存在但损坏且 .prev 完好 → 回退读 .prev（评审修复：不得永久忽略可恢复候选）' {
+    It '主文件存在但损坏且 .prev 完好 → 回退读 .prev，但强制需确认（评审修复）' {
         $dir = New-FakeBackup -Sub 'backup-broken-prev' -Journal @{ run_id = $script:runId; completed_at = $null }
         [System.IO.File]::WriteAllText((Join-Path $dir 'rollback-journal.json'), '{ broken')
         [System.IO.File]::WriteAllText((Join-Path $dir 'rollback-journal.prev.json'),
@@ -448,6 +448,19 @@ Describe 'S2 Get-RecoveryCandidateSet' {
         $set = Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot
         $set.Count | Should -Be 1
         $set[0].JournalSource | Should -Be 'rollback-journal.prev.json'
+        # 主文件其实存在（只是损坏）→ .prev 可能是陈旧未完成视图，必须要求人工确认，禁止静默自动 T3。
+        $set[0].RequiresAcknowledgement | Should -BeTrue
+    }
+
+    It '主文件缺失且 .prev 为未完成 → 正常收集且不强制确认（合法的首次写入崩溃形态）' {
+        $dir = New-FakeBackup -Sub 'backup-missing-prev' -Journal @{ run_id = $script:runId; completed_at = $null }
+        Remove-Item (Join-Path $dir 'rollback-journal.json') -Force
+        [System.IO.File]::WriteAllText((Join-Path $dir 'rollback-journal.prev.json'),
+            (@{ run_id = $script:runId; completed_at = $null } | ConvertTo-Json -Depth 8))
+        $set = Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot
+        $set.Count | Should -Be 1
+        $set[0].JournalSource | Should -Be 'rollback-journal.prev.json'
+        $set[0].RequiresAcknowledgement | Should -BeFalse
     }
 }
 
@@ -732,6 +745,14 @@ Describe 'S2 Test-WithinRecoveryWindow' {
         $r = Test-WithinRecoveryWindow -CreatedAt 'garbage' -Now (Get-Date)
         $r.Within | Should -BeFalse
         $r.Reason | Should -Be 'created_at_unparsable'
+    }
+
+    It 'created_at 在未来（时钟回拨/篡改）→ 判为不在窗口，不得靠负 elapsed 无限延长（评审修复）' {
+        $now = [datetime]::new(2026, 10, 6, 10, 0, 0, [DateTimeKind]::Utc)
+        $future = $now.AddHours(5).ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $r = Test-WithinRecoveryWindow -CreatedAt $future -Now $now
+        $r.Within | Should -BeFalse
+        $r.Reason | Should -Be 'created_at_in_future'
     }
 }
 

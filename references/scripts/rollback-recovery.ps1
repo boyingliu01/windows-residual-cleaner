@@ -84,8 +84,14 @@ function Get-RecoveryCandidateSet {
 
         $journal = $null
         $source = 'rollback-journal.json'
+        # 主文件存在但不可解析（而非缺失）时，回退读到的 .prev 可能是「上一代未完成」的
+        # 陈旧视图——File.Replace 会把完成前的那一代留在 .prev。若主日志其实已完成、只是
+        # 当前损坏，直接用陈旧的 .prev 走自动 T3 会把已完成的运行误当未完成而重装内容。
+        # 因此：主文件存在却只能靠 .prev 恢复 → 强制 RequiresAcknowledgement，禁止静默自动恢复。
+        $primaryCorrupt = $false
         if (Test-Path -LiteralPath $journalPath -PathType Leaf) {
             $journal = Read-JsonFileSafe -Path $journalPath
+            if ($null -eq $journal) { $primaryCorrupt = $true }
         }
         # 主文件缺失，或存在但不可解析（写入过程中崩溃的形态）→ 回退读 .prev。
         # 与 Read-RollbackJournal 的回退语义保持一致：否则一份损坏的主日志会让
@@ -117,7 +123,7 @@ function Get-RecoveryCandidateSet {
             JournalPath            = if ($source -eq 'rollback-journal.json') { $journalPath } else { $prevPath }
             JournalSource          = $source
             Journal                = $journal
-            RequiresAcknowledgement = (Test-MarkerWellFormed -Marker $failedMarker)
+            RequiresAcknowledgement = ((Test-MarkerWellFormed -Marker $failedMarker) -or $primaryCorrupt)
         }
     }
 
@@ -525,6 +531,11 @@ function Test-WithinRecoveryWindow {
     }
 
     $elapsed = $Now.ToUniversalTime() - $created.ToUniversalTime()
+    # 未来 created_at（时钟回拨/篡改）会得到负的 elapsed，负数 < 24 会被误判为「在窗口内」，
+    # 等于无限延长安全边界。安全边界必须要求 elapsed >= 0；未来时间戳按无效证据拒绝。
+    if ($elapsed.TotalHours -lt 0) {
+        return @{ Within = $false; Reason = 'created_at_in_future'; ElapsedHours = [math]::Round($elapsed.TotalHours, 3) }
+    }
     $within = $elapsed.TotalHours -lt $windowHours
     return @{
         Within       = $within

@@ -1,4 +1,4 @@
-﻿# tests/unit/rollback-journal.Tests.ps1
+# tests/unit/rollback-journal.Tests.ps1
 # S1 — journal 核心：schema、原子写、自证（REQ-005 / REQ-027 / REQ-032 / REQ-034 / REQ-035）
 # 断言必须在 PS 5.1 与 pwsh 7 下都成立（pre-commit Gate 5 用 pwsh 7）。
 
@@ -245,6 +245,26 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
         $j['entries'] = @(@{ kind = 'registry_key'; state = 'planned'; backup_file = 'missing.reg' })
         (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
+    }
+
+    It 'journal_version 非数字（外部畸形 JSON）→ 判不支持且不抛异常（评审修复）' {
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $j['journal_version'] = 'abc'
+        { Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP' } | Should -Not -Throw
+        (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
+    }
+
+    It 'cleanup_log_timestamp 非 null 但不可解析 → 自证失败，不静默忽略（评审修复 AC-083）' {
+        $clp = Join-Path $script:Dir 'cl.json'
+        [System.IO.File]::WriteAllText($clp, '{"summary":{"failed":1}}')
+        $hash = (Get-FileHash $clp -Algorithm SHA256).Hash
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $j['cleanup_log_path'] = $clp
+        $j['cleanup_log_timestamp'] = 'not-a-timestamp'
+        $j['cleanup_log_sha256'] = $hash
+        $r = Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP'
+        $r.Valid | Should -BeFalse
+        ($r.Reasons -join ' ') | Should -Match 'timestamp'
     }
 }
 

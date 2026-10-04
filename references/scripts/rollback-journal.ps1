@@ -410,7 +410,9 @@ function Test-RollbackJournalSelfValid {
     $reasons = @()
 
     $ver = $Journal['journal_version']
-    if ($null -eq $ver -or [int]$ver -ne 1) {
+    $verInt = 0
+    if ($null -eq $ver -or -not [int]::TryParse([string]$ver, [ref]$verInt) -or $verInt -ne 1) {
+        # 非数字的 journal_version（外部畸形 JSON）不得抛异常中断自证，按不支持处理。
         $reasons += "journal_version 不受支持: $ver"
     }
 
@@ -477,9 +479,15 @@ function Test-RollbackJournalSelfValid {
             }
             $tTol = $CleanupLogTimestampToleranceSeconds
             $want = [string]$clt
-            if (-not [string]::IsNullOrWhiteSpace($want)) {
+            if ([string]::IsNullOrWhiteSpace($want)) {
+                # 三字段同为非 null 是 AC-083 的硬约束；此处 timestamp 却是空白 → 证据不一致。
+                $reasons += "cleanup_log_timestamp 为空但其余 cleanup_log_* 非空"
+            } else {
                 $wd = ConvertFrom-IsoUtc -Text $want
-                if ($null -ne $wd) {
+                if ($null -eq $wd) {
+                    # 非 null 但不可解析的时间戳不得被静默忽略（评审修复：AC-083 一致性）。
+                    $reasons += "cleanup_log_timestamp 不可解析: $want"
+                } else {
                     $lw = (Get-Item -LiteralPath $p).LastWriteTimeUtc
                     if ([math]::Abs(($lw - $wd).TotalSeconds) -gt $tTol) {
                         $reasons += "cleanup_log 最后写入时间与记录相差超过 ${tTol} 秒"
