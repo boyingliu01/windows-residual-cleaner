@@ -70,6 +70,24 @@ Describe 'S2 crash-window: cleanup succeeded but completed_at never written' {
         $d.NormalT3 | Should -BeFalse
         $d.Reason | Should -Be 'journal_completed'
     }
+
+    It '清理日志哈希不匹配 → RejectCandidate=true 且不走自动恢复（评审修复：篡改/损坏日志不得当正常 T3）' {
+        $rid = [guid]::NewGuid().ToString()
+        $logPath = Join-Path $env:TEMP ("wrc-cw-rej-" + [guid]::NewGuid().ToString('N') + '.json')
+        try {
+            [System.IO.File]::WriteAllText($logPath,
+                (@{ run_id = $rid; summary = @{ failed = 0 } } | ConvertTo-Json -Depth 6))
+            $j = @{ run_id = $rid; completed_at = $null; cleanup_log_path = $logPath;
+                    cleanup_log_timestamp = '2026-10-03T10:00:00Z'; cleanup_log_sha256 = 'WRONGHASH' }
+            $d = Get-UnfinishedJournalFallbackDecision -Journal $j
+            $d.RejectCandidate | Should -BeTrue
+            $d.NormalT3 | Should -BeFalse
+            $d.Suppress | Should -BeFalse
+            $d.Reason | Should -Be 'cleanup_log_sha256_mismatch'
+        } finally {
+            if (Test-Path $logPath) { Remove-Item $logPath -Force -ErrorAction SilentlyContinue }
+        }
+    }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,6 +225,20 @@ Describe 'S2 suppression verdict: evidence grading' {
         $r.Suppress | Should -BeFalse
         $r.EvidenceMissing | Should -BeFalse
         $r.Reason | Should -Be 'cleanup_had_failures'
+    }
+
+    It 'summary.failed 非数字（外部畸形 JSON）→ TryParse 兜底，不抛、按证据缺失处理（评审修复）' {
+        $j = $script:BaseJournal.Clone()
+        $log = Join-Path $script:VerdictDir 'nonnum.json'
+        # 手写文本以绕过 ConvertTo-Json，确保 failed 是字符串 "zero"
+        [System.IO.File]::WriteAllText($log, ('{"run_id":"' + $script:runId + '","summary":{"failed":"zero"}}'))
+        $j['cleanup_log_path'] = $log
+        $j['cleanup_log_sha256'] = (Get-FileHash $log -Algorithm SHA256).Hash
+        { Get-JournalSuppressionVerdict -Journal $j } | Should -Not -Throw
+        $r = Get-JournalSuppressionVerdict -Journal $j
+        $r.Suppress | Should -BeFalse
+        $r.EvidenceMissing | Should -BeTrue
+        $r.Reason | Should -Be 'summary_failed_not_numeric'
     }
 
     It 'sha256 指定但实际不匹配 → 拒绝候选，不抑制' {
@@ -406,6 +438,16 @@ Describe 'S2 Get-RecoveryCandidateSet' {
         New-FakeBackup -Sub 'backup-x1' -Journal @{ run_id = [guid]::NewGuid().ToString(); completed_at = $null }
         New-FakeBackup -Sub 'backup-x2' -Journal @{ run_id = [guid]::NewGuid().ToString(); completed_at = $null }
         (Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot).Count | Should -Be 2
+    }
+
+    It '主文件存在但损坏且 .prev 完好 → 回退读 .prev（评审修复：不得永久忽略可恢复候选）' {
+        $dir = New-FakeBackup -Sub 'backup-broken-prev' -Journal @{ run_id = $script:runId; completed_at = $null }
+        [System.IO.File]::WriteAllText((Join-Path $dir 'rollback-journal.json'), '{ broken')
+        [System.IO.File]::WriteAllText((Join-Path $dir 'rollback-journal.prev.json'),
+            (@{ run_id = $script:runId; completed_at = $null } | ConvertTo-Json -Depth 8))
+        $set = Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot
+        $set.Count | Should -Be 1
+        $set[0].JournalSource | Should -Be 'rollback-journal.prev.json'
     }
 }
 

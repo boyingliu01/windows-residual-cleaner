@@ -86,8 +86,11 @@ function Get-RecoveryCandidateSet {
         $source = 'rollback-journal.json'
         if (Test-Path -LiteralPath $journalPath -PathType Leaf) {
             $journal = Read-JsonFileSafe -Path $journalPath
-        } elseif (Test-Path -LiteralPath $prevPath -PathType Leaf) {
-            # 主文件缺失但 .prev 存在：日志写入过程中崩溃的形态之一
+        }
+        # 主文件缺失，或存在但不可解析（写入过程中崩溃的形态）→ 回退读 .prev。
+        # 与 Read-RollbackJournal 的回退语义保持一致：否则一份损坏的主日志会让
+        # 本可恢复的候选被永久忽略（评审意见：候选发现必须复用同样的 .prev 回退）。
+        if ($null -eq $journal -and (Test-Path -LiteralPath $prevPath -PathType Leaf)) {
             $journal = Read-JsonFileSafe -Path $prevPath
             $source = 'rollback-journal.prev.json'
         }
@@ -294,7 +297,10 @@ function Get-JournalSuppressionVerdict {
     if ($summary -is [hashtable]) {
         $failed = $summary['failed']
     } else {
-        $failed = $summary.PSObject.Properties['failed'].Value
+        # 显式取属性对象再判空：直接 .Properties['failed'].Value 在属性缺失时
+        # 会对 $null 取 .Value（strict mode 下抛 NullReference）。
+        $failedProp = $summary.PSObject.Properties['failed']
+        $failed = if ($null -ne $failedProp) { $failedProp.Value } else { $null }
     }
     if ($null -eq $failed) {
         $res.EvidenceMissing = $true
@@ -302,7 +308,17 @@ function Get-JournalSuppressionVerdict {
         return $res
     }
 
-    if ([int]$failed -eq 0) {
+    # 外部 JSON 的 failed 可能是任意值（如字符串 "zero"）；[int] 强转会抛异常，
+    # 使恢复流程被一份畸形清理日志中断。用 TryParse：非整数按「证据不完整」处理，
+    # 交 Step 3 自证，而不是崩溃或臆断为成功/失败。
+    $failedInt = 0
+    if (-not [int]::TryParse([string]$failed, [ref]$failedInt)) {
+        $res.EvidenceMissing = $true
+        $res.Reason = 'summary_failed_not_numeric'
+        return $res
+    }
+
+    if ($failedInt -eq 0) {
         $res.Suppress = $true
         $res.Reason = 'cleanup_succeeded_failed_zero'
     } else {
@@ -492,9 +508,11 @@ function Test-WithinRecoveryWindow {
     #>
     param(
         [Parameter(Mandatory)][string]$CreatedAt,
-        [datetime]$Now,
-        [int]$WindowHours = 24
+        [datetime]$Now
     )
+
+    # 窗口固定 24h，**不提供参数或开关**（REQ-024）：可配置的安全边界等于没有安全边界。
+    $windowHours = 24
 
     if ($Now -eq [datetime]::MinValue) { $Now = (Get-Date).ToUniversalTime() }
     $created = [datetime]::MinValue
@@ -503,7 +521,7 @@ function Test-WithinRecoveryWindow {
     }
 
     $elapsed = $Now.ToUniversalTime() - $created.ToUniversalTime()
-    $within = $elapsed.TotalHours -lt $WindowHours
+    $within = $elapsed.TotalHours -lt $windowHours
     return @{
         Within       = $within
         Reason       = if ($within) { 'within_window' } else { 'window_exceeded' }
@@ -600,12 +618,20 @@ function Get-UnfinishedJournalFallbackDecision {
 
     $v = Get-JournalSuppressionVerdict -Journal $Journal -CleanupLogPathOverride $CleanupLogPathOverride
     if ($v.Suppress) {
-        return @{ Suppress = $true; NormalT3 = $false; Reason = 'unfinished_but_cleanup_succeeded' }
+        return @{ Suppress = $true; NormalT3 = $false; RejectCandidate = $false; Reason = 'unfinished_but_cleanup_succeeded'; EvidenceMissing = $v.EvidenceMissing }
+    }
+
+    # 抑制判定明确「拒绝该候选」（哈希/run_id/模式不符）时，绝不能当成正常 T3 继续——
+    # 那会把一份被篡改或损坏的日志按普通恢复处理。必须把 RejectCandidate 透传给调用方，
+    # 且不走自动恢复（NormalT3=$false），交上层按拒绝路径处理。
+    if ($v.RejectCandidate) {
+        return @{ Suppress = $false; NormalT3 = $false; RejectCandidate = $true; Reason = $v.Reason; EvidenceMissing = $v.EvidenceMissing }
     }
 
     return @{
         Suppress  = $false
         NormalT3  = $true
+        RejectCandidate = $false
         Reason    = $v.Reason
         EvidenceMissing = $v.EvidenceMissing
     }
