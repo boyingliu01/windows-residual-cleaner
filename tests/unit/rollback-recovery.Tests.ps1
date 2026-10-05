@@ -409,6 +409,21 @@ Describe 'S2 Get-RecoveryCandidateSet' {
         (Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot).Count | Should -Be 0
     }
 
+    It 'completed_at 损坏（非时间戳）→ 不被当作完成而永久剔除，保留候选且需确认（评审修复）' {
+        New-FakeBackup -Sub 'backup-badca' -Journal @{ run_id = $script:runId; completed_at = 'completed' }
+        $set = Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot
+        $set.Count | Should -Be 1
+        $set[0].RequiresAcknowledgement | Should -BeTrue
+    }
+
+    It 'completed_at 空白串 → 兜底判为 malformed 拒绝，不当未完成而走正常 T3（评审修复）' {
+        $j = @{ run_id = [guid]::NewGuid().ToString(); completed_at = '   ' }
+        $d = Get-UnfinishedJournalFallbackDecision -Journal $j
+        $d.RejectCandidate | Should -BeTrue
+        $d.NormalT3 | Should -BeFalse
+        $d.Reason | Should -Be 'completed_at_malformed'
+    }
+
     It '存在合法 consumed 标记 → 剔除' {
         New-FakeBackup -Sub 'backup-cons' -Journal @{ run_id = $script:runId; completed_at = $null } -WithConsumed
         (Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot).Count | Should -Be 0

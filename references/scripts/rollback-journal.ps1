@@ -429,13 +429,14 @@ function Test-RollbackJournalSelfValid {
         $reasons += "created_at 不可解析: $created"
     }
 
-    # completed_at 是「唯一未完成判据」：非空即被候选发现当作已完成而永久剔除。若它是损坏/
-    # 篡改的非时间戳串（如 "completed"），会永久阻断恢复却不被报告为无效。故：存在则必须是合法
-    # ISO UTC 时间戳，否则判为无效证据（评审修复：完成状态只在日志有效时才有意义）。
-    $completedAt = $Journal['completed_at']
-    if ($null -ne $completedAt -and -not [string]::IsNullOrWhiteSpace([string]$completedAt)) {
-        if ($null -eq (ConvertFrom-IsoUtc -Text ([string]$completedAt))) {
-            $reasons += "completed_at 非合法时间戳: $completedAt"
+    # completed_at 是「唯一未完成判据」：三态严格区分（null=未完成 / 合法时间戳=完成 / 其余=损坏）。
+    # 损坏或空白值若被当作完成会永久阻断恢复，若被当作未完成可能重装已完成内容——故判为无效。
+    # （用本文件内的 ConvertFrom-IsoUtc 判定，不依赖 recovery 侧的 Get-CompletedAtState。）
+    $completedAtVal = $Journal['completed_at']
+    if ($null -ne $completedAtVal) {
+        $caStr = [string]$completedAtVal
+        if ([string]::IsNullOrWhiteSpace($caStr) -or $null -eq (ConvertFrom-IsoUtc -Text $caStr)) {
+            $reasons += "completed_at 非法（既非 null 也非合法时间戳）: $caStr"
         }
     }
 
@@ -467,13 +468,14 @@ function Test-RollbackJournalSelfValid {
     $clp = $Journal['cleanup_log_path']
     $clt = $Journal['cleanup_log_timestamp']
     $cls = $Journal['cleanup_log_sha256']
-    $nullCount = 0
-    if ($null -eq $clp) { $nullCount++ }
-    if ($null -eq $clt) { $nullCount++ }
-    if ($null -eq $cls) { $nullCount++ }
-    if ($nullCount -ne 0 -and $nullCount -ne 3) {
-        $reasons += "cleanup_log_path/timestamp/sha256 必须同 null 或同非 null"
-    } elseif ($nullCount -eq 0) {
+    # 「缺失」= $null 或全空白：与下游 IsNullOrWhiteSpace 判定一致，避免三个空串被当作「都在」。
+    $missingCount = 0
+    if ($null -eq $clp -or [string]::IsNullOrWhiteSpace([string]$clp)) { $missingCount++ }
+    if ($null -eq $clt -or [string]::IsNullOrWhiteSpace([string]$clt)) { $missingCount++ }
+    if ($null -eq $cls -or [string]::IsNullOrWhiteSpace([string]$cls)) { $missingCount++ }
+    if ($missingCount -ne 0 -and $missingCount -ne 3) {
+        $reasons += "cleanup_log_path/timestamp/sha256 必须同缺失或同非空"
+    } elseif ($missingCount -eq 0) {
         $p = [string]$clp
         if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
             # REQ-027 容忍：清理日志已不存在时不据此拒绝（可能是 T3），继续自证

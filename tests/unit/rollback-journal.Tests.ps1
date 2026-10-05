@@ -289,6 +289,25 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         ($r.Reasons -join ' ') | Should -Match 'completed_at'
     }
 
+    It 'cleanup_log_* 三个都是空串（非 null）→ 等价于「无清理日志证据」，判合法（评审修复：空白≡缺失）' {
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $j['cleanup_log_path'] = ''
+        $j['cleanup_log_timestamp'] = ''
+        $j['cleanup_log_sha256'] = ''
+        (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeTrue
+    }
+
+    It 'cleanup_log_* 部分空串部分真实 → 模式不一致判非法（评审修复：空白按缺失计入）' {
+        $clp = Join-Path $script:Dir 'mix.json'
+        [System.IO.File]::WriteAllText($clp, '{"summary":{"failed":1}}')
+        $hash = (Get-FileHash $clp -Algorithm SHA256).Hash
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $j['cleanup_log_path'] = $clp
+        $j['cleanup_log_timestamp'] = ''          # 空串：现按「缺失」计，于是变成 2 缺 1 在 → 不一致
+        $j['cleanup_log_sha256'] = $hash
+        (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
+    }
+
     It 'backup_file 存在但未记录哈希 → 自证失败（内容未绑定，评审修复）' {
         $bf = Join-Path $script:Dir 'nh.reg'
         [System.IO.File]::WriteAllText($bf, 'x')

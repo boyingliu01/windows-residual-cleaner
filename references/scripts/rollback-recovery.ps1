@@ -66,6 +66,28 @@ function Test-MarkerBelongsToJournal {
     return ($markerRunId -eq $journalRunId)
 }
 
+function Get-CompletedAtState {
+    <#
+    .SYNOPSIS
+        把 completed_at 归一为三态之一：'done' / 'unfinished' / 'malformed'。
+    .DESCRIPTION
+        「唯一未完成判据」要求严格区分三种情形（评审修复）：
+          - $null / 键缺失            → 'unfinished'（正常 T3 路径）
+          - 可解析的 ISO UTC 时间戳   → 'done'（本轮已正常结束，剔除）
+          - 其余（空白串、损坏/篡改值）→ 'malformed'（既非完成也非干净未完成，须上报拒绝，
+                                        绝不能被当作完成而静默剔除，也不能被当作未完成而重装内容）
+        旧代码用「非空即完成」把后两类混进 'done'，导致损坏的 completed_at 永久阻断恢复；
+        另一处又把空白串当未完成，可能触发对已完成运行的重装。
+    #>
+    param($CompletedAt)
+
+    if ($null -eq $CompletedAt) { return 'unfinished' }
+    $s = [string]$CompletedAt
+    if ([string]::IsNullOrWhiteSpace($s)) { return 'malformed' }
+    if ($null -ne (ConvertFrom-IsoUtc -Text $s)) { return 'done' }
+    return 'malformed'
+}
+
 function Get-RecoveryCandidateSet {
     <#
     .SYNOPSIS
@@ -120,11 +142,11 @@ function Get-RecoveryCandidateSet {
         }
         if ($null -eq $journal) { continue }
 
-        # 已完成 → 剔除
-        $completedAt = $journal['completed_at']
-        if ($null -ne $completedAt -and -not [string]::IsNullOrWhiteSpace([string]$completedAt)) {
-            continue
-        }
+        # 已完成 → 剔除。仅当 completed_at 是合法时间戳才算完成；损坏/空白值不得被当作
+        # 「完成」而静默永久剔除（评审修复）——保留为候选并标记需确认，交自证上报拒绝。
+        $completedState = Get-CompletedAtState -CompletedAt $journal['completed_at']
+        if ($completedState -eq 'done') { continue }
+        $completedMalformed = ($completedState -eq 'malformed')
 
         $consumedMarker = Read-JsonFileSafe -Path (Join-Path $d.FullName 'rollback-consumed.json')
         if (Test-MarkerBelongsToJournal -Marker $consumedMarker -Journal $journal) { continue }
@@ -132,7 +154,7 @@ function Get-RecoveryCandidateSet {
         $ackMarker = Read-JsonFileSafe -Path (Join-Path $d.FullName 'rollback-acknowledged.json')
         if (Test-MarkerBelongsToJournal -Marker $ackMarker -Journal $journal) { continue }
 
-        # 第二道闸门：此前「尝试消费但标记都写失败」
+        # 第二道闸门：此前「尝试消费但标记都写失败」。同样必须绑定 run_id（评审修复）。
         $failedMarker = Read-JsonFileSafe -Path (Join-Path $d.FullName 'rollback-consumed.failed.json')
 
         $out += , @{
@@ -141,7 +163,7 @@ function Get-RecoveryCandidateSet {
             JournalPath            = if ($source -eq 'rollback-journal.json') { $journalPath } else { $prevPath }
             JournalSource          = $source
             Journal                = $journal
-            RequiresAcknowledgement = ((Test-MarkerWellFormed -Marker $failedMarker) -or $primaryCorrupt)
+            RequiresAcknowledgement = ((Test-MarkerBelongsToJournal -Marker $failedMarker -Journal $journal) -or $primaryCorrupt -or $completedMalformed)
         }
     }
 
@@ -656,9 +678,13 @@ function Get-UnfinishedJournalFallbackDecision {
         [string]$CleanupLogPathOverride
     )
 
-    $completedAt = $Journal['completed_at']
-    if ($null -ne $completedAt -and -not [string]::IsNullOrWhiteSpace([string]$completedAt)) {
-        return @{ Suppress = $false; NormalT3 = $false; Reason = 'journal_completed' }
+    $completedState = Get-CompletedAtState -CompletedAt $Journal['completed_at']
+    if ($completedState -eq 'done') {
+        return @{ Suppress = $false; NormalT3 = $false; RejectCandidate = $false; Reason = 'journal_completed' }
+    }
+    # 损坏/空白的 completed_at：既非完成也非干净未完成，不得当作正常 T3 继续（可能重装已完成的内容）。
+    if ($completedState -eq 'malformed') {
+        return @{ Suppress = $false; NormalT3 = $false; RejectCandidate = $true; Reason = 'completed_at_malformed' }
     }
 
     $v = Get-JournalSuppressionVerdict -Journal $Journal -CleanupLogPathOverride $CleanupLogPathOverride
