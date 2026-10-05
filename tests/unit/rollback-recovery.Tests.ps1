@@ -677,19 +677,39 @@ Describe 'S2 Write-RecoveryMarker' {
 # ─────────────────────────────────────────────────────────────────────────────
 
 Describe 'S2 Add-UnrepairedItem' {
-    It '从空表新增一条' {
-        $l = Add-UnrepairedItem -List @() -ItemId 'i1' -Reason 'skipped_older_journal'
+    It '从空表新增一条，条目字段为 REQ-030 的四元组' {
+        $l = Add-UnrepairedItem -List @() -ItemId 'i1' -Reason 'skipped_older_journal' `
+            -Kind 'registry_key' -Target 'HKCU\Software\WRC-Demo'
         @($l).Count | Should -Be 1
+        # 回归：`return , $new` 只保空数组语义，元素必须是条目本身，不能是数组。
+        $l[0] | Should -BeOfType ([hashtable])
         $l[0]['item_id'] | Should -Be 'i1'
         $l[0]['reason'] | Should -Be 'skipped_older_journal'
+        $l[0]['kind'] | Should -Be 'registry_key'
+        $l[0]['target'] | Should -Be 'HKCU\Software\WRC-Demo'
     }
 
-    It '追加到已有列表，不原地修改原数组' {
-        $base = @(Add-UnrepairedItem -List @() -ItemId 'a' -Reason 'r1')
-        $l = Add-UnrepairedItem -List $base -ItemId 'b' -Reason 'r2'
-        @($base).Count | Should -Be 1
+    It '普通赋值连续追加得到扁平数组（调用方套 @() 会变成两层嵌套）' {
+        $l = Add-UnrepairedItem -List @() -ItemId 'a' -Reason 'r1'
+        $l = Add-UnrepairedItem -List $l -ItemId 'b' -Reason 'r2'
         @($l).Count | Should -Be 2
+        $l[0] | Should -BeOfType ([hashtable])
+        $l[1] | Should -BeOfType ([hashtable])
         $l[1]['item_id'] | Should -Be 'b'
+    }
+
+    It '不原地修改传入的列表' {
+        $base = Add-UnrepairedItem -List @() -ItemId 'a' -Reason 'r1'
+        $null = Add-UnrepairedItem -List $base -ItemId 'b' -Reason 'r2'
+        @($base).Count | Should -Be 1
+    }
+
+    It '未传 Kind/Target 时落空串，键仍然存在（契约不缺字段）' {
+        $l = Add-UnrepairedItem -List @() -ItemId 'i1' -Reason 'r1'
+        $l[0].Contains('kind') | Should -BeTrue
+        $l[0].Contains('target') | Should -BeTrue
+        $l[0]['kind'] | Should -Be ''
+        $l[0]['target'] | Should -Be ''
     }
 }
 
@@ -706,9 +726,11 @@ Describe 'S2 Write-UnrepairedList' {
         if (Test-Path $script:URRoot) { Remove-Item $script:URRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
-    It '写出文件于 output 子目录，且字段完整、items 为数组' {
-        $items = @(@{ item_id = 'i1'; reason = 'skipped_older_journal' })
-        $p = Write-UnrepairedList -ProjectRoot $script:URRoot -RunId $script:runId -Items $items -Reason 'partial' -CreatedAt '2026-10-03T10:00:00Z'
+    It '写出文件于 output 子目录，顶层字段与 unrepaired[] 齐备' {
+        $items = Add-UnrepairedItem -List @() -ItemId 'i1' -Reason 'skipped_older_journal' `
+            -Kind 'registry_key' -Target 'HKCU\Software\WRC-Demo'
+        $p = Write-UnrepairedList -ProjectRoot $script:URRoot -RunId $script:runId -Items $items `
+            -BackupDir 'C:\proj\backup-20261003-100000' -Reason 'partial' -CreatedAt '2026-10-03T10:00:00Z'
         Test-Path $p | Should -BeTrue
         [System.IO.Path]::GetFileName([System.IO.Path]::GetDirectoryName($p)) | Should -Be 'output'
         (Split-Path $p -Leaf) | Should -Be "rollback-unrepaired-$($script:runId).json"
@@ -718,15 +740,47 @@ Describe 'S2 Write-UnrepairedList' {
         $raw | Should -Match ('"run_id":\s*"' + [regex]::Escape($script:runId))
         $raw | Should -Match '"reason":\s*"partial"'
         $raw | Should -Match '"created_at":\s*"2026-10-03T10:00:00Z"'
+        # JSON 文本里的反斜杠被转义成 `\\`，因此正则里要匹配**双**反斜杠；
+        # 用 [regex]::Escape 包住转义后的形态，避免手写四层反斜杠。
+        $raw | Should -Match ('"backup_dir":\s*"' + [regex]::Escape('C:\\proj\\backup-20261003-100000') + '"')
+        $raw | Should -Match '"candidate_unparseable":\s*false'
+        $raw | Should -Match '"unrepaired":\s*\['
         $raw | Should -Match '"item_id":\s*"i1"'
+        $raw | Should -Match '"kind":\s*"registry_key"'
+        # REQ-030 用 unrepaired[] 这个键名；items 是修复前的错误键名。
+        $raw | Should -Not -Match '"items":'
     }
 
-    It 'items 为空数组 → 写出空数组而非空对象（PS 5.1 陷阱）' {
+    It 'unrepaired 为空数组 → 写出空数组而非空对象（PS 5.1 陷阱）' {
         $p = Write-UnrepairedList -ProjectRoot $script:URRoot -RunId $script:runId -Items @() -Reason 'none' -CreatedAt '2026-10-03T10:00:00Z'
-        # 直接断言原始文本里 items 是 []，而不是 {}（空对象）。ConvertFrom-Json 后
+        # 直接断言原始文本里 unrepaired 是 []，而不是 {}（空对象）。ConvertFrom-Json 后
         # 空数组在管道中展开为 0 个元素，无法用 -BeOfType 断言。
         $raw = Get-Content $p -Raw
-        $raw | Should -Match '"items":\s*\[\s*\]'
+        $raw | Should -Match '"unrepaired":\s*\[\s*\]'
+    }
+
+    It '-CandidateUnparseable：候选级清单仍写空 unrepaired[] 并置 true（REQ-030 Step 4b）' {
+        $p = Write-UnrepairedList -ProjectRoot $script:URRoot -RunId $script:runId -Items @() `
+            -BackupDir 'C:\proj\backup-broken' -Reason 'self_validation_failed' `
+            -CreatedAt '2026-10-03T10:00:00Z' -CandidateUnparseable
+        $raw = Get-Content $p -Raw
+        $raw | Should -Match '"candidate_unparseable":\s*true'
+        $raw | Should -Match '"unrepaired":\s*\[\s*\]'
+        $raw | Should -Match ('"backup_dir":\s*"' + [regex]::Escape('C:\\proj\\backup-broken') + '"')
+    }
+
+    It '清单是扁平数组：每项一个条目对象，没有嵌套信封' {
+        $items = Add-UnrepairedItem -List @() -ItemId 'a' -Reason 'r1' -Kind 'path_deleted' -Target 'C:\a'
+        $items = Add-UnrepairedItem -List $items -ItemId 'b' -Reason 'r2' -Kind 'service' -Target 'svcB'
+        $p = Write-UnrepairedList -ProjectRoot $script:URRoot -RunId $script:runId -Items $items -Reason 'partial'
+        $o = Get-Content $p -Raw | ConvertFrom-Json
+        @($o.unrepaired).Count | Should -Be 2
+        # 回归：修复前这里会是 @(@(...), ...) 且多出一层 value/Count 信封。
+        (@($o.unrepaired)[0].PSObject.Properties.Name) -contains 'item_id' | Should -BeTrue
+        (@($o.unrepaired)[1].item_id) | Should -Be 'b'
+        (@($o.unrepaired)[1].target) | Should -Be 'svcB'
+        $o.PSObject.Properties.Name | Should -Not -Contain 'value'
+        $o.PSObject.Properties.Name | Should -Not -Contain 'Count'
     }
 
     It '未传 CreatedAt → 自动生成可解析 UTC' {

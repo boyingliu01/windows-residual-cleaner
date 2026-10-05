@@ -267,7 +267,10 @@ Describe 'rollback.ps1 Main' {
         $out | Should -Match 'To rollback:'
         $out | Should -Match 'sysdm\.cpl'
         $out | Should -Match 'Restore-Computer'
-        $out | Should -Match 'under development'
+        # REQ-008：-Auto 已实现，只读指引必须把它作为可用出口说出来；
+        # 「under development」是一句已经作废的承诺，留着就是文档与代码不一致。
+        $out | Should -Match 'Automatic per-item rollback is available'
+        $out | Should -Not -Match 'under development'
     }
 
     It 'lists the restore points that fall inside the window' {

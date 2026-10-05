@@ -473,19 +473,27 @@ function Add-UnrepairedItem {
         累积未修复条目（REQ-031 / exit 11 与 14(a) 的落盘内容）。
     .DESCRIPTION
         返回新的数组而不是原地修改 —— 避免调用方共享引用导致的串改。
+        条目字段固定为 REQ-030 约定的 `item_id` / `kind` / `target` / `reason`。
+
+        末尾的 `return , $new` 是为了在「新增前为空」时仍返回长度为 0 的数组而不是
+        $null。代价是调用方**必须用普通赋值**接结果：再套一层 `@()` 会得到
+        「元素是数组」的两层嵌套，落盘清单变成 `[[item], item]` 并多出一层
+        value/Count 信封（AGENTS.md 陷阱 6 同族）。
     #>
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][array]$List,
         [Parameter(Mandatory)][string]$ItemId,
         [Parameter(Mandatory)][string]$Reason,
-        [string]$Detail
+        [AllowEmptyString()][string]$Kind = '',
+        [AllowEmptyString()][string]$Target = ''
     )
 
     $new = @($List)
     $new += , @{
         item_id = $ItemId
+        kind    = $Kind
+        target  = $Target
         reason  = $Reason
-        detail  = $Detail
     }
     return , $new
 }
@@ -497,13 +505,22 @@ function Write-UnrepairedList {
     .DESCRIPTION
         退出码 11 与 14(a) 都必须落盘这份清单，以便下一次启动按 T3 再次尝试恢复
         并向用户报告。原子写，避免出现半截清单被当成完整证据。
+
+        顶层字段按 REQ-030 固定为 `run_id` / `created_at` / `reason` / `backup_dir` /
+        `candidate_unparseable` / `unrepaired[]`。清单必须落在项目根目录的 output/ 下、
+        **不在**任何 `backup-*` 子目录内——否则删除该备份目录会连带丢掉唯一副本。
+
+        -CandidateUnparseable 对应 Step 4b（候选自证失败/不可解析）：此时没有可读的
+        条目列表可展开，`unrepaired[]` 为空数组，但顶层仍记录候选级证据。
     #>
     param(
         [Parameter(Mandatory)][string]$ProjectRoot,
         [Parameter(Mandatory)][string]$RunId,
         [Parameter(Mandatory)][AllowEmptyCollection()][array]$Items,
+        [AllowEmptyString()][string]$BackupDir = '',
         [string]$Reason,
-        [string]$CreatedAt
+        [string]$CreatedAt,
+        [switch]$CandidateUnparseable
     )
 
     $outDir = Join-Path $ProjectRoot 'output'
@@ -515,10 +532,12 @@ function Write-UnrepairedList {
     }
 
     $payload = @{
-        run_id     = $RunId
-        created_at = $CreatedAt
-        reason     = $Reason
-        items      = @($Items)
+        run_id                = $RunId
+        created_at            = $CreatedAt
+        reason                = $Reason
+        backup_dir            = $BackupDir
+        candidate_unparseable = [bool]$CandidateUnparseable
+        unrepaired            = @($Items)
     }
     $target = Join-Path $outDir "rollback-unrepaired-$RunId.json"
     Write-FileAtomic -TargetPath $target -Content ($payload | ConvertTo-Json -Depth 8)
@@ -711,4 +730,101 @@ function Get-UnfinishedJournalFallbackDecision {
         Reason    = $v.Reason
         EvidenceMissing = $v.EvidenceMissing
     }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 消费判定（REQ-019 固定顺序 2.5 → 3 → 4；T3 与 rollback.ps1 -Auto 共用）
+# ─────────────────────────────────────────────────────────────────────────────
+
+function Get-RollbackConsumptionDecision {
+    <#
+    .SYNOPSIS
+        对**已定位**的一份日志给出消费判定：restore / suppress / already_completed /
+        needs_acknowledgement / reject。本函数只读，不写任何标记。
+    .DESCRIPTION
+        为什么 T3 与 rollback.ps1 -Auto 必须共用：两者读同一份日志、依据同一套证据。
+        各自实现「能不能恢复」迟早会漂移，而漂移的两个方向都是事故——该恢复的没恢复，
+        不该恢复的把用户后来主动删掉的东西装回去。
+        顺序是承重的（REQ-019）：Step 2.5 抑制判定**先于** Step 3 自证，因为抑制针对的
+        正是「清理日志已丢、自证必然失败」那种日志；先跑自证就永远进不了抑制分支。
+        判定为 reject / needs_acknowledgement 时调用方**不得**写任何标记：被标记消费却
+        未通过验证的日志再也无法重试（REQ-030）。
+        本函数自身也一律不落笔——抑制 ≠ 消费，写标记由调用方在恢复真正完成后执行。
+    #>
+    param(
+        [Parameter(Mandatory)][hashtable]$Journal,
+        [bool]$RequiresAcknowledgement = $false,
+        [switch]$AcknowledgeConflicts,
+        [string]$CleanupLogPathOverride,
+        [string]$MachineFingerprint
+    )
+
+    $res = @{
+        Action          = 'reject'
+        Reason          = ''
+        Reasons         = @()
+        EvidenceMissing = $false
+        State           = ''
+        Journal         = $Journal
+    }
+
+    if ([string]::IsNullOrWhiteSpace($MachineFingerprint)) {
+        $MachineFingerprint = [string](Get-MachineFingerprint).Value
+    }
+
+    $state = Get-CompletedAtState -CompletedAt $Journal['completed_at']
+    $res.State = $state
+    if ($state -eq 'done') {
+        # 已完成 → 不消费、不恢复、不改动（AC-014 的后半：跨进程第二次调用必须零变更）。
+        $res.Action = 'already_completed'
+        $res.Reason = 'journal_completed'
+        return $res
+    }
+
+    # Step 1 闸门的延伸：候选被标记「必须人工确认」（曾尝试消费但标记写失败、只能靠 .prev
+    # 读出的日志、completed_at 损坏）。这道判定**必须在自证之前**——那三类日志恰恰常常自证
+    # 失败，若先自证就永远返回 reject，人拿着 -AcknowledgeConflicts 也解不开死锁。
+    # 确认的语义是「承认这份日志到此为止、不要再自动恢复」，**不是**「授权按坏证据恢复」：
+    # 所以确认走 suppress（只补标记、绝不恢复），未确认一律 needs_acknowledgement。
+    if ($state -eq 'malformed' -or $RequiresAcknowledgement) {
+        if ($AcknowledgeConflicts) {
+            $res.Action = 'suppress'
+            $res.Reason = 'acknowledged_without_restore'
+        } else {
+            $res.Action = 'needs_acknowledgement'
+            $res.Reason = if ($state -eq 'malformed') { 'completed_at_malformed' } else { 'requires_acknowledgement' }
+        }
+        return $res
+    }
+
+    # Step 2.5 —— 抑制判定
+    $fb = Get-UnfinishedJournalFallbackDecision -Journal $Journal -CleanupLogPathOverride $CleanupLogPathOverride
+    $res.EvidenceMissing = [bool]$fb.EvidenceMissing
+
+    # Step 3 —— 自证
+    $sv = Test-RollbackJournalSelfValid -Journal $Journal -MachineFingerprint $MachineFingerprint
+    $res.Reasons = @($sv.Reasons)
+    if (-not $sv.Valid) {
+        $res.Action = 'reject'
+        $res.Reason = 'self_validation_failed'
+        return $res
+    }
+
+    # 抑制判定的证据本身被判定为「拒绝该候选」（哈希或模式不符）时，绝不恢复。
+    if ($fb.RejectCandidate) {
+        $res.Action = 'reject'
+        $res.Reason = [string]$fb.Reason
+        return $res
+    }
+
+    # 崩溃在「清理日志写完、completed_at 之前」：抑制自动恢复并如实报告「已完成（标记丢失）」。
+    if ($fb.Suppress) {
+        $res.Action = 'suppress'
+        $res.Reason = [string]$fb.Reason
+        return $res
+    }
+
+    $res.Action = 'restore'
+    $res.Reason = 'unfinished_journal'
+    return $res
 }

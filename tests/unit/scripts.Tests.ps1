@@ -1,4 +1,4 @@
-# Pester Unit Tests for Windows Residual Cleaner Scripts (Pester 3.x Compatible)
+﻿# Pester Unit Tests for Windows Residual Cleaner Scripts (Pester 3.x Compatible)
 # Tests pure functions that don't require admin privileges
 
 Describe 'Extract-ExecutablePath (scan-residuals.ps1)' {
@@ -768,10 +768,27 @@ Describe 'clean-residuals.ps1 safety guards (fail-closed, static + subprocess)' 
         $c | Should -Match 'Aborting to prevent over-deletion'
     }
 
-    It 'Declares the restore-point prerequisite for real deletions (B-M7)' {
+    It 'Gates real deletions behind mandatory rollback protection (S3 replaces B-M7)' {
+        # B-M7 的原契约是「没有 backup-* 目录就不许删」——那是一个**可被伪造的门禁**：
+        # 只要工作树里遗留一个空 backup-* 目录它就形同虚设（S3 之前确实如此）。
+        # 现在换成 REQ-003/017/025 的「强制精准保护」：本轮自己建立回滚日志 + 备份目录，
+        # 建立不起来就 fail-closed，且**在第一个破坏性操作之前**判定。
         $c = Get-Content $global:_guardScript -Raw
         $c | Should -Match '\$willDelete\s*=\s*\(-not \$DryRun\)'
-        $c | Should -Match 'No restore point or backup found'
+        $c | Should -Match '\$needsProtection\s*=\s*\$willDelete'
+        $c | Should -Match 'New-RollbackBackupDirectory'
+        $c | Should -Match 'ConvertTo-RollbackJournal'
+        $c | Should -Match 'Write-RollbackJournalSafely'
+        # 门禁必须早于 Phase 2 的第一个删除
+        $gateIdx = $c.IndexOf('$needsProtection = $willDelete')
+        $delIdx = $c.IndexOf('Remove-ItemRobust -Path')
+        $gateIdx | Should -BeGreaterThan 0
+        $delIdx | Should -BeGreaterThan $gateIdx
+        # 旧的「靠遗留目录放行」文案不得复现
+        $c | Should -Not -Match 'No restore point or backup found'
+        # 可选层（系统还原点）只能告警，不得中止
+        $c | Should -Match 'Get-OptionalProtectionStatus'
+        $c | Should -Match '系统还原点（可选的最后手段）不可用'
     }
 
     It 'Aborts with exit 1 in a child process when ConfirmFile is missing' {
@@ -1008,18 +1025,15 @@ Describe 'clean-residuals.ps1 service cleanup (sc.exe regression)' {
     BeforeAll {
         $global:_svcScript = "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
 
-        # 密闭性：非 DryRun 清理会走「还原点/备份门」，需要存在 backup-* 目录。
-        # backup-* 是 gitignored，在新克隆 / CI / worktree 中必然缺失——此前这些
-        # 测试是靠主仓里遗留的 backup-* 才「碰巧通过」；缺了它 Main 会提前中止，
-        # scCalls 恒为 0。这里自建自清 fixture，使测试不依赖外部状态。
-        $global:_svcBackupDir = "$PSScriptRoot\..\..\backup-svcregress"
-        if (-not (Test-Path $global:_svcBackupDir)) {
-            New-Item -Path $global:_svcBackupDir -ItemType Directory -Force | Out-Null
-        }
+        # 密闭性：S3 之后非 DryRun 清理**不再**依赖仓库里遗留的 backup-* 目录
+        # （那是旧 B-M7 门禁的假象：留个空目录就能骗过它）。现在 Main 自己按
+        # REQ-032 建 backup-<run_id>，落点由 -ProjectRootOverride 注入到 fixture 目录，
+        # 所以 backup-* / cleanup-log.json 都不会污染主仓。
+        $global:_svcProjRoot = "$PSScriptRoot\..\..\wrc-svc-projroot"
     }
 
     AfterAll {
-        Remove-Item $global:_svcBackupDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item $global:_svcProjRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     Context 'Invoke-ScExe' {
@@ -1105,9 +1119,19 @@ Describe 'clean-residuals.ps1 service cleanup (sc.exe regression)' {
         AfterAll {
             Remove-Item $global:_svcFixtureDir -Recurse -Force -ErrorAction SilentlyContinue
         }
+        BeforeEach {
+            # 每条用例各自的 project root：backup-<run_id> 与 cleanup-log.json 都落在这里，
+            # 用例之间互不覆盖，也不会污染主仓（AGENTS.md「测试密闭性」）。
+            Remove-Item $global:_svcProjRoot -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -Path $global:_svcProjRoot -ItemType Directory -Force | Out-Null
+        }
+        AfterEach {
+            Remove-Item $global:_svcProjRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
 
         It 'Invokes sc.exe with stop then delete for a ghost service (no bare sc.exe redirection)' {
             . $global:_svcScript
+            $ProjectRootOverride = $global:_svcProjRoot
             Mock Test-AdminPrivilege { return $true }
             Mock Get-CimInstance { return $null }
             Mock Get-ScheduledTask { return $null }
@@ -1117,21 +1141,56 @@ Describe 'clean-residuals.ps1 service cleanup (sc.exe regression)' {
                 $script:scCalls.Add(($Arguments -join ' '))
                 return @{ ok = $true; output = ''; exit_code = 0; error = '' }
             }
-
+            $ProjectRootOverride = $global:_svcProjRoot
             $ReportPath = $global:_svcReport
             $ConfirmFile = $global:_svcConfirm
             $WhitelistPath = $global:_svcNoWhitelist
             $DryRun = $false
             $null = Main 2>&1
 
-            # 真实副作用断言：stop 必须发生在 delete 之前
-            $script:scCalls.Count | Should -BeGreaterOrEqual 2
-            $script:scCalls[0] | Should -Be 'stop WRCGhostSvcRegress'
-            $script:scCalls[1] | Should -Be 'delete WRCGhostSvcRegress'
+            # 真实副作用断言：stop 必须发生在 delete 之前。
+            # S3 之后序列是 stop → query（存在性证据，REQ-018 的 pre_existing）
+            # → delete → query（消失确认，REQ-024 的 absent_confirmed_after_mutation）。
+            # 因此断言「调用集合 + 相对顺序」，而不是固定下标——增加证据类调用
+            # 不该被伪装成回归，但少了 delete 或缺了前置 query 必须炸。
+            $script:scCalls | Should -Contain 'stop WRCGhostSvcRegress'
+            $script:scCalls | Should -Contain 'delete WRCGhostSvcRegress'
+            $script:scCalls | Should -Contain 'query WRCGhostSvcRegress'
+            $script:scCalls.IndexOf('stop WRCGhostSvcRegress') | Should -BeLessThan $script:scCalls.IndexOf('delete WRCGhostSvcRegress')
+            $script:scCalls.IndexOf('query WRCGhostSvcRegress') | Should -BeLessThan $script:scCalls.IndexOf('delete WRCGhostSvcRegress')
+            @($script:scCalls | Where-Object { $_ -eq 'query WRCGhostSvcRegress' }).Count | Should -BeGreaterOrEqual 2
+        }
+
+        It 'Does not delete a service that is already gone (1060), and journals nothing' {
+            . $global:_svcScript
+            $ProjectRootOverride = $global:_svcProjRoot
+            Mock Test-AdminPrivilege { return $true }
+            Mock Get-CimInstance { return $null }
+            Mock Get-ScheduledTask { return $null }
+            # query 报 1060 = 本轮本就不存在 → 不得删除，也不得记账
+            # （否则恢复端会拿到一条「我们删了它」的假因果证据）。
+            $script:svcCalls1060 = [System.Collections.Generic.List[string]]::new()
+            Mock Invoke-ScExe {
+                $script:svcCalls1060.Add(($Arguments -join ' '))
+                if ($Arguments[0] -eq 'query') { return @{ ok = $false; output = ''; exit_code = 1060; error = '' } }
+                return @{ ok = $true; output = ''; exit_code = 0; error = '' }
+            }
+            $ReportPath = $global:_svcReport
+            $ConfirmFile = $global:_svcConfirm
+            $WhitelistPath = $global:_svcNoWhitelist
+            $DryRun = $false
+            $null = Main 2>&1
+
+            $script:svcCalls1060 | Should -Not -Contain 'delete WRCGhostSvcRegress'
+            $log = Get-Content (Join-Path $global:_svcProjRoot 'cleanup-log.json') -Raw | ConvertFrom-Json
+            $entry = @($log.entries | Where-Object { $_.id -eq 'svc_900' })
+            $entry.Count | Should -Be 1
+            $entry[0].action | Should -Be 'service_skip'
         }
 
         It 'Records service_deleted with success when sc.exe delete returns 0' {
             . $global:_svcScript
+            $ProjectRootOverride = $global:_svcProjRoot
             Mock Test-AdminPrivilege { return $true }
             Mock Get-CimInstance { return $null }
             Mock Get-ScheduledTask { return $null }
@@ -1143,7 +1202,7 @@ Describe 'clean-residuals.ps1 service cleanup (sc.exe regression)' {
             $DryRun = $false
             $null = Main 2>&1
 
-            $logPath = "$PSScriptRoot\..\..\cleanup-log.json"
+            $logPath = (Join-Path $global:_svcProjRoot 'cleanup-log.json')
             Test-Path $logPath | Should -Be $true
             $log = Get-Content $logPath -Raw | ConvertFrom-Json
             $entry = @($log.entries | Where-Object { $_.id -eq 'svc_900' })
@@ -1154,11 +1213,18 @@ Describe 'clean-residuals.ps1 service cleanup (sc.exe regression)' {
 
         It 'Records cleanup_failed (not service_deleted) when sc.exe delete genuinely fails' {
             . $global:_svcScript
+            $ProjectRootOverride = $global:_svcProjRoot
             Mock Test-AdminPrivilege { return $true }
             Mock Get-CimInstance { return $null }
             Mock Get-ScheduledTask { return $null }
-            # 模拟 sc.exe 返回 5 (Access denied)：必须记为失败，绝不能谎报成功
-            Mock Invoke-ScExe { return @{ ok = $false; output = ''; exit_code = 5; error = 'Access is denied.' } }
+            # 所有 sc.exe 调用（含前置 query）都返回 5 = 拒绝访问。
+            # 前置查询**无法判定**存在性时不得当成「已消失」跳过（那会把读不到谎报成
+            # 已删除，既不记账也不删除，用户看到的却是成功），必须继续并如实记为失败。
+            $script:svcCallsDenied = [System.Collections.Generic.List[string]]::new()
+            Mock Invoke-ScExe {
+                $script:svcCallsDenied.Add(($Arguments -join ' '))
+                return @{ ok = $false; output = ''; exit_code = 5; error = 'Access is denied.' }
+            }
 
             $ReportPath = $global:_svcReport
             $ConfirmFile = $global:_svcConfirm
@@ -1166,7 +1232,8 @@ Describe 'clean-residuals.ps1 service cleanup (sc.exe regression)' {
             $DryRun = $false
             $null = Main 2>&1
 
-            $logPath = "$PSScriptRoot\..\..\cleanup-log.json"
+            $script:svcCallsDenied | Should -Contain 'delete WRCGhostSvcRegress'
+            $logPath = (Join-Path $global:_svcProjRoot 'cleanup-log.json')
             $log = Get-Content $logPath -Raw | ConvertFrom-Json
             $entry = @($log.entries | Where-Object { $_.id -eq 'svc_900' })
             $entry.Count | Should -Be 1

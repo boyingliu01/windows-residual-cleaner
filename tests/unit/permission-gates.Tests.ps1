@@ -214,6 +214,14 @@ Describe 'run-all.ps1 pipeline step-abort propagation' {
     }
 
     It 'runs all six steps in order and returns 0 when every step succeeds' {
+        # 密闭性：$psExe 的取值依赖本机是否安装 pwsh，直接断言 'pwsh' 会让本用例
+        # 在未装 PS 7 的机器/CI 上假红。与下方 fallback 用例对称：mock Get-Command
+        # 固定「pwsh 可发现」这一环境事实。
+        function Get-Command {
+            param([Parameter(Position = 0)][string]$Name)
+            if ($Name -eq 'pwsh') { return [PSCustomObject]@{ Name = 'pwsh' } }
+            return Microsoft.PowerShell.Core\Get-Command -Name $Name
+        }
         function Start-Process {
             param([string]$FilePath, [object]$ArgumentList, [switch]$NoNewWindow,
                   [switch]$Wait, [switch]$PassThru, [string]$RedirectStandardOutput,
@@ -229,7 +237,7 @@ Describe 'run-all.ps1 pipeline step-abort propagation' {
         ($script:started -join ',') | Should -Be (
             'create-restore-point.ps1,build-installed-index.ps1,scan-uninstalled.ps1,' +
             'scan-filesystem-residuals.ps1,scan-residuals.ps1,generate-report.ps1')
-        # 本机装了 pwsh，所以 $psExe 应为 'pwsh'
+        # mock 了 Get-Command，所以 $psExe 必为 'pwsh'（不再依赖本机安装）
         $script:capturedExe | Should -Be 'pwsh'
     }
 

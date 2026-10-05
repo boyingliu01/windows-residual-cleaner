@@ -315,6 +315,7 @@ function ConvertTo-RollbackJournal {
         [string]$CleanupLogPath,
         [string]$BackupDir,
         [string]$MachinePathOriginal,
+        [string]$MachinePathScope,
         [string]$MachineFingerprint,
         [string]$FingerprintSource = 'machine_guid'
     )
@@ -332,6 +333,9 @@ function ConvertTo-RollbackJournal {
     if ([string]::IsNullOrWhiteSpace($clPath)) { $clPath = $null }
     $mpOriginal = $MachinePathOriginal
     if ([string]::IsNullOrWhiteSpace($mpOriginal)) { $mpOriginal = $null }
+    # machine_path_scope 与 original 同生命周期：本轮未改 PATH 时为 null（REQ-027）。
+    $mpScope = $MachinePathScope
+    if ([string]::IsNullOrWhiteSpace($mpScope)) { $mpScope = $null }
 
     return @{
         journal_version          = 1
@@ -341,6 +345,9 @@ function ConvertTo-RollbackJournal {
         machine_fingerprint      = $MachineFingerprint
         fingerprint_source       = $FingerprintSource
         machine_path_original    = $mpOriginal
+        machine_path_scope       = $mpScope
+        consumed_by_run_id       = $null
+        consumed_with_failure    = $false
         cleanup_log_path         = $clPath
         cleanup_log_timestamp    = $null
         cleanup_log_sha256       = $null
@@ -370,13 +377,22 @@ function ConvertTo-RollbackJournalEntry {
         [string]$State = 'planned'
     )
 
+    # AC-051：backup_file 与 backup_file_sha256 必须「同 null 或同非 null」。
+    # 调用方常以 `-BackupFile $someMaybeEmpty` 传入，空串在 JSON 往返后会被自证
+    # 判成「越出备份目录/不存在」以外的第三种畸形（空白路径），且下游把空串当
+    # 「有备份」会去动一个不存在的路径。统一规整为 $null，让「无备份」只有一种表示。
+    $bf = $BackupFile
+    if ($null -eq $bf -or [string]::IsNullOrWhiteSpace($bf)) { $bf = $null }
+    $bfHash = $BackupFileSha256
+    if ($null -eq $bfHash -or [string]::IsNullOrWhiteSpace($bfHash)) { $bfHash = $null }
+
     return @{
         id                              = $Id
         item_id                         = (Get-ItemId -Kind $Kind -Target $Target)
         kind                            = $Kind
         target                          = $Target
-        backup_file                     = $BackupFile
-        backup_file_sha256              = $BackupFileSha256
+        backup_file                     = $bf
+        backup_file_sha256              = $bfHash
         pre_existing                    = $PreExisting
         absent_confirmed_after_mutation = $AbsentConfirmedAfterMutation
         parent_baseline                 = $ParentBaseline
@@ -660,4 +676,41 @@ function ConvertFrom-IsoUtc {
         [ref]$dt)
     if (-not $ok) { return $null }
     return $dt.ToUniversalTime()
+}
+
+function Get-NormalizedRegKeyPath {
+    <#
+    .SYNOPSIS
+        注册表键路径规范化（hive 别名统一 + 大小写折叠），用于键路径等价比较与结构签名。
+    .DESCRIPTION
+        同一个键在系统里有三种书写形态：报告里是短 hive 别名（HKCU\...）、
+        reg.exe 导出的 .reg 里是长名（HKEY_CURRENT_USER\...）、PS 提供程序是
+        'HKCU:\...'。注册表对 hive 别名与大小写都不敏感，因此任何「这条 value
+        属不属于这个父键」的判断都必须先归一化，否则短别名提示永远匹配不上
+        长名导出块（DD-003 的裁剪与恢复都会在真实机器上失败）。
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+
+    $p = $Path.Trim().Trim('"').Trim()
+    if ([string]::IsNullOrWhiteSpace($p)) { return '' }
+    $alias = @{
+        'HKLM' = 'hkey_local_machine'; 'HKEY_LOCAL_MACHINE' = 'hkey_local_machine'
+        'HKCU' = 'hkey_current_user'; 'HKEY_CURRENT_USER' = 'hkey_current_user'
+        'HKCR' = 'hkey_classes_root'; 'HKEY_CLASSES_ROOT' = 'hkey_classes_root'
+        'HKU' = 'hkey_users'; 'HKEY_USERS' = 'hkey_users'
+        'HKCC' = 'hkey_current_config'; 'HKEY_CURRENT_CONFIG' = 'hkey_current_config'
+        'HKPT' = 'hkey_performance_text'; 'HKEY_PERFORMANCE_TEXT' = 'hkey_performance_text'
+        'HKPD' = 'hkey_performance_data'; 'HKEY_PERFORMANCE_DATA' = 'hkey_performance_data'
+    }
+    $i = $p.IndexOf('\')
+    if ($i -lt 0) { $hive = $p; $rest = '' } else { $hive = $p.Substring(0, $i); $rest = $p.Substring($i) }
+    # 'HKCU:\Foo' 形态：hive 名带冒号，去掉后再查别名
+    if ($hive.EndsWith(':')) { $hive = $hive.Substring(0, $hive.Length - 1) }
+    $canon = $alias[$hive.ToUpperInvariant()]
+    if ($null -eq $canon) { $canon = $hive.ToLowerInvariant() }
+    $out = $canon + $rest
+    # 连续反斜杠与尾随反斜杠不参与比较；键路径大小写不敏感
+    $out = $out -replace '\\{2,}', '\'
+    if ($out.Length -gt 1 -and $out.EndsWith('\')) { $out = $out.Substring(0, $out.Length - 1) }
+    return $out.ToLowerInvariant()
 }
