@@ -422,8 +422,8 @@ function Test-RollbackJournalSelfValid {
         $reasons += "run_id 不是合法 guid: $runId"
     }
 
-    $created = [string]$Journal['created_at']
-    if ([string]::IsNullOrWhiteSpace($created)) {
+    $created = $Journal['created_at']
+    if ($null -ne $created -and $created -isnot [datetime] -and [string]::IsNullOrWhiteSpace([string]$created)) {
         $reasons += "created_at 缺失"
     } elseif ($null -eq (ConvertFrom-IsoUtc -Text $created)) {
         $reasons += "created_at 不可解析: $created"
@@ -434,9 +434,9 @@ function Test-RollbackJournalSelfValid {
     # （用本文件内的 ConvertFrom-IsoUtc 判定，不依赖 recovery 侧的 Get-CompletedAtState。）
     $completedAtVal = $Journal['completed_at']
     if ($null -ne $completedAtVal) {
-        $caStr = [string]$completedAtVal
-        if ([string]::IsNullOrWhiteSpace($caStr) -or $null -eq (ConvertFrom-IsoUtc -Text $caStr)) {
-            $reasons += "completed_at 非法（既非 null 也非合法时间戳）: $caStr"
+        if (($completedAtVal -isnot [datetime] -and [string]::IsNullOrWhiteSpace([string]$completedAtVal)) `
+            -or $null -eq (ConvertFrom-IsoUtc -Text $completedAtVal)) {
+            $reasons += "completed_at 非法（既非 null 也非合法时间戳）: $completedAtVal"
         }
     }
 
@@ -636,13 +636,25 @@ function ConvertFrom-IsoUtc {
         locale 下会把尾部 Z 当作本地时间处理，得到 Kind=Local，随后 ToUniversalTime()
         套用本地偏移——跨机/跨时区时会把 created_at 判偏几个小时，误伤 24h 窗口判定
         （评审修复：读侧与写侧 Format-IsoUtc 对齐）。
+        并且强制显式 UTC 时区后缀（Z 或 ±HH:mm）：RoundtripKind 会把无时区串按
+        Kind=Unspecified 解析，ToUniversalTime() 又当作本地时间——非 UTC 机器上同样判偏。
+        schema 要求 yyyy-MM-ddTHH:mm:ssZ，缺时区即视为不可解析（评审修复）。
     #>
-    param([AllowNull()][string]$Text)
+    param([AllowNull()][Alias('Value')][object]$Text)
 
+    # pwsh7 的 ConvertFrom-Json 会把 ISO 串解析成 [DateTime] 对象（Kind 常为 Local），
+    # 而 PS5.1 保留字符串。故这里同时接受 [datetime] 与字符串：[datetime] 直接归一到 UTC，
+    # 避免把对象 [string] 化成无 Z 的本地格式后被严格校验误拒（双引擎陷阱，见 AGENTS.md）。
+    if ($null -eq $Text) { return $null }
+    if ($Text -is [datetime]) { return $Text.ToUniversalTime() }
+
+    if ($Text -isnot [string]) { $Text = [string]$Text }
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $trimmed = $Text.Trim()
+    if ($trimmed -notmatch '(?:Z|[+-]\d{2}:?\d{2})$') { return $null }
     $dt = [datetime]::MinValue
     $ok = [datetime]::TryParse(
-        $Text,
+        $trimmed,
         [System.Globalization.CultureInfo]::InvariantCulture,
         [System.Globalization.DateTimeStyles]::RoundtripKind,
         [ref]$dt)

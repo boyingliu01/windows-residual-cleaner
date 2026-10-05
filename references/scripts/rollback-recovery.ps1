@@ -82,9 +82,10 @@ function Get-CompletedAtState {
     param($CompletedAt)
 
     if ($null -eq $CompletedAt) { return 'unfinished' }
-    $s = [string]$CompletedAt
-    if ([string]::IsNullOrWhiteSpace($s)) { return 'malformed' }
-    if ($null -ne (ConvertFrom-IsoUtc -Text $s)) { return 'done' }
+    # 传原始对象给 ConvertFrom-IsoUtc：pwsh7 下 completed_at 可能是 [DateTime]（ConvertFrom-Json
+    # 解析所致），[string] 化会丢 Z 被误判 malformed。仅对字符串才做空白判定。
+    if ($CompletedAt -isnot [datetime] -and [string]::IsNullOrWhiteSpace([string]$CompletedAt)) { return 'malformed' }
+    if ($null -ne (ConvertFrom-IsoUtc -Text $CompletedAt)) { return 'done' }
     return 'malformed'
 }
 
@@ -194,8 +195,7 @@ function Select-RecoveryCandidate {
     $sortable = @()
     $unparsable = @()
     foreach ($c in $Candidates) {
-        $raw = [string]$c.Journal['created_at']
-        $dt = ConvertFrom-IsoUtc -Text $raw
+        $dt = ConvertFrom-IsoUtc -Text $c.Journal['created_at']
         if ($null -ne $dt) {
             $sortable += , @{ Cand = $c; Created = $dt }
         } else {
@@ -574,7 +574,7 @@ function Test-WithinRecoveryWindow {
         （T3 下即下次启动那一刻，而非崩溃时刻）。
     #>
     param(
-        [Parameter(Mandatory)][string]$CreatedAt,
+        [Parameter(Mandatory)][object]$CreatedAt,
         [datetime]$Now
     )
 
@@ -621,7 +621,7 @@ function Get-ParentBaselineMax {
         if ($kind -ne 'registry_key' -and $kind -ne 'startup_value') { continue }
         $pb = $e['parent_baseline']
         if ($null -eq $pb) { continue }
-        $dt = ConvertFrom-IsoUtc -Text ([string]$pb)
+        $dt = ConvertFrom-IsoUtc -Text $pb
         if ($null -eq $dt) { continue }
         if ($null -eq $max -or $dt -gt $max) { $max = $dt }
     }

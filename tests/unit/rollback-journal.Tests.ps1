@@ -447,4 +447,20 @@ Describe 'rollback-journal: ISO 时间格式（避免跨引擎序列化差异）
         $tmp = [datetime]::MinValue
         [datetime]::TryParse($s, [ref]$tmp) | Should -BeTrue
     }
+
+    It 'ConvertFrom-IsoUtc 带 Z → Kind=Utc，小时不被本地时区平移' {
+        $r = ConvertFrom-IsoUtc -Text '2026-10-04T12:00:00Z'
+        $r.Kind | Should -Be ([DateTimeKind]::Utc)
+        $r.ToString('yyyy-MM-ddTHH:mm:ss') | Should -Be '2026-10-04T12:00:00'
+    }
+
+    It 'ConvertFrom-IsoUtc 无时区后缀 → 拒绝返回 null（评审修复：不得按本地时间误判窗口）' {
+        ConvertFrom-IsoUtc -Text '2026-10-04T12:00:00' | Should -BeNullOrEmpty
+    }
+
+    It 'ConvertFrom-IsoUtc 带 ±HH:mm 偏移 → 归一到 UTC' {
+        $r = ConvertFrom-IsoUtc -Text '2026-10-04T12:00:00+08:00'
+        $r.Kind | Should -Be ([DateTimeKind]::Utc)
+        $r.ToString('HH') | Should -Be '04'
+    }
 }
