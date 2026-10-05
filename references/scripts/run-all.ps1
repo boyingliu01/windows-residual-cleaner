@@ -49,7 +49,7 @@ function Main {
     }
 
     function Invoke-Step {
-        param([string]$Name, [string]$ScriptPath, [ref]$StepExitCode)
+        param([string]$Name, [string]$ScriptPath, [ref]$StepExitCode, [int[]]$ToleratedCodes = @(0))
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         Write-Output "`n=== Step: $Name ==="
         # Delphi R1 C1 fix: proper ArgumentList construction
@@ -57,6 +57,15 @@ function Main {
         $process = Start-Process -FilePath $psExe -ArgumentList $argList -Wait -PassThru -NoNewWindow
         $sw.Stop()
         $result = @{ name = $Name; exit_code = $process.ExitCode; duration_seconds = [math]::Round($sw.Elapsed.TotalSeconds, 1) }
+        # 可容忍码（REQ-004）：create-restore-point.ps1 用 4 如实上报「可选还原点未建立」。
+        # 它必须**继续**管道——把不可靠的一层当中止条件会让还原点不可用的机器永远无法扫描
+        # （REQ-025 / AC-017）。但步骤记录里保留真实的 4，人读与机读都能看出这一层没就位。
+        if ($process.ExitCode -ne 0 -and $ToleratedCodes -contains [int]$process.ExitCode) {
+            Write-Output "  → Step '$Name' reported tolerated code $($process.ExitCode) (optional protection unavailable); pipeline continues."
+            $stepResults.Add($result)
+            if ($null -ne $StepExitCode) { $StepExitCode.Value = 0 }
+            return
+        }
         if ($process.ExitCode -ne 0) {
             Write-Error "Step '$Name' failed with exit code $($process.ExitCode) ($($result.duration_seconds)s)"
             $stepResults.Add($result)
@@ -77,9 +86,9 @@ function Main {
     # 调用方拿到的会是 Object[]（日志 + 码），再绑定到 [int] 参数即报
     # "Cannot convert Object[] to Int32"（已实测复现）。
     function Invoke-StepChecked {
-        param([string]$Name, [string]$ScriptPath, [ref]$ResultCode)
+        param([string]$Name, [string]$ScriptPath, [ref]$ResultCode, [int[]]$ToleratedCodes = @(0))
         $stepRc = 0
-        Invoke-Step -Name $Name -ScriptPath $ScriptPath -StepExitCode ([ref]$stepRc)
+        Invoke-Step -Name $Name -ScriptPath $ScriptPath -StepExitCode ([ref]$stepRc) -ToleratedCodes $ToleratedCodes
         if ($null -ne $ResultCode) { $ResultCode.Value = $stepRc }
     }
 
@@ -87,12 +96,15 @@ function Main {
     if (-not $SkipRestorePoint) {
         # ADR-001: 任一子步骤失败即中止（原行为由 Invoke-Step 内 exit 实现，
         # 现改为 [ref] 回传失败码 + 此处显式中止，以保持「不得在 Main 内 exit」的约定）
+        # 4 = 可选还原点未建立（REQ-004 要求如实上报，REQ-025 要求**不得**因此中止）。
         $rc = 0
-        Invoke-StepChecked -Name 'Create Restore Point' -ScriptPath "$scriptDir\create-restore-point.ps1" -ResultCode ([ref]$rc)
+        Invoke-StepChecked -Name 'Create Restore Point' -ScriptPath "$scriptDir\create-restore-point.ps1" -ResultCode ([ref]$rc) -ToleratedCodes @(0, 4)
         if ($rc -ne 0) { & $setRc $rc; return }
     } else {
         # 业务日志用 Write-Output（Pester 拦截 warning 流导致测试无法通过 2>&1 捕获）
-        Write-Output "Skipping restore point creation. Cleanup will NOT be recoverable."
+        # 措辞按 REQ-014 修订：系统还原点只是**可选**层，跳过它不等于「不可恢复」——
+        # 真正的安全责任由 clean-residuals.ps1 的强制逐项精准保护承担。
+        Write-Output "Skipping the optional system restore point. The mandatory per-item precise protection is still created by clean-residuals.ps1."
     }
 
     # Step 2: Build installed software index

@@ -434,7 +434,7 @@ Describe 'Main-flow: run-all.ps1 pipeline orchestration' {
 
     It 'Runs all scan steps and completes' {
         $result = Main 2>&1 | Out-String
-        $result | Should -Match 'Skipping restore point creation'
+        $result | Should -Match 'Skipping the optional system restore point'
         $result | Should -Match 'Build Installed Index'
         $result | Should -Match 'Scan Uninstalled'
         $result | Should -Match 'Scan Filesystem'
@@ -449,5 +449,45 @@ Describe 'Main-flow: run-all.ps1 pipeline orchestration' {
         Mock Start-Process { return [pscustomobject]@{ ExitCode = 0 } }
         $result = Main 2>&1 | Out-String
         $result | Should -Match 'Create Restore Point'
+    }
+
+    It '可选层返回 4（还原点未建立）时管道继续，且不向上冒充成功（REQ-004 / REQ-025 / AC-017）' {
+        # 4 是 create-restore-point.ps1 对「尽力而为层不可用」的如实上报。
+        # 它既不能被当成失败中止整条扫描（否则还原点不可用的机器永远无法扫描），
+        # 也不能从步骤记录里抹掉（人必须能看出这一层没就位）。
+        . "$PSScriptRoot\..\..\references\scripts\run-all.ps1"
+        Mock Test-AdminPrivilege { return $true }
+        # 用 $PesterBoundParameters，不是 $BoundParameters：实测 Pester 5.7.1 在 mock 被
+        # **真实 cmdlet**（这里是 Start-Process）触发时把前者才填上内容，后者是空 hashtable
+        # ——写成 $BoundParameters 条件恒为假，两条分支都返回 0，测试会「绿得毫无意义」。
+        Mock Start-Process {
+            if ([string]$PesterBoundParameters.ArgumentList -match 'create-restore-point') {
+                return [pscustomobject]@{ ExitCode = 4 }
+            }
+            return [pscustomobject]@{ ExitCode = 0 }
+        }
+        $rc = 0
+        $result = (Main -ExitCode ([ref]$rc)) 2>&1 | Out-String
+        $result | Should -Match 'tolerated code 4'
+        $result | Should -Match 'Pipeline Complete'
+        $rc | Should -Be 0
+    }
+
+    It '真正的失败码（2=权限）仍然中止管道' {
+        # 容忍表必须是**白名单**，不能顺手把所有非零都放行：这条与上一条配对，
+        # 证明 -ToleratedCodes 只放行 4。
+        . "$PSScriptRoot\..\..\references\scripts\run-all.ps1"
+        Mock Test-AdminPrivilege { return $true }
+        Mock Start-Process {
+            if ([string]$PesterBoundParameters.ArgumentList -match 'create-restore-point') {
+                return [pscustomobject]@{ ExitCode = 2 }
+            }
+            return [pscustomobject]@{ ExitCode = 0 }
+        }
+        $rc = 0
+        $result = (Main -ExitCode ([ref]$rc)) 2>&1 | Out-String
+        $result | Should -Match 'Pipeline FAILED'
+        $result | Should -Not -Match 'Pipeline Complete'
+        $rc | Should -Be 2
     }
 }

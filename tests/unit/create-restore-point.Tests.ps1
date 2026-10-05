@@ -80,12 +80,29 @@ Describe 'create-restore-point.ps1 registry backup branch' {
     It 'skips restore point creation but still backs up the registry' {
         . $script:RestoreScript
         function Test-AdminPrivilege { param([switch]$Mandatory) return $true }
-        function Checkpoint-Computer { throw 'Checkpoint-Computer must NOT be called with -SkipRestorePoint' }
+        # 本机 System Restore 实测为启用（RPSessionInterval=1），所以这条**只有**在
+        # -SkipRestorePoint 真被消费时才不会碰到还原点。旧实现声明了这个开关却从不读取，
+        # 于是这里的 Checkpoint-Computer 替身被调用、抛出的信息又被产品的 catch 吞成
+        # 「失败」，测试仍然全绿——断言「没崩」证明不了「没调用」（AGENTS.md 测试设计教训）。
+        # 现在改为断言可观测副作用：替身里记账，状态文件里如实落盘。
+        $script:checkpointCalled = $false
+        function Checkpoint-Computer {
+            param([string]$Description, [string]$RestorePointType)
+            $script:checkpointCalled = $true
+        }
         $rc = 0
         $out = (Main -ExitCode ([ref]$rc) -BackupRootOverride $script:root -SkipRestorePoint *>&1) -join "`n"
         $rc | Should -Be 0
+        $script:checkpointCalled | Should -BeFalse
+        $out | Should -Match 'Restore point creation skipped by request'
+
         # 仍然产出了备份目录
         @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory).Count | Should -Be 1
+        # 状态文件必须如实说明「没试过、未建立」，而不是留下一个看起来像成功的空档
+        $statusFile = Join-Path @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory)[0].FullName 'restore-status.json'
+        $doc = Get-Content $statusFile -Raw | ConvertFrom-Json
+        $doc.restore_point_attempted | Should -BeFalse
+        $doc.restore_point_enabled | Should -BeFalse
     }
 }
 
@@ -101,11 +118,8 @@ Describe 'create-restore-point.ps1 restore point branches' {
     It 'creates a restore point when System Restore is reported enabled' {
         . $script:RestoreScript
         function Test-AdminPrivilege { param([switch]$Mandatory) return $true }
-        # 让「方法 2: WMI 交叉验证」判定为已启用
-        function Get-CimInstance {
-            param([string]$ClassName, [string]$Namespace, [object]$Filter)
-            return [PSCustomObject]@{ RPSessionInterval = 1 }
-        }
+        # 检测接缝直接给「已启用」：本机注册表状态不该决定这条分支能不能跑
+        function Test-SystemRestoreEnabled { return $true }
         $script:checkpointCalled = $false
         function Checkpoint-Computer {
             param([string]$Description, [string]$RestorePointType)
@@ -122,17 +136,19 @@ Describe 'create-restore-point.ps1 restore point branches' {
     It 'warns and still proceeds when Checkpoint-Computer fails' {
         . $script:RestoreScript
         function Test-AdminPrivilege { param([switch]$Mandatory) return $true }
-        function Get-CimInstance {
-            param([string]$ClassName, [string]$Namespace, [object]$Filter)
-            return [PSCustomObject]@{ RPSessionInterval = 1 }
-        }
+        function Test-SystemRestoreEnabled { return $true }
         function Checkpoint-Computer { throw 'simulated checkpoint failure' }
         $rc = 0
         $out = (Main -ExitCode ([ref]$rc) -BackupRootOverride $script:root *>&1) -join "`n"
-        # 还原点失败不得让整个备份流程失败，仍应写出状态文件
-        $rc | Should -Be 0
+        # 还原点失败不得让整个备份流程失败，仍应写出状态文件——但**不得**冒充成功
+        # （REQ-004 / AC-018：可区分的非零码 + 如实的 restore_point_enabled）
+        $rc | Should -Be 4
         @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory).Count | Should -Be 1
         $out | Should -Match 'Failed to create restore point'
+        $statusFile = Join-Path @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory)[0].FullName 'restore-status.json'
+        $doc = Get-Content $statusFile -Raw | ConvertFrom-Json
+        $doc.restore_point_attempted | Should -BeTrue
+        $doc.restore_point_enabled | Should -BeFalse
     }
 
     It 'honours the real registry state on this machine (enabled -> no Enable call)' {
@@ -184,26 +200,105 @@ Describe 'create-restore-point.ps1 restore point branches' {
     It 'proceeds without backup protection when System Restore cannot be enabled' {
         . $script:RestoreScript
         function Test-AdminPrivilege { param([switch]$Mandatory) return $true }
-        function Get-CimInstance {
-            param([string]$ClassName, [string]$Namespace, [object]$Filter)
-            return [PSCustomObject]@{ RPSessionInterval = 0 }
-        }
+        function Test-SystemRestoreEnabled { return $false }
+        # 重新验证也拿不到非零 interval，所以 Enable 之后仍判定为不可用
+        function Get-SystemRestoreInterval { return 0 }
         function Enable-ComputerRestore { param([string]$Drive, [object]$ErrorAction) throw 'cannot enable' }
         $rc = 0
         $out = (Main -ExitCode ([ref]$rc) -BackupRootOverride $script:root *>&1) -join "`n"
-        # 关键：即便还原点不可用，注册表备份仍必须完成（不能因此中断）
-        $rc | Should -Be 0
+        # 关键：即便还原点不可用，注册表备份仍必须完成（不能因此中断）——
+        # 但退出码必须如实区分「保护已建立」与「没建立」（REQ-004 / AC-018 / AC-017）。
+        # 强制精准保护在 clean-residuals.ps1 那一层，可选层不可用**不是**中止条件。
+        $rc | Should -Be 4
         @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory).Count | Should -Be 1
+        $statusFile = Join-Path @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory)[0].FullName 'restore-status.json'
+        $doc = Get-Content $statusFile -Raw | ConvertFrom-Json
+        $doc.restore_point_attempted | Should -BeTrue
+        $doc.restore_point_enabled | Should -BeFalse
+        $out | Should -Match 'exit code 4'
+    }
+
+    It 'reports 0 and enabled=true when the restore point is actually established' {
+        # AC-018 的另一半：成功时必须是 0。若这条也返回非零，-ToleratedCodes 就掩盖了
+        # 真失败，UI 也无从区分「有最后手段」与「没有」。
+        . $script:RestoreScript
+        function Test-AdminPrivilege { param([switch]$Mandatory) return $true }
+        function Test-SystemRestoreEnabled { return $true }
+        function Checkpoint-Computer { param([string]$Description, [string]$RestorePointType) }
+        $rc = 0
+        Main -ExitCode ([ref]$rc) -BackupRootOverride $script:root *>&1 | Out-Null
+        $rc | Should -Be 0
+        $statusFile = Join-Path @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory)[0].FullName 'restore-status.json'
+        $doc = Get-Content $statusFile -Raw | ConvertFrom-Json
+        $doc.restore_point_attempted | Should -BeTrue
+        $doc.restore_point_enabled | Should -BeTrue
     }
 
     It 'Main still works when Get-CimInstance is unavailable' {
         . $script:RestoreScript
         function Test-AdminPrivilege { param([switch]$Mandatory) return $true }
+        # 注册表这一路先失败（读不到），才会落到 WMI 那一路
+        function Get-SystemRestoreInterval { return $null }
         function Get-CimInstance { throw 'WMI unavailable' }
+        function Enable-ComputerRestore { param([string]$Drive, [object]$ErrorAction) }
         $rc = 0
-        Main -ExitCode ([ref]$rc) -BackupRootOverride $script:root -SkipRestorePoint *>&1 | Out-Null
-        # 检测失败被 catch 吞掉，备份流程继续
-        $rc | Should -Be 0
+        $out = (Main -ExitCode ([ref]$rc) -BackupRootOverride $script:root *>&1) -join "`n"
+        # 检测失败被吞掉、备份流程继续；两路都判不出启用 → 如实的 4，不是 0
+        $out | Should -Match 'Cannot determine System Restore status'
+        $rc | Should -Be 4
         @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory).Count | Should -Be 1
+    }
+}
+
+Describe 'Test-SystemRestoreEnabled (两路交叉验证，只读)' {
+    BeforeAll {
+        . "$PSScriptRoot\..\..\references\scripts\create-restore-point.ps1"
+    }
+
+    It '注册表 interval 非零 -> 直接 true，不再问 WMI' {
+        $script:wmiCalled = $false
+        function Get-SystemRestoreInterval { return 1440 }
+        function Get-CimInstance {
+            param([string]$ClassName, [string]$Namespace, [object]$Filter)
+            $script:wmiCalled = $true
+            return [PSCustomObject]@{ RPSessionInterval = 0 }
+        }
+        Test-SystemRestoreEnabled | Should -BeTrue
+        $script:wmiCalled | Should -BeFalse
+    }
+
+    It '注册表为 0 时 WMI 兜底：RPSessionInterval>0 判为启用' {
+        function Get-SystemRestoreInterval { return 0 }
+        function Get-CimInstance {
+            param([string]$ClassName, [string]$Namespace, [object]$Filter)
+            return [PSCustomObject]@{ RPSessionInterval = 1440 }
+        }
+        Test-SystemRestoreEnabled | Should -BeTrue
+    }
+
+    It '两路都说没开 -> false' {
+        function Get-SystemRestoreInterval { return 0 }
+        function Get-CimInstance {
+            param([string]$ClassName, [string]$Namespace, [object]$Filter)
+            return [PSCustomObject]@{ RPSessionInterval = 0 }
+        }
+        Test-SystemRestoreEnabled | Should -BeFalse
+    }
+
+    It '注册表读不到且 WMI 抛异常 -> false（绝不抛给调用方）' {
+        function Get-SystemRestoreInterval { return $null }
+        function Get-CimInstance { throw 'WMI down' }
+        # 不合并流：警告是给控制台看的，合并进来会让 Should -BeFalse 拿到数组
+        $r = Test-SystemRestoreEnabled
+        $r | Should -BeFalse
+    }
+
+    It 'WMI 返回空（还原禁用时的真实形态）-> false' {
+        function Get-SystemRestoreInterval { return $null }
+        function Get-CimInstance {
+            param([string]$ClassName, [string]$Namespace, [object]$Filter)
+            return $null
+        }
+        Test-SystemRestoreEnabled | Should -BeFalse
     }
 }
