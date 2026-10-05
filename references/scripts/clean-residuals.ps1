@@ -404,6 +404,33 @@ function Add-CleanupFailure {
     return $Log.Count
 }
 
+function Get-StartupRecoveryExitCode {
+    <#
+    .SYNOPSIS
+        启动期 T3 的 Outcome → 「本轮清理怎么办」的唯一判定。
+    .DESCRIPTION
+        与 rollback.ps1 的 Get-AutoRollbackExitCode 同族但**语义不同**：那边只回答
+        「-Auto 这次跑成功了没」，这边要回答「新一轮清理能不能开始」。所以恢复完全成功
+        （consumed）在这里是**继续**，在那边是 0；而 AC-046 的多候选（consumed_with_skipped）
+        两边都是 14——最新一份已修好，但旧的一份只是被「承认跳过」，system 状态仍有解释
+        不清的部分，必须先让人看一眼再清理。
+        返回 0 = 继续清理；非 0 = 本轮清理**未开始**即中止。
+    #>
+    param([Parameter(Mandatory)][string]$Outcome)
+
+    # 无候选 / 已消费 / 已抑制 / 人已确认 / 已完整恢复 / 干跑 → 都可以开始本轮清理。
+    $proceed = @('no_journal', 'already_completed', 'suppressed',
+                 'acknowledged_without_restore', 'consumed', 'dry_run_reported')
+    if ($proceed -contains $Outcome) { return 0 }
+    # 本轮自己的持久化写入失败是终态码（REQ-026 15(iii)），优先于 14。
+    if ($Outcome -eq 'persistence_failed') { return 15 }
+    # partial_restore / ambiguous / needs_acknowledgement / rejected / consumed_with_skipped
+    # 都是「上一轮留下的日志未能安全消费」→ 14。
+    # 未知 Outcome 同样落 14：漏填映射表不得让清理在状态不明时照常开始。
+    # （input_error / unreadable 在启动期不可达——没有 -JournalPath 可传。）
+    return 14
+}
+
 function Main {
     # ADR-001: Main 通过 [ref] 回传退出码，绝不调用 exit，也绝不 `return <code>`。
     #
@@ -442,6 +469,40 @@ function Main {
         $projectRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
     }
 
+    # ── Phase -1 / T3：启动时先消费上一轮未完成的回滚日志（REQ-028 / AC-033 / AC-038）──
+    #
+    # 顺序是承重的：必须**先**恢复、**再**做 REQ-003 前置检查、**再**为本轮创建新备份，
+    # 否则新备份会把一个尚未修复的受损状态当成「干净基线」捕获下来。
+    # 也因此它排在白名单/报告加载**之前**——报告缺失或损坏不该让上轮的恢复永远饿死。
+    #
+    # -DryRun 必须零副作用（REQ-028 / AC-033）：只报告发现了什么，不消费、不恢复、不改标记，
+    # 且此时不得返回 14——干跑没有改变任何东西，没有「未修复」状态需要它负责。
+    #
+    # -NoAutoRollback **不**跳过这里（REQ-012）：它关的是「本轮的回滚」，不是「上轮的恢复」。
+    if (@($script:RollbackLibsMissing).Count -gt 0) {
+        # 这里不中止，只如实说明：消费协议不可用，因此本轮**没有**做启动期恢复。
+        # 往下走到 Phase 0 的同一道门禁，它会 fail-closed 返回 3 并在任何破坏性操作前中止。
+        Write-Warning ("Startup recovery (T3) skipped: rollback components missing ({0}); the pre-flight gate will abort this run." -f ($script:RollbackLibsMissing -join ','))
+    } else {
+        $t3 = Invoke-RollbackJournalConsumption -ProjectRoot $projectRoot `
+            -AcknowledgeConflicts ([bool]$AcknowledgeConflicts) `
+            -DryRun:([bool]$DryRun)
+        $t3Code = Get-StartupRecoveryExitCode -Outcome ([string]$t3.Outcome)
+        if ([string]$t3.Outcome -ne 'no_journal') {
+            Write-Output "===== STARTUP RECOVERY (previous unfinished cleanup) ====="
+            foreach ($line in @($t3.Report)) { Write-Output $line }
+            Write-Output ("Recovery outcome: {0}" -f [string]$t3.Outcome)
+            Write-Output ""
+        }
+        if ($t3Code -ne 0) {
+            # 上轮的状态还没修好（或修得不完整），本轮清理**未开始**即中止：
+            # 在受损系统上叠加新的删除，会让「是谁弄坏的」彻底无法回答。
+            Write-Warning ("Cleanup not started: previous rollback journal was not safely consumed ({0})." -f [string]$t3.Summary)
+            & $setRc $t3Code
+            return
+        }
+    }
+
     # --- 加载白名单（Defense-in-Depth: 清理前二次校验） ---
     $script:whitelist = $null
     if (Test-Path $WhitelistPath) {
@@ -453,8 +514,12 @@ function Main {
     }
 
     # --- 加载报告并按模式筛选项目 ---
+    # 必须 -ErrorAction Stop：PS 5.1 的 Get-Content 在文件不存在时写的是**非终止**错误，
+    # try/catch 根本不会触发（实测：catch 不执行、$report 为 $null）。于是「报告丢失」
+    # 会被静默当成「本轮没有任何残留可清理」→ 返回 0，调用方（UI / run-all）误报成功。
+    # 缺输入是 REQ-026 的 1（输入/前置错误），下面那个 catch 本来就是为此写的。
     try {
-        $report = Get-Content $ReportPath -Raw | ConvertFrom-Json
+        $report = Get-Content $ReportPath -Raw -ErrorAction Stop | ConvertFrom-Json
     } catch {
         $errMsg = $_.Exception.Message
         Write-Error ("Failed to load report from {0}: {1}" -f $ReportPath, $errMsg)
@@ -493,7 +558,10 @@ function Main {
              return
         }
         try {
-            $confirmedIds = Get-Content $ConfirmFile -Raw | ConvertFrom-Json
+            # 同上：Test-Path 通过之后文件仍可能被移走/锁住，缺 -ErrorAction Stop 时
+            # catch 不会触发，$confirmedIds 变成 $null —— 下面的空值闸门会兜住，
+            # 但错误原因会被记成「no confirmed IDs」而不是真实原因。
+            $confirmedIds = Get-Content $ConfirmFile -Raw -ErrorAction Stop | ConvertFrom-Json
         } catch {
             Write-Error "Failed to parse ConfirmFile '$ConfirmFile': $_. Aborting."
             & $setRc 1

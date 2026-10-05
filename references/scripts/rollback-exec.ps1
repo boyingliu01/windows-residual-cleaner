@@ -851,3 +851,294 @@ function Invoke-RollbackRestore {
         Report           = $reportLines
     }
 }
+
+function Set-JournalConsumedWithoutRestore {
+    <#
+    .SYNOPSIS
+        把一份「已承认结束、但不执行恢复」的日志落盘：先未修复清单，成功后才写标记（REQ-030）。
+    .DESCRIPTION
+        顺序是承重的：REQ-030 禁止「已确认但清单丢失」的状态——那样唯一的证据已经没了，
+        用户却以为问题被记录过。所以 (1) 原子写未修复清单（落在项目根 output/，**不在**
+        backup 目录内，否则删掉备份目录会连带删掉清单），(2) 只有清单写成功后才写
+        completed_at + consumed_with_failure + 旁路标记。清单写失败 → 一份标记都不写
+        （AC-078），调用方按 15 处理。
+
+        run_id 不合法（或日志读不出条目）时没有可展开的条目，仍写一份**候选级**清单：
+        `unrepaired[]` 为空数组 + `candidate_unparseable=true` + `backup_dir`，
+        使 AC-060 的「先清单后标记」顺序对三类 14 情形都成立且可测。
+        清单文件名里的 run_id 一律先验合法性：不合法就改用备份目录名，
+        绝不把日志里外部可控的字符串直接拼进路径。
+    #>
+    # 与 rollback-producer.ps1 同一约定：本管道的写入函数一律不带 ShouldProcess。
+    # WhatIf 等价物是调用方 `Invoke-RollbackJournalConsumption -DryRun`，它在进入本函数
+    # 之前就返回了；而真正的执行者（clean-residuals / rollback -Auto）经 UI 或管道宿主
+    # 非交互拉起，交互提示会挂死整条恢复流程——恢复路径挂死比不挂死危险得多。
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions','')]
+    param(
+        [Parameter(Mandatory)][hashtable]$Candidate,
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [ValidateSet('acknowledged_without_restore', 'skipped_older_journal')][string]$Reason,
+        [AllowEmptyString()][string]$CompletedAt = ''
+    )
+
+    $journal = $Candidate.Journal
+    $backupDir = [string]$Candidate.BackupDir
+    $runId = [string]$journal['run_id']
+    $g = [guid]::Empty
+    $runIdOk = [guid]::TryParse($runId, [ref]$g)
+
+    $listRunId = $runId
+    if (-not $runIdOk) { $listRunId = [System.IO.Path]::GetFileName($backupDir) }
+
+    $listPath = ''
+    try {
+        $items = @()
+        if ($runIdOk) {
+            # 普通赋值：Get-RollbackJournalEntryList 以 `return , $out` 保住空数组语义，
+            # 外面再套 @() 会得到「元素是空数组」的一层嵌套，条目字段全读成空串。
+            $entries = Get-RollbackJournalEntryList -Journal $journal
+            foreach ($e in $entries) {
+                if ($null -eq $e) { continue }
+                # Add-UnrepairedItem 用 `return , $new`，调用方必须普通赋值（见其文档）。
+                $items = Add-UnrepairedItem -List $items -ItemId ([string]$e['item_id']) `
+                    -Kind ([string]$e['kind']) -Target ([string]$e['target']) -Reason $Reason
+            }
+        }
+        $listPath = Write-UnrepairedList -ProjectRoot $ProjectRoot -RunId $listRunId `
+            -Items $items -BackupDir $backupDir -Reason $Reason `
+            -CandidateUnparseable:(-not $runIdOk)
+    } catch {
+        # 条目缺 item_id 等畸形日志也走这里：清单写不出来，就一份标记都不写。
+        return @{ Ok = $false; Stage = 'unrepaired_list'; Detail = $_.Exception.Message; ListPath = '' }
+    }
+
+    if (-not $runIdOk) {
+        # 合法标记必须绑定合法 run_id（Write-RecoveryMarker 会抛）；绑不出标记的候选
+        # 不能谎称「已确认」——它下一轮仍会留在候选集里，如实交回人工。
+        return @{ Ok = $false; Stage = 'unmarkable'; Detail = 'invalid_run_id'; ListPath = $listPath }
+    }
+
+    try {
+        $journal['consumed_with_failure'] = $true
+        $null = Complete-RollbackJournal -BackupDir $backupDir -Journal $journal -CompletedAt $CompletedAt
+        $null = Write-RecoveryMarker -BackupDir $backupDir -Kind 'consumed.failed' -RunId $runId
+    } catch {
+        return @{ Ok = $false; Stage = 'marker'; Detail = $_.Exception.Message; ListPath = $listPath }
+    }
+
+    return @{ Ok = $true; Stage = ''; Detail = ''; ListPath = $listPath }
+}
+
+function Invoke-RollbackJournalConsumption {
+    <#
+    .SYNOPSIS
+        REQ-019 Step 1..5 的**唯一**消费协议实现：定位 → 判定 → 消费/恢复 → 结构化结论。
+    .DESCRIPTION
+        为什么必须只有一份：`rollback.ps1 -Auto` 与 clean-residuals 的启动期 T3 读同一份日志、
+        依据同一套证据。两处各写一遍「能不能恢复、什么时候写标记」迟早会漂移，而漂移的两个
+        方向都是事故——该恢复的没恢复，不该恢复的把用户后来主动删掉的东西装回去。
+        本函数**不决定退出码**：返回语义化的 Outcome，由调用方映射自己的码
+        （-Auto：0/1/11/12/14/15；启动期：继续清理 / 14 / 15）。
+        Outcome 取值：
+          no_journal / input_error / unreadable / ambiguous / needs_acknowledgement /
+          acknowledged_without_restore / already_completed / suppressed / rejected /
+          consumed / consumed_with_skipped / partial_restore / persistence_failed /
+          dry_run_reported
+        -DryRun 是零副作用模式（AC-010）：只报告发现了什么，不消费、不恢复、不改写任何标记。
+        $Now / $MachinePathOverride / $SetPathScript 是透传给 Invoke-RollbackRestore 的测试注入点。
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [string]$JournalPath = '',
+        [bool]$AcknowledgeConflicts = $false,
+        [switch]$DryRun,
+        [AllowNull()]$Now = $null,
+        [AllowNull()][string]$MachinePathOverride,
+        [AllowNull()][scriptblock]$SetPathScript
+    )
+
+    $report = @()
+    $result = $null
+
+    $target = Get-RecoveryJournalTarget -ProjectRoot $ProjectRoot -JournalPath $JournalPath
+
+    # ── 歧义（created_at 平局 / 混合可解析性）：绝不选边（REQ-019 / exit 14(c)）──
+    if (-not $target.Ok) {
+        if ([bool]$target.Ambiguous) {
+            $report += '--- Unfinished rollback journals found ---'
+            foreach ($c in @($target.Candidates)) {
+                $report += ('  {0}  run_id={1}  created_at={2}' -f [string]$c.BackupDir,
+                    [string]$c.Journal['run_id'], [string]$c.Journal['created_at'])
+            }
+            $candCount = @($target.Candidates).Count
+            if ($DryRun) {
+                $report += ("[DRY-RUN] {0} ambiguous candidate(s); nothing consumed, nothing restored." -f $candCount)
+                return @{ Outcome = 'dry_run_reported'; Summary = ("dry_run_ambiguous({0})" -f $candCount);
+                          Report = $report; Result = $null; Candidates = @($target.Candidates) }
+            }
+            if (-not $AcknowledgeConflicts) {
+                $report += 'Ambiguous candidates: refusing to pick one. Re-run with -AcknowledgeConflicts to confirm.'
+                return @{ Outcome = 'ambiguous'; Summary = 'ambiguous_candidates';
+                          Report = $report; Result = $null; Candidates = @($target.Candidates) }
+            }
+            $marked = 0
+            foreach ($c in @($target.Candidates)) {
+                $r = Set-JournalConsumedWithoutRestore -Candidate $c -ProjectRoot $ProjectRoot `
+                    -Reason 'acknowledged_without_restore'
+                if ($r.Ok) { $marked++; continue }
+                if ([string]$r.Stage -eq 'unmarkable') {
+                    $report += ("  无法确认（run_id 不合法，写不出绑定标记）：{0}" -f [string]$c.BackupDir)
+                    continue
+                }
+                $report += ("  确认落盘失败（{0}）：{1}" -f [string]$r.Stage, [string]$r.Detail)
+                return @{ Outcome = 'persistence_failed'; Summary = 'acknowledgement_marker_write_failed';
+                          Report = $report; Result = $null; Candidates = @($target.Candidates) }
+            }
+            return @{ Outcome = 'acknowledged_without_restore';
+                      Summary = ("acknowledged_without_restore({0})" -f $marked);
+                      Report = $report; Result = $null; Candidates = @($target.Candidates) }
+        }
+
+        $outcome = 'no_journal'
+        if ([string]$target.Reason -eq 'journal_path_not_found') { $outcome = 'input_error' }
+        if ([string]$target.Reason -eq 'journal_unreadable') { $outcome = 'unreadable' }
+        return @{ Outcome = $outcome; Summary = [string]$target.Reason;
+                  Report = $report; Result = $null; Candidates = @($target.Candidates) }
+    }
+
+    $journal = $target.Journal
+    $backupDir = [string]$target.BackupDir
+    $decision = Get-RollbackConsumptionDecision -Journal $journal `
+        -RequiresAcknowledgement ([bool]$target.RequiresAcknowledgement) `
+        -AcknowledgeConflicts:$AcknowledgeConflicts
+
+    if ([string]$decision.Action -eq 'already_completed') {
+        $report += "Rollback journal already completed (run_id=$($journal['run_id'])). No target touched, nothing restored."
+        return @{ Outcome = 'already_completed'; Summary = 'journal_already_completed';
+                  Report = $report; Result = $null; Candidates = @() }
+    }
+
+    if ($DryRun) {
+        $report += ("[DRY-RUN] Unfinished rollback journal found (run_id={0}, {1}); nothing consumed, nothing restored." -f `
+            [string]$journal['run_id'], [string]$decision.Action)
+        $report += '[DRY-RUN] Run once without -DryRun to complete the recovery before any new cleanup.'
+        return @{ Outcome = 'dry_run_reported'; Summary = 'dry_run_reported';
+                  Report = $report; Result = $null; Candidates = @($target.Candidates) }
+    }
+
+    if ([string]$decision.Action -eq 'suppress') {
+        $report += "Rollback suppressed: cleanup had actually finished (run_id=$($journal['run_id'])). Nothing restored."
+        if ($decision.EvidenceMissing) {
+            $report += '  抑制依据缺失（清理日志不可读），仅按 completed_at 判定处理。'
+        }
+        try {
+            if ([string]$decision.Reason -eq 'acknowledged_without_restore') {
+                # 人确认过 = 「承认它结束了、不要再自动恢复」，如实记 consumed_with_failure，
+                # 与歧义候选的确认路径同一语义。
+                $journal['consumed_with_failure'] = $true
+            }
+            $null = Complete-RollbackJournal -BackupDir $backupDir -Journal $journal
+        } catch {
+            $report += ("  完成标记写入失败：{0}" -f $_.Exception.Message)
+            return @{ Outcome = 'persistence_failed'; Summary = 'completion_marker_write_failed';
+                      Report = $report; Result = $null; Candidates = @() }
+        }
+        return @{ Outcome = 'suppressed'; Summary = ("suppressed({0})" -f [string]$decision.Reason);
+                  Report = $report; Result = $null; Candidates = @() }
+    }
+
+    if ([string]$decision.Action -eq 'needs_acknowledgement') {
+        $report += ("Rollback needs explicit human acknowledgement (run_id={0}): {1}" -f `
+            [string]$journal['run_id'], [string]$decision.Reason)
+        $report += 'Re-run with -AcknowledgeConflicts to confirm this journal, or point at it with -JournalPath.'
+        return @{ Outcome = 'needs_acknowledgement'; Summary = [string]$decision.Reason;
+                  Report = $report; Result = $null; Candidates = @() }
+    }
+
+    if ([string]$decision.Action -eq 'reject') {
+        $report += ("Rollback journal cannot be consumed safely (run_id={0}): {1}" -f `
+            [string]$journal['run_id'], [string]$decision.Reason)
+        foreach ($r in @($decision.Reasons)) { $report += "  - $r" }
+        return @{ Outcome = 'rejected'; Summary = [string]$decision.Reason;
+                  Report = $report; Result = $null; Candidates = @() }
+    }
+
+    # ── restore（Step 5）──
+    # 不用 `$args`：那是 PowerShell 自动变量，在此赋值会遮蔽未命名参数集合（同类坑见 AGENTS.md 陷阱 2）。
+    $restoreArgs = @{
+        Journal              = $journal
+        BackupDir            = $backupDir
+        ProjectRoot          = $ProjectRoot
+        AcknowledgeConflicts = [bool]$AcknowledgeConflicts
+    }
+    if ($null -ne $Now) { $restoreArgs['Now'] = $Now }
+    if ($null -ne $MachinePathOverride) { $restoreArgs['MachinePathOverride'] = $MachinePathOverride }
+    if ($null -ne $SetPathScript) { $restoreArgs['SetPathScript'] = $SetPathScript }
+    $result = Invoke-RollbackRestore @restoreArgs
+
+    # Format-RollbackReport 用 `return , $lines` 保住空数组语义，调用方不得再套 @()。
+    foreach ($line in $result.Report) { $report += $line }
+
+    if ($result.PersistenceError) {
+        return @{ Outcome = 'persistence_failed'; Summary = 'persistence_record_write_failed';
+                  Report = $report; Result = $result; Candidates = @() }
+    }
+
+    $failedCount = 0
+    if ($null -ne $result.Counts -and $null -ne $result.Counts['restore_failed']) {
+        $failedCount = [int]$result.Counts['restore_failed']
+    }
+    if ($failedCount -gt 0) {
+        # REQ-031 / AC-077：系统仍有未修复项，日志必须**保持未完成**，让下次启动继续 T3。
+        $report += ("Restore incomplete: {0} item(s) failed. Journal left unfinished; unrepaired list: {1}" -f `
+            $failedCount, [string]$result.UnrepairedPath)
+        return @{ Outcome = 'partial_restore'; Summary = 'restore_incomplete';
+                  Report = $report; Result = $result; Candidates = @() }
+    }
+
+    # Step 4a：较旧的候选一份都不恢复，但必须「先清单、成功后才标记」，
+    # 否则后续运行会回退到更旧的日志，越过「只回滚紧邻上一轮」的非目标。
+    $others = @($target.Candidates)
+    $skippedFailed = $false
+    foreach ($c in $others) {
+        $r = Set-JournalConsumedWithoutRestore -Candidate $c -ProjectRoot $ProjectRoot `
+            -Reason 'skipped_older_journal'
+        if ($r.Ok) { continue }
+        $skippedFailed = $true
+        $report += ("  较旧候选标记失败（{0}）：{1}" -f [string]$c.BackupDir, [string]$r.Stage)
+    }
+    if ($skippedFailed) {
+        # 清单或标记没写上 = 本轮持久化记录不可靠（15 是终端码，优先级高于 10/11/14）。
+        return @{ Outcome = 'persistence_failed'; Summary = 'older_journal_marker_failed';
+                  Report = $report; Result = $result; Candidates = $others }
+    }
+    if ($others.Count -gt 0) {
+        $report += ("{0} older unfinished journal(s) marked consumed-without-restore; recovery of the newest one succeeded." -f $others.Count)
+    }
+
+    $consumerRunId = [guid]::NewGuid().ToString()
+    try {
+        $null = Complete-RollbackJournal -BackupDir $backupDir -Journal $journal -ConsumedByRunId $consumerRunId
+        $null = Write-RecoveryMarker -BackupDir $backupDir -Kind 'consumed' -RunId ([string]$journal['run_id'])
+    } catch {
+        # 消费标记写失败：日志仍是未完成状态，下次启动会重试 —— 但「重试」不等于「已消费」，
+        # 只有两个标记都写失败才必须如实上报（REQ-019 Step 4a / 15(iii)）。
+        try {
+            $null = Write-RecoveryMarker -BackupDir $backupDir -Kind 'consumed.failed' -RunId ([string]$journal['run_id'])
+        } catch {
+            return @{ Outcome = 'persistence_failed'; Summary = 'consumption_marker_write_failed';
+                      Report = $report; Result = $result; Candidates = $others }
+        }
+    }
+
+    $report += ("Rollback result written: {0}" -f [string]$result.ResultPath)
+    $outcome = 'consumed'
+    $summary = 'restored'
+    if ($others.Count -gt 0) {
+        # REQ-019 Step 4a：多份未完成日志时即使最新一份恢复成功，也必须返回 14 并告警。
+        $outcome = 'consumed_with_skipped'
+        $summary = 'restored_with_skipped_older_journals'
+    }
+    return @{ Outcome = $outcome; Summary = $summary; Report = $report;
+              Result = $result; Candidates = $others }
+}

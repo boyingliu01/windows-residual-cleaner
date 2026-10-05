@@ -209,11 +209,13 @@ Describe 'Main-flow: rollback.ps1 instructions output' {
 # ---------------------------------------------------------------------------
 Describe 'Main-flow: clean-residuals.ps1 execution phases' {
     BeforeAll {
-        # B-M7：确保备份目录存在（沿用现有测试约定）
-        $backupDir = "$PSScriptRoot\..\..\backup-test"
-        if (-not (Get-ChildItem -Path "$PSScriptRoot\..\.." -Filter 'backup-*' -Directory -ErrorAction SilentlyContinue)) {
-            New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-        }
+        # 密闭性：本轮是 Mode C 真实执行，Phase 0 会在 projectRoot 下建 backup-<run_id>
+        # 并写回滚日志。不注入 ProjectRootOverride 就会把日志留在主仓根目录——
+        # 而启动期 T3 现在正是扫那个位置，一份残留的未完成日志会被下一次运行真的恢复。
+        # （旧代码在这里建 `backup-test` 糊过 REQ-017 的还原点门禁；该门禁现已改为
+        #  自建备份目录，那段 fixture 已成死代码，一并移除。）
+        $projRoot = "$TestDrive\projroot"
+        New-Item -ItemType Directory -Path $projRoot -Force | Out-Null
 
         $targetDir = "$TestDrive\clean-target"
         New-Item -ItemType Directory -Path "$targetDir\OldAppFiles" -Force | Out-Null
@@ -253,7 +255,8 @@ Describe 'Main-flow: clean-residuals.ps1 execution phases' {
     }
 
     BeforeEach {
-        . "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath $reportPath -WhitelistPath $wlPath -Mode C -DryRun:$false
+        . "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath $reportPath -WhitelistPath $wlPath `
+            -Mode C -DryRun:$false -ProjectRootOverride $projRoot
         Mock Test-AdminPrivilege { return $true }
         Mock Get-ScheduledTask { return @([pscustomobject]@{ TaskName = 'WRCGhostTask9F3C' }) }
         Mock Unregister-ScheduledTask { }
@@ -277,10 +280,6 @@ Describe 'Main-flow: clean-residuals.ps1 execution phases' {
         $result | Should -Match 'PATH entry not found'
         # ghost service：sc delete 失败（不存在）→ cleanup_failed 计入
         $result | Should -Match 'Deleting service: WRCGhostSvc9F3C'
-    }
-
-    AfterAll {
-        Remove-Item $backupDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

@@ -191,11 +191,13 @@ Describe 'Get-RollbackConsumptionDecision（REQ-019 固定顺序 2.5 → 3 → 4
     }
 }
 
-Describe 'Get-AutoRollbackTarget（日志定位）' {
+# 定位环节已抽到 rollback-recovery.ps1 的 Get-RecoveryJournalTarget：-Auto 与启动期 T3
+# 读同一份日志，必须共用同一套「谁是候选 / 谁歧义」的判据（漂移的两个方向都是事故）。
+Describe 'Get-RecoveryJournalTarget（共享日志定位，REQ-019 Step 1）' {
     BeforeEach { Reset-AutoProject }
 
     It '显式 -JournalPath 指向不存在的文件 → journal_path_not_found（不是臆造候选）' {
-        $r = Get-AutoRollbackTarget -ProjectRoot $script:proj -JournalPath (Join-Path $script:proj 'nope.json')
+        $r = Get-RecoveryJournalTarget -ProjectRoot $script:proj -JournalPath (Join-Path $script:proj 'nope.json')
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'journal_path_not_found'
     }
@@ -204,7 +206,7 @@ Describe 'Get-AutoRollbackTarget（日志定位）' {
         $dir = New-AutoBackupDir -Name 'backup-corrupt'
         $jp = Join-Path $dir 'rollback-journal.json'
         [IO.File]::WriteAllText($jp, '{ this is not json')
-        $r = Get-AutoRollbackTarget -ProjectRoot $script:proj -JournalPath $jp
+        $r = Get-RecoveryJournalTarget -ProjectRoot $script:proj -JournalPath $jp
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'journal_unreadable'
     }
@@ -213,9 +215,40 @@ Describe 'Get-AutoRollbackTarget（日志定位）' {
         $done = New-AutoBackupDir -Name 'backup-aadone'
         $now = Format-IsoUtc -Value (Get-Date).ToUniversalTime()
         $null = New-AutoJournal -Dir $done -CreatedAt $now -CompletedAt $now
-        $r = Get-AutoRollbackTarget -ProjectRoot $script:proj
+        $r = Get-RecoveryJournalTarget -ProjectRoot $script:proj
         $r.Ok | Should -BeFalse
         $r.Reason | Should -Be 'no_candidate'
+    }
+
+    It '两份 created_at 可区分的未完成日志 → 取**最新**的一份，其余作为较旧候选（AC-046 前半）' {
+        # 回归钉桩：Sort-Object -Property 走标准对象适配，**不认 hashtable 的键**，
+        # 旧写法 `-Property Created` 会把所有元素当作相等，-Descending 于是退化成原序反转，
+        # 选中的是**最旧**那份日志（实测）。方向选反 = 恢复陈旧日志，可能把用户后来
+        # 主动删掉的东西装回去（REQ-019/AC-046）。
+        $now = (Get-Date).ToUniversalTime()
+        $older = New-AutoBackupDir -Name 'backup-pick-older'
+        $newest = New-AutoBackupDir -Name 'backup-pick-newest'
+        $null = New-AutoJournal -Dir $older -CreatedAt (Format-IsoUtc -Value $now.AddMinutes(-45))
+        $null = New-AutoJournal -Dir $newest -CreatedAt (Format-IsoUtc -Value $now)
+
+        $t = Get-RecoveryJournalTarget -ProjectRoot $script:proj
+        $t.Ok | Should -BeTrue
+        (Get-Item -LiteralPath $t.BackupDir).FullName | Should -Be (Get-Item -LiteralPath $newest).FullName
+        @($t.Candidates).Count | Should -Be 1
+        (Get-Item -LiteralPath ([string]$t.Candidates[0].BackupDir)).FullName | Should -Be (Get-Item -LiteralPath $older).FullName
+    }
+
+    It '三份可区分时同样取最新，较旧候选按份数交回（排序稳定性）' {
+        $now = (Get-Date).ToUniversalTime()
+        $a = New-AutoBackupDir -Name 'backup-sort-a'
+        $b = New-AutoBackupDir -Name 'backup-sort-b'
+        $c = New-AutoBackupDir -Name 'backup-sort-c'
+        $null = New-AutoJournal -Dir $a -CreatedAt (Format-IsoUtc -Value $now.AddMinutes(-90))
+        $null = New-AutoJournal -Dir $b -CreatedAt (Format-IsoUtc -Value $now.AddMinutes(-5))
+        $null = New-AutoJournal -Dir $c -CreatedAt (Format-IsoUtc -Value $now.AddMinutes(-60))
+        $sel = Select-RecoveryCandidate -Candidates (Get-RecoveryCandidateSet -ProjectRoot $script:proj)
+        (Get-Item -LiteralPath $sel.Selected.BackupDir).FullName | Should -Be (Get-Item -LiteralPath $b).FullName
+        @($sel.Others).Count | Should -Be 2
     }
 
     It '两份 created_at 相同的未完成日志 → 判为歧义并原样交回候选清单' {
@@ -224,10 +257,39 @@ Describe 'Get-AutoRollbackTarget（日志定位）' {
             $d = New-AutoBackupDir -Name $n
             $null = New-AutoJournal -Dir $d -CreatedAt $same
         }
-        $r = Get-AutoRollbackTarget -ProjectRoot $script:proj
+        $r = Get-RecoveryJournalTarget -ProjectRoot $script:proj
         $r.Ok | Should -BeFalse
         $r.Ambiguous | Should -BeTrue
         @($r.Candidates).Count | Should -Be 2
+    }
+}
+
+Describe 'Get-AutoRollbackExitCode（Outcome → -Auto 退出码）' {
+    # 纯映射表：消费协议只说「发生了什么」，各自的码由调用方决定。
+    # 逐条钉住，新增 Outcome 时这里会立刻缺一块，而不是静默落到 default。
+    # 必须用 -ForEach：Describe 体内的循环变量在 Pester 5 的 Run 阶段已不在作用域，
+    # 直接闭包引用会得到空串（实测踩过）。
+    It '<O> → <E>' -ForEach @(
+        @{ O = 'no_journal'; E = 12 },
+        @{ O = 'input_error'; E = 1 },
+        @{ O = 'unreadable'; E = 12 },
+        @{ O = 'ambiguous'; E = 14 },
+        @{ O = 'needs_acknowledgement'; E = 14 },
+        @{ O = 'rejected'; E = 14 },
+        @{ O = 'consumed_with_skipped'; E = 14 },
+        @{ O = 'partial_restore'; E = 11 },
+        @{ O = 'persistence_failed'; E = 15 },
+        @{ O = 'already_completed'; E = 0 },
+        @{ O = 'suppressed'; E = 0 },
+        @{ O = 'acknowledged_without_restore'; E = 0 },
+        @{ O = 'consumed'; E = 0 },
+        @{ O = 'dry_run_reported'; E = 0 }
+    ) {
+        Get-AutoRollbackExitCode -Outcome $O | Should -Be $E
+    }
+
+    It '未知 Outcome 兜到 14，而不是 0（漏填映射表不得假装成功）' {
+        Get-AutoRollbackExitCode -Outcome 'brand_new_outcome' | Should -Be 14
     }
 }
 
@@ -450,6 +512,245 @@ Describe 'Invoke-AutoRollback（REQ-008 退出码与落盘副作用）' {
             -Now $now -MachinePathOverride 'C:\Injected' -SetPathScript { param($p) $p }
         Should -Invoke Invoke-RollbackRestore -Times 1 -Exactly -ParameterFilter {
             $MachinePathOverride -eq 'C:\Injected' -and $null -ne $SetPathScript
+        }
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 消费协议本体（REQ-019 Step 1..5）。上面的 -Auto 用例是从退出码侧看它，这一组直接
+# 驱动 Invoke-RollbackJournalConsumption —— 启动期 T3 走的是同一个函数，所以协议契约
+# 必须钉在这里，而不是钉在某个调用方的码表上。
+# 一律断言落盘产物（日志字段 / output 清单 / 旁路标记），不断言打印。
+# ─────────────────────────────────────────────────────────────────────────────
+Describe 'Invoke-RollbackJournalConsumption（共享消费协议：AC-046/047/048/060/078/079/091）' {
+    BeforeEach {
+        Reset-AutoProject
+        Mock-AutoRestoreSuccess
+    }
+
+    It '恢复成功 → completed_at 与 consumed_by_run_id 一并落盘；紧接着的第二次运行不会重复消费（AC-047）' {
+        $dir = New-AutoBackupDir -Name 'backup-ac047'
+        $f = New-AutoJournal -Dir $dir -CreatedAt (Format-IsoUtc -Value (Get-Date).ToUniversalTime())
+        Bind-AutoCleanupLog -Journal $f.Journal -Path (Join-Path $script:proj 'cleanup-log-ac047.json') -Failed 2
+        $ownRunId = [string]$f.Journal['run_id']
+
+        $r = Invoke-RollbackJournalConsumption -ProjectRoot $script:proj
+        $r.Outcome | Should -Be 'consumed'
+
+        $after = Read-AutoJournalFile -Dir $dir
+        $after['completed_at'] | Should -Not -BeNullOrEmpty
+        # consumed_by_run_id 记的是**消费方**：写成被消费日志自己的 run_id 等于没写追溯信息。
+        $g = [guid]::Empty
+        [guid]::TryParse([string]$after['consumed_by_run_id'], [ref]$g) | Should -BeTrue
+        ([string]$after['consumed_by_run_id'] -ne $ownRunId) | Should -BeTrue
+
+        # 不重复消费有两条路径都要成立：扫描（Step 1 剔除已完成者）与显式指定日志。
+        $rescan = Invoke-RollbackJournalConsumption -ProjectRoot $script:proj
+        $rescan.Outcome | Should -Be 'no_journal'
+        $explicit = Invoke-RollbackJournalConsumption -ProjectRoot $script:proj -JournalPath $f.Path
+        $explicit.Outcome | Should -Be 'already_completed'
+        Should -Invoke Invoke-RollbackRestore -Times 1 -Exactly
+    }
+
+    It '两份未完成日志：只恢复最新的，较旧那份先写清单再打标记且 reason 恒为 skipped_older_journal（AC-046/079/091）' {
+        $now = (Get-Date).ToUniversalTime()
+        $oldCreated = Format-IsoUtc -Value $now.AddMinutes(-30)
+        $old = New-AutoBackupDir -Name 'backup-step4a-old'
+        $new = New-AutoBackupDir -Name 'backup-step4a-new'
+
+        $fOld = New-AutoJournal -Dir $old -CreatedAt $oldCreated
+        # 较旧那份带真实条目：清单必须逐条展开，不能只留一个候选级信封。
+        $fOld.Journal['entries'] = @(
+            (ConvertTo-RollbackJournalEntry -Id 'reg_100' -Kind 'registry_key' `
+                -Target 'HKCU\Software\WRC-Consumption-Old-1' -BackupFile '' `
+                -PreExisting $true -AbsentConfirmedAfterMutation $true `
+                -ParentBaseline $oldCreated -State 'mutation_succeeded'),
+            (ConvertTo-RollbackJournalEntry -Id 'reg_101' -Kind 'registry_key' `
+                -Target 'HKCU\Software\WRC-Consumption-Old-2' -BackupFile '' `
+                -PreExisting $true -AbsentConfirmedAfterMutation $true `
+                -ParentBaseline $oldCreated -State 'mutation_succeeded')
+        )
+        $null = Write-RollbackJournal -BackupDir $old -Journal $fOld.Journal
+
+        # 最新那份必须「真的需要恢复」（清理日志 summary.failed > 0），否则协议走抑制分支，
+        # 根本到不了 Step 4a。绑定要经磁盘重写，因为判定读的是盘上那份。
+        $fNew = New-AutoJournal -Dir $new -CreatedAt (Format-IsoUtc -Value $now)
+        Bind-AutoCleanupLog -Journal $fNew.Journal -Path (Join-Path $script:proj 'cleanup-log-step4a.json') -Failed 4
+
+        $r = Invoke-RollbackJournalConsumption -ProjectRoot $script:proj
+        $r.Outcome | Should -Be 'consumed_with_skipped'
+        $r.Summary | Should -Be 'restored_with_skipped_older_journals'
+
+        # 清单文件名用的是较旧候选自己的 run_id
+        $oldRunId = [string]$fOld.Journal['run_id']
+        $listPath = Join-Path (Join-Path $script:proj 'output') ('rollback-unrepaired-' + $oldRunId + '.json')
+        (Test-Path -LiteralPath $listPath) | Should -BeTrue
+        $raw = Get-Content -LiteralPath $listPath -Raw
+        $l = $raw | ConvertFrom-Json
+        $l.reason | Should -Be 'skipped_older_journal'
+        $l.candidate_unparseable | Should -BeFalse
+        (Get-Item -LiteralPath $l.backup_dir).FullName | Should -Be (Get-Item -LiteralPath $old).FullName
+        @($l.unrepaired).Count | Should -Be 2
+        # AC-091：条目级 reason 也一样，不得混入 conflict/not_restorable。
+        @(@($l.unrepaired) | ForEach-Object { $_.reason } | Select-Object -Unique) | Should -Be @('skipped_older_journal')
+        # item_id 用 Get-ItemId 的权威形态（kind + 小写 target；hive 别名不展开成长名）
+        (@($l.unrepaired)[0].item_id) | Should -Be 'registry_key:hkcu\software\wrc-consumption-old-1'
+
+        # 清单成功之后才有标记：较旧日志被写成 completed_at + consumed_with_failure + 旁路文件
+        (Read-AutoJournalFile -Dir $old)['completed_at'] | Should -Not -BeNullOrEmpty
+        (Read-AutoJournalFile -Dir $old)['consumed_with_failure'] | Should -BeTrue
+        (Test-Path -LiteralPath (Join-Path $old 'rollback-consumed.failed.json')) | Should -BeTrue
+        # 最新一份正常消费
+        (Read-AutoJournalFile -Dir $new)['completed_at'] | Should -Not -BeNullOrEmpty
+        (Test-Path -LiteralPath (Join-Path $new 'rollback-consumed.json')) | Should -BeTrue
+    }
+
+    It '较旧候选的标记写入失败 → 清单已在盘上、日志仍未完成，整体按 persistence_failed 收口（AC-079 的顺序是承重的）' {
+        $now = (Get-Date).ToUniversalTime()
+        $old = New-AutoBackupDir -Name 'backup-step4a-markfail-old'
+        $new = New-AutoBackupDir -Name 'backup-step4a-markfail-new'
+        $null = New-AutoJournal -Dir $old -CreatedAt (Format-IsoUtc -Value $now.AddMinutes(-10))
+        $fNew = New-AutoJournal -Dir $new -CreatedAt (Format-IsoUtc -Value $now)
+        Bind-AutoCleanupLog -Journal $fNew.Journal -Path (Join-Path $script:proj 'cleanup-log-markfail.json') -Failed 1
+
+        Mock Complete-RollbackJournal { throw 'disk full' }
+
+        $r = Invoke-RollbackJournalConsumption -ProjectRoot $script:proj
+        $r.Outcome | Should -Be 'persistence_failed'
+        $r.Summary | Should -Be 'older_journal_marker_failed'
+
+        # 顺序证据：清单写成功在前（所以它必须存在），标记在后（所以它必须不存在）。
+        $oldFiles = @(Get-ChildItem -LiteralPath (Join-Path $script:proj 'output') -Filter 'rollback-unrepaired-*.json')
+        $oldFiles.Count | Should -Be 1
+        (Read-AutoJournalFile -Dir $old)['completed_at'] | Should -BeNullOrEmpty
+        (Test-Path -LiteralPath (Join-Path $old 'rollback-consumed.failed.json')) | Should -BeFalse
+        # 「不得宣告恢复完成」也适用于本轮成功恢复的那一份：标记没写成就不算完成。
+        (Read-AutoJournalFile -Dir $new)['completed_at'] | Should -BeNullOrEmpty
+        (Test-Path -LiteralPath (Join-Path $new 'rollback-consumed.json')) | Should -BeFalse
+    }
+
+    It '-AcknowledgeConflicts 下清单写入失败 → 一份标记都不写，返回 persistence_failed（AC-078 禁止「已确认但清单丢失」）' {
+        $same = Format-IsoUtc -Value (Get-Date).ToUniversalTime()
+        $dirs = @()
+        foreach ($n in @('backup-ac078-h1', 'backup-ac078-h2')) {
+            $d = New-AutoBackupDir -Name $n
+            $null = New-AutoJournal -Dir $d -CreatedAt $same
+            $dirs += $d
+        }
+
+        Mock Write-UnrepairedList { throw 'disk full' }
+
+        $r = Invoke-RollbackJournalConsumption -ProjectRoot $script:proj -AcknowledgeConflicts $true
+        $r.Outcome | Should -Be 'persistence_failed'
+        $r.Summary | Should -Be 'acknowledgement_marker_write_failed'
+        Should -Invoke Invoke-RollbackRestore -Times 0 -Exactly
+
+        foreach ($d in $dirs) {
+            (Read-AutoJournalFile -Dir $d)['completed_at'] | Should -BeNullOrEmpty
+            # 内存里置过 true，但盘上必须仍是 false：清单没写成就不算被确认。
+            (Read-AutoJournalFile -Dir $d)['consumed_with_failure'] | Should -BeFalse
+            (Test-Path -LiteralPath (Join-Path $d 'rollback-consumed.failed.json')) | Should -BeFalse
+        }
+        (Test-Path -LiteralPath (Join-Path $script:proj 'output')) | Should -BeFalse
+    }
+
+    It 'run_id 不合法的候选：只写候选级清单（candidate_unparseable=true + unrepaired 空数组），不写任何标记（AC-060）' {
+        $dir = New-AutoBackupDir -Name 'backup-ac060'
+        $f = New-AutoJournal -Dir $dir -CreatedAt (Format-IsoUtc -Value (Get-Date).ToUniversalTime())
+        $f.Journal['run_id'] = 'not-a-guid'
+        $null = Write-RollbackJournal -BackupDir $dir -Journal $f.Journal
+
+        $r = Set-JournalConsumedWithoutRestore -Candidate @{ Journal = $f.Journal; BackupDir = $dir } `
+            -ProjectRoot $script:proj -Reason 'acknowledged_without_restore'
+        $r.Ok | Should -BeFalse
+        $r.Stage | Should -Be 'unmarkable'
+        $r.Detail | Should -Be 'invalid_run_id'
+
+        # 清单文件名里的 run_id 先验合法性：不合法就退回备份目录名，
+        # 绝不把外部可控的字符串直接拼进路径。
+        $r.ListPath | Should -Be (Join-Path (Join-Path $script:proj 'output') 'rollback-unrepaired-backup-ac060.json')
+        $raw = Get-Content -LiteralPath $r.ListPath -Raw
+        # 断言**原始 JSON 文本**的空数组形态：ConvertFrom-Json 之后 5.1 与 pwsh 7 形状不同。
+        # 5.1 的 ConvertTo-Json 会把空数组折成跨行形式，所以 \s* 必须能跨行。
+        $raw | Should -Match '(?s)"unrepaired":\s*\[\s*\]'
+        $raw | Should -Match '"candidate_unparseable":\s*true'
+        $l = $raw | ConvertFrom-Json
+        $l.reason | Should -Be 'acknowledged_without_restore'
+        $l.backup_dir | Should -Be $dir
+
+        (Read-AutoJournalFile -Dir $dir)['completed_at'] | Should -BeNullOrEmpty
+        (Test-Path -LiteralPath (Join-Path $dir 'rollback-consumed.failed.json')) | Should -BeFalse
+        (Test-Path -LiteralPath (Join-Path $dir 'rollback-consumed.json')) | Should -BeFalse
+    }
+
+    It '条目全为 not_restorable 不算失败：继续消费并返回 consumed（AC-048：结果不是 14）' {
+        Mock Invoke-RollbackRestore {
+            return @{
+                Report           = @('all entries not_restorable')
+                Counts           = @{ restored = 0; already_present = 0; not_restorable = 3; restore_failed = 0 }
+                PersistenceError = $false
+                ResultPath       = 'mock-rollback-result.json'
+                UnrepairedPath   = ''
+                Unrepaired       = @()
+            }
+        }
+        $dir = New-AutoBackupDir -Name 'backup-ac048'
+        $f = New-AutoJournal -Dir $dir -CreatedAt (Format-IsoUtc -Value (Get-Date).ToUniversalTime())
+        Bind-AutoCleanupLog -Journal $f.Journal -Path (Join-Path $script:proj 'cleanup-log-ac048.json') -Failed 3
+
+        $r = Invoke-RollbackJournalConsumption -ProjectRoot $script:proj
+        $r.Outcome | Should -Be 'consumed'
+        (Read-AutoJournalFile -Dir $dir)['completed_at'] | Should -Not -BeNullOrEmpty
+    }
+
+    It '同时存在较旧候选时：Step 4a 的结论优先，not_restorable 不把它降回成功（AC-048 优先级句）' {
+        Mock Invoke-RollbackRestore {
+            return @{
+                Report           = @()
+                Counts           = @{ restored = 0; already_present = 0; not_restorable = 1; restore_failed = 0 }
+                PersistenceError = $false
+                ResultPath       = 'mock-rollback-result.json'
+                UnrepairedPath   = ''
+                Unrepaired       = @()
+            }
+        }
+        $now = (Get-Date).ToUniversalTime()
+        $null = New-AutoBackupDir -Name 'backup-ac048-old'
+        $null = New-AutoJournal -Dir (Join-Path $script:proj 'backup-ac048-old') -CreatedAt (Format-IsoUtc -Value $now.AddMinutes(-5))
+        $new = New-AutoBackupDir -Name 'backup-ac048-new'
+        $fNew = New-AutoJournal -Dir $new -CreatedAt (Format-IsoUtc -Value $now)
+        Bind-AutoCleanupLog -Journal $fNew.Journal -Path (Join-Path $script:proj 'cleanup-log-ac048b.json') -Failed 1
+
+        $r = Invoke-RollbackJournalConsumption -ProjectRoot $script:proj
+        $r.Outcome | Should -Be 'consumed_with_skipped'
+    }
+
+    It '-DryRun 只报告：不消费、不恢复、一个字节都不写（AC-010 / AC-033 的协议侧）' {
+        $dir = New-AutoBackupDir -Name 'backup-dryrun'
+        $f = New-AutoJournal -Dir $dir -CreatedAt (Format-IsoUtc -Value (Get-Date).ToUniversalTime())
+        Bind-AutoCleanupLog -Journal $f.Journal -Path (Join-Path $script:proj 'cleanup-log-dryrun.json') -Failed 2
+
+        $r = Invoke-RollbackJournalConsumption -ProjectRoot $script:proj -DryRun
+        $r.Outcome | Should -Be 'dry_run_reported'
+        Should -Invoke Invoke-RollbackRestore -Times 0 -Exactly
+        (Read-AutoJournalFile -Dir $dir)['completed_at'] | Should -BeNullOrEmpty
+        (Test-Path -LiteralPath (Join-Path $dir 'rollback-consumed.json')) | Should -BeFalse
+        (Test-Path -LiteralPath (Join-Path $script:proj 'output')) | Should -BeFalse
+    }
+
+    It '-DryRun 下平局如实报告候选份数，不要求确认也不标记（AC-010 + exit 14(c) 的预览）' {
+        $same = Format-IsoUtc -Value (Get-Date).ToUniversalTime()
+        foreach ($n in @('backup-drytie1', 'backup-drytie2')) {
+            $d = New-AutoBackupDir -Name $n
+            $null = New-AutoJournal -Dir $d -CreatedAt $same
+        }
+        $r = Invoke-RollbackJournalConsumption -ProjectRoot $script:proj -DryRun
+        $r.Outcome | Should -Be 'dry_run_reported'
+        $r.Summary | Should -Be 'dry_run_ambiguous(2)'
+        @($r.Candidates).Count | Should -Be 2
+        Should -Invoke Invoke-RollbackRestore -Times 0 -Exactly
+        foreach ($n in @('backup-drytie1', 'backup-drytie2')) {
+            (Read-AutoJournalFile -Dir (Join-Path $script:proj $n))['completed_at'] | Should -BeNullOrEmpty
         }
     }
 }

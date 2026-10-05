@@ -215,7 +215,12 @@ function Select-RecoveryCandidate {
         return @{ Selected = $null; Others = @($Candidates); Ambiguous = $true; Reason = 'created_at_partially_unparsable' }
     }
 
-    $sorted = @($sortable | Sort-Object -Property Created -Descending)
+    # 排序键必须用脚本块取，不能写 `-Property Created`：Sort-Object 的属性解析走标准对象
+    # 适配，**不认 hashtable 的键**（实测 PS 5.1：@{ Cand=…; Created=<datetime> } 上
+    # `-Property Created` 把所有元素视为相等，于是 -Descending 退化成了「原序反转」，
+    # 选出来的是**最旧**的一份日志）。方向选反的后果不是 cosmetic：REQ-019/AC-046 要求
+    # 只回滚紧邻的上一轮，恢复陈旧日志会把用户后来主动删掉的内容装回去。
+    $sorted = @($sortable | Sort-Object -Property { $_.Created } -Descending)
     $newest = $sorted[0]
 
     # 并列检测：与最新者 created_at 完全相同的其它候选
@@ -559,7 +564,10 @@ function Complete-RollbackJournal {
         [Parameter(Mandatory)][hashtable]$Journal,
         [switch]$Skip,
         [string]$SkipReason,
-        [string]$CompletedAt
+        [string]$CompletedAt,
+        # 「谁消费了这份日志」。REQ-019 要求恢复成功后与 completed_at 一并写入，
+        # 使「消费」可追溯到发起方；不传则保持日志原值（消费前就崩溃的兜底）。
+        [AllowEmptyString()][string]$ConsumedByRunId = ''
     )
 
     if ($Skip) {
@@ -574,6 +582,9 @@ function Complete-RollbackJournal {
     $copy = @{}
     foreach ($k in $Journal.Keys) { $copy[$k] = $Journal[$k] }
     $copy['completed_at'] = $CompletedAt
+    if (-not [string]::IsNullOrWhiteSpace($ConsumedByRunId)) {
+        $copy['consumed_by_run_id'] = $ConsumedByRunId
+    }
     $path = Write-RollbackJournal -BackupDir $BackupDir -Journal $copy
     return @{ Written = $true; Path = $path; CompletedAt = $CompletedAt }
 }
@@ -827,4 +838,68 @@ function Get-RollbackConsumptionDecision {
     $res.Action = 'restore'
     $res.Reason = 'unfinished_journal'
     return $res
+}
+
+function Get-RecoveryJournalTarget {
+    <#
+    .SYNOPSIS
+        REQ-019 Step 1 的定位环节：显式 -JournalPath 优先，否则扫描 backup-* 后选出唯一候选。
+    .DESCRIPTION
+        返回 @{ Ok; BackupDir; Journal; RequiresAcknowledgement; Reason; Candidates; Ambiguous }。
+        本函数**只定位、不判定**：并列/歧义时不把任何一份当成目标，而是把候选清单原样交回
+        调用方打印——证据不足时自动挑一份恢复等于臆断（REQ-030「出错必须由人拍板」）。
+        能不能消费一律由 Get-RollbackConsumptionDecision 决定，T3 与 -Auto 共用同一判定。
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ProjectRoot,
+        [string]$JournalPath = ''
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($JournalPath)) {
+        if (-not (Test-Path -LiteralPath $JournalPath -PathType Leaf)) {
+            return @{ Ok = $false; Reason = 'journal_path_not_found'; Journal = $null;
+                      Candidates = @(); Ambiguous = $false }
+        }
+        $j = Read-JsonFileSafe -Path $JournalPath
+        if ($null -eq $j) {
+            return @{ Ok = $false; Reason = 'journal_unreadable'; Journal = $null;
+                      Candidates = @(); Ambiguous = $false }
+        }
+        return @{
+            Ok = $true
+            # PS 5.1 下 `Split-Path -LiteralPath X -Parent` 会抛「Parameter set cannot be
+            # resolved」（-Parent 只属于 -Path 集）；纯文件系统路径直接用 .NET 解析，
+            # 顺带避开通配符（方括号目录名会被 -Path 当模式）。
+            BackupDir = [System.IO.Path]::GetDirectoryName($JournalPath)
+            Journal = $j
+            RequiresAcknowledgement = $false
+            Reason = 'explicit_path'
+            Candidates = @()
+            Ambiguous = $false
+        }
+    }
+
+    # 必须用普通赋值：Get-RecoveryCandidateSet 以 `return , $out` 保住空数组语义，
+    # 再套 @() 会得到「一个元素是数组」的两层嵌套（AGENTS.md 陷阱 6 的同族）。
+    $cands = Get-RecoveryCandidateSet -ProjectRoot $ProjectRoot
+    $sel = Select-RecoveryCandidate -Candidates $cands
+    if ($null -eq $sel.Selected) {
+        return @{
+            Ok = $false
+            Reason = [string]$sel.Reason
+            Journal = $null
+            Candidates = @($sel.Others)
+            Ambiguous = [bool]$sel.Ambiguous
+        }
+    }
+    $c = $sel.Selected
+    return @{
+        Ok = $true
+        BackupDir = [string]$c.BackupDir
+        Journal = $c.Journal
+        RequiresAcknowledgement = [bool]$c.RequiresAcknowledgement
+        Reason = 'candidate'
+        Candidates = @($sel.Others)
+        Ambiguous = $false
+    }
 }

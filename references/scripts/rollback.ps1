@@ -43,87 +43,46 @@ function Test-RollbackAdminPrivilege {
     }
 }
 
-function Get-AutoRollbackTarget {
+function Get-AutoRollbackExitCode {
     <#
     .SYNOPSIS
-        定位 -Auto 要消费的那一份日志：显式 -JournalPath 优先，否则按 REQ-019
-        Step 1 → 选择唯一候选。返回 @{ Ok; BackupDir; Journal; RequiresAcknowledgement; Reason }。
+        把 Invoke-RollbackJournalConsumption 的语义化 Outcome 映射为 -Auto 的退出码。
     .DESCRIPTION
-        多候选并列/歧义时**不**在这里决定，只把候选清单如实交给调用方打印——
-        自动挑一份恢复等于在证据不足时改动系统（REQ-030：出错必须由人拍板）。
+        纯函数，单独可测：消费协议本身与 clean-residuals 的启动期 T3 共用一份实现，
+        只有「这个结论对调用方意味着哪个码」是各自的。映射表集中在这里，
+        新增 Outcome 时忘了加映射会落到 default 而不是静默返回 0。
     #>
-    param(
-        [Parameter(Mandatory)][string]$ProjectRoot,
-        [string]$JournalPath
-    )
+    param([Parameter(Mandatory)][string]$Outcome)
 
-    if (-not [string]::IsNullOrWhiteSpace($JournalPath)) {
-        if (-not (Test-Path -LiteralPath $JournalPath -PathType Leaf)) {
-            return @{ Ok = $false; Reason = 'journal_path_not_found'; Journal = $null }
-        }
-        $j = Read-JsonFileSafe -Path $JournalPath
-        if ($null -eq $j) {
-            return @{ Ok = $false; Reason = 'journal_unreadable'; Journal = $null }
-        }
-        return @{
-            Ok = $true
-            # PS 5.1 下 `Split-Path -LiteralPath X -Parent` 会抛「Parameter set cannot be
-            # resolved」（-Parent 只属于 -Path 集）；纯文件系统路径直接用 .NET 解析，
-            # 顺带避开通配符（方括号目录名会被 -Path 当模式）。
-            BackupDir = [System.IO.Path]::GetDirectoryName($JournalPath)
-            Journal = $j
-            RequiresAcknowledgement = $false
-            Reason = 'explicit_path'
-            Candidates = @()
-            Ambiguous = $false
-        }
+    # 未知 Outcome → 14（交回人工），不是 0：宁可让人看一眼，
+    # 也不能因为「表没更新」就宣告自动恢复成功。
+    $map = @{
+        no_journal                   = 12
+        input_error                  = 1
+        unreadable                   = 12
+        ambiguous                    = 14
+        needs_acknowledgement        = 14
+        rejected                     = 14
+        consumed_with_skipped        = 14
+        partial_restore              = 11
+        persistence_failed           = 15
+        already_completed            = 0
+        suppressed                   = 0
+        acknowledged_without_restore = 0
+        consumed                     = 0
+        dry_run_reported             = 0
     }
-
-    # 必须用普通赋值：Get-RecoveryCandidateSet 以 `return , $out` 保住空数组语义，
-    # 再套 @() 会得到「一个元素是数组」的两层嵌套（AGENTS.md 陷阱 6 的同族）。
-    $cands = Get-RecoveryCandidateSet -ProjectRoot $ProjectRoot
-    $sel = Select-RecoveryCandidate -Candidates $cands
-    if ($null -eq $sel.Selected) {
-        return @{
-            Ok = $false
-            Reason = [string]$sel.Reason
-            Journal = $null
-            Candidates = @($sel.Others)
-            Ambiguous = [bool]$sel.Ambiguous
-        }
-    }
-    $c = $sel.Selected
-    return @{
-        Ok = $true
-        BackupDir = [string]$c.BackupDir
-        Journal = $c.Journal
-        RequiresAcknowledgement = [bool]$c.RequiresAcknowledgement
-        Reason = 'candidate'
-        Candidates = @($sel.Others)
-        Ambiguous = $false
-    }
-}
-
-function Write-AutoRollbackCandidateList {
-    <#
-    .SYNOPSIS
-        打印候选日志清单（run_id / created_at / 目录），供人工核对后点名消费。
-    #>
-    param([Parameter(Mandatory)][AllowEmptyCollection()][array]$Candidates)
-
-    Write-Output "--- Unfinished rollback journals found ---"
-    foreach ($c in $Candidates) {
-        $j = $c.Journal
-        Write-Output ("  {0}  run_id={1}  created_at={2}" -f `
-            [string]$c.BackupDir, [string]$j['run_id'], [string]$j['created_at'])
-    }
+    if ($map.ContainsKey($Outcome)) { return $map[$Outcome] }
+    return 14
 }
 
 function Invoke-AutoRollback {
     <#
     .SYNOPSIS
-        -Auto 执行端：定位日志 → 消费判定 → 逐项精准恢复 → 人读报告 + 结构化退出码。
+        -Auto 入口：libs/权限前置 → 交给共享消费协议 → 打印报告 → 映射退出码。
     .DESCRIPTION
+        这里**没有**恢复逻辑，只有包装。真正的 Step 1..5 在
+        Invoke-RollbackJournalConsumption（rollback-exec.ps1），与启动期 T3 同一份实现。
         退出码沿用 REQ-026 矩阵的语义，调用方（含 UI）不必另学一套：
           0  已恢复／已按判定正确处理（含「日志已完成，零变更」）；
           1  输入错误（-JournalPath 指向的文件不存在）；
@@ -131,9 +90,10 @@ function Invoke-AutoRollback {
           3  回滚组件缺失；
           11 恢复未完全成功 —— 日志**保持未完成**、未修复清单已落盘，下次启动仍可重试 T3；
           12 没有可消费的记录（无未完成日志，或指定的日志不可解析）；
-          14 日志不可安全消费（自证失败，或需人工确认但未给 -AcknowledgeConflicts）。
+          14 日志不可安全消费（自证失败、歧义，或需人工确认但未给 -AcknowledgeConflicts）；
+          15 本轮持久化记录写失败（终端码，优先级高于 11/14）。
         **绝不调用 Restore-Computer**（AC-007 / REQ-010）：还原点只作为人工选项列出。
-        $Now / $MachinePathOverride / $SetPathScript 透传给 Invoke-RollbackRestore，是测试注入点。
+        $Now / $MachinePathOverride / $SetPathScript 透传给消费协议，是测试注入点。
     #>
     param(
         [Parameter(Mandatory)][string]$ProjectRoot,
@@ -151,140 +111,26 @@ function Invoke-AutoRollback {
         return @{ ExitCode = 2; Summary = 'administrator_required' }
     }
 
-    $target = Get-AutoRollbackTarget -ProjectRoot $ProjectRoot -JournalPath $JournalPath
-    if (-not $target.Ok) {
-        if ([bool]$target.Ambiguous) {
-            Write-AutoRollbackCandidateList -Candidates $target.Candidates
-            if ($AcknowledgeConflicts) {
-                # REQ-030 的确认出口：人拍板后由**工具**代写机械标记，逐份点名，绝不静默选边。
-                # 可解析（run_id 是合法 guid）的候选：completed_at + consumed_with_failure 标记；
-                # run_id 不合法的就**写不出绑定标记**（Write-RecoveryMarker 会抛），必须如实
-                # 报告「未能确认」，不能假装确认过了——非法标记会被 Test-MarkerWellFormed 判废，
-                # 反而让候选永久留在集合里。
-                $marked = 0
-                $unmarkable = @()
-                foreach ($c in $target.Candidates) {
-                    $rid = [string]$c.Journal['run_id']
-                    $g = [guid]::Empty
-                    if (-not [guid]::TryParse($rid, [ref]$g)) {
-                        $unmarkable += [string]$c.BackupDir
-                        continue
-                    }
-                    try {
-                        # 「标记 consumed_with_failure」是日志字段（REQ-019 Step 4a），
-                        # 与 completed_at 一起写：人确认后这份日志既不再被 T3 消费，
-                        # 也如实记着「确认过但没有真正恢复」。
-                        $c.Journal['consumed_with_failure'] = $true
-                        $null = Complete-RollbackJournal -BackupDir ([string]$c.BackupDir) -Journal $c.Journal
-                        $null = Write-RecoveryMarker -BackupDir ([string]$c.BackupDir) -Kind 'consumed.failed' -RunId $rid
-                        $marked++
-                    } catch {
-                        return @{ ExitCode = 15; Summary = 'acknowledgement_marker_write_failed' }
-                    }
-                }
-                foreach ($u in $unmarkable) {
-                    Write-Warning "  无法确认（run_id 不合法，写不出绑定标记）：$u"
-                }
-                return @{ ExitCode = 0; Summary = ("acknowledged_without_restore({0})" -f $marked) }
-            }
-            return @{ ExitCode = 14; Summary = 'ambiguous_candidates' }
-        }
-        $code = 12
-        if ([string]$target.Reason -eq 'journal_path_not_found') { $code = 1 }
-        return @{ ExitCode = $code; Summary = [string]$target.Reason }
+    # 不用 `$args`：那是 PowerShell 自动变量，在此赋值会遮蔽未命名参数集合（AGENTS.md 陷阱 2）。
+    $consumeArgs = @{
+        ProjectRoot          = $ProjectRoot
+        JournalPath          = $JournalPath
+        AcknowledgeConflicts = [bool]$AcknowledgeConflicts
     }
+    if ($null -ne $Now) { $consumeArgs['Now'] = $Now }
+    if ($null -ne $MachinePathOverride) { $consumeArgs['MachinePathOverride'] = $MachinePathOverride }
+    if ($null -ne $SetPathScript) { $consumeArgs['SetPathScript'] = $SetPathScript }
+    $o = Invoke-RollbackJournalConsumption @consumeArgs
 
-    $journal = $target.Journal
-    $backupDir = [string]$target.BackupDir
+    # 报告由协议侧统一构造（含候选清单与逐项判定），此处只负责落屏。
+    # Format-RollbackReport 用 `return , $lines` 保住空数组语义，故 $o.Report 已是扁平数组。
+    foreach ($line in @($o.Report)) { Write-Output $line }
 
-    $decision = Get-RollbackConsumptionDecision -Journal $journal `
-        -RequiresAcknowledgement ([bool]$target.RequiresAcknowledgement) `
-        -AcknowledgeConflicts:$AcknowledgeConflicts
-
-    # 用 if/elseif 而不是 switch：switch 块里的 `return` 语义在 PS 5.1 宿主下不够直白，
-    # 而这里每个分支都必须立刻返回各自的退出码。
-    if ($decision.Action -eq 'already_completed') {
-        Write-Output "Rollback journal already completed (run_id=$($journal['run_id'])). No target touched, nothing restored."
-        return @{ ExitCode = 0; Summary = 'journal_already_completed' }
+    $code = Get-AutoRollbackExitCode -Outcome ([string]$o.Outcome)
+    if ($code -eq 0) {
+        Write-Output "Restore point (manual option only, this tool never calls Restore-Computer): sysdm.cpl -> System Protection -> System Restore"
     }
-    if ($decision.Action -eq 'suppress') {
-        Write-Output "Rollback suppressed: cleanup had actually finished (run_id=$($journal['run_id'])). Nothing restored."
-        if ($decision.EvidenceMissing) {
-            Write-Warning "  抑制依据缺失（清理日志不可读），仅按 completed_at 判定处理。"
-        }
-        try {
-            if ([string]$decision.Reason -eq 'acknowledged_without_restore') {
-                # 人确认过 = 「承认它结束了、不要再自动恢复」，如实记 consumed_with_failure，
-                # 与歧义候选的确认路径同一语义。
-                $journal['consumed_with_failure'] = $true
-            }
-            $null = Complete-RollbackJournal -BackupDir $backupDir -Journal $journal
-        } catch {
-            return @{ ExitCode = 15; Summary = 'completion_marker_write_failed' }
-        }
-        return @{ ExitCode = 0; Summary = ("suppressed({0})" -f [string]$decision.Reason) }
-    }
-    if ($decision.Action -eq 'reject') {
-        Write-Output ("Rollback journal cannot be consumed safely (run_id={0}): {1}" -f `
-            [string]$journal['run_id'], [string]$decision.Reason)
-        foreach ($r in @($decision.Reasons)) { Write-Output "  - $r" }
-        return @{ ExitCode = 14; Summary = [string]$decision.Reason }
-    }
-    if ($decision.Action -eq 'needs_acknowledgement') {
-        Write-Output ("Rollback needs explicit human acknowledgement (run_id={0}): {1}" -f `
-            [string]$journal['run_id'], [string]$decision.Reason)
-        Write-Output "Re-run with -AcknowledgeConflicts to confirm this journal, or point at it with -JournalPath."
-        return @{ ExitCode = 14; Summary = [string]$decision.Reason }
-    }
-
-    # ── restore ──
-    # 不用 `$args`：那是 PowerShell 自动变量，在此赋值会遮蔽未命名参数集合（同类坑见 AGENTS.md 陷阱 2）。
-    $restoreArgs = @{
-        Journal                = $journal
-        BackupDir              = $backupDir
-        ProjectRoot            = $ProjectRoot
-        AcknowledgeConflicts   = [bool]$AcknowledgeConflicts
-    }
-    if ($null -ne $Now) { $restoreArgs['Now'] = $Now }
-    if ($null -ne $MachinePathOverride) { $restoreArgs['MachinePathOverride'] = $MachinePathOverride }
-    if ($null -ne $SetPathScript) { $restoreArgs['SetPathScript'] = $SetPathScript }
-    $res = Invoke-RollbackRestore @restoreArgs
-
-    # Format-RollbackReport 用 `return , $lines` 保住空数组语义，调用方不得再套 @()。
-    foreach ($line in $res.Report) { Write-Output $line }
-
-    if ($res.PersistenceError) {
-        return @{ ExitCode = 15; Summary = 'persistence_record_write_failed'; Result = $res }
-    }
-
-    $failedCount = 0
-    if ($null -ne $res.Counts -and $null -ne $res.Counts['restore_failed']) {
-        $failedCount = [int]$res.Counts['restore_failed']
-    }
-
-    if ($failedCount -gt 0) {
-        # REQ-031 / AC-077：系统仍有未修复项，日志必须**保持未完成**，让下次启动继续 T3。
-        Write-Output ("Restore incomplete: {0} item(s) failed. Journal left unfinished; unrepaired list: {1}" -f `
-            $failedCount, [string]$res.UnrepairedPath)
-        return @{ ExitCode = 11; Summary = 'restore_incomplete'; Result = $res }
-    }
-
-    try {
-        $null = Complete-RollbackJournal -BackupDir $backupDir -Journal $journal
-        $null = Write-RecoveryMarker -BackupDir $backupDir -Kind 'consumed' -RunId ([string]$journal['run_id'])
-    } catch {
-        # 消费标记写失败：日志仍是未完成状态，下次启动会重试 —— 但「重试」不等于「已消费」，
-        # 只有两个标记都写失败才必须如实上报（REQ-019 Step 4a / 15(iii)）。
-        try {
-            $null = Write-RecoveryMarker -BackupDir $backupDir -Kind 'consumed.failed' -RunId ([string]$journal['run_id'])
-        } catch {
-            return @{ ExitCode = 15; Summary = 'consumption_marker_write_failed'; Result = $res }
-        }
-    }
-
-    Write-Output ("Rollback result written: {0}" -f [string]$res.ResultPath)
-    Write-Output "Restore point (manual option only, this tool never calls Restore-Computer): sysdm.cpl -> System Protection -> System Restore"
-    return @{ ExitCode = 0; Summary = 'restored'; Result = $res }
+    return @{ ExitCode = $code; Summary = [string]$o.Summary; Outcome = [string]$o.Outcome; Result = $o.Result }
 }
 
 function Get-BackupDirectory {

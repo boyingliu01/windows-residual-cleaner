@@ -824,6 +824,27 @@ Describe 'clean-residuals.ps1 safety guards (fail-closed, static + subprocess)' 
         $p.ExitCode | Should -Not -Be 0
     }
 
+    It '报告文件不存在是「输入错误 1」，不是静默的「本轮无可清理」成功（REQ-026）' {
+        # PS 5.1 的 Get-Content 在文件缺失时写的是**非终止**错误，try/catch 抓不到：
+        # 旧代码里 $report 变成 $null，七个分类全部读空 → 「本轮没有残留」→ exit 0，
+        # 于是 UI / run-all 会把「一份报告都没读到」当成清理成功。
+        # 修复是 -ErrorAction Stop；这条用例在没有该开关的实现上会拿到 0 而失败。
+        . $global:_guardScript
+        Mock Test-AdminPrivilege { return $true }
+        # dot-source 会把顶层 param() 的默认值冲进本作用域（AGENTS.md 陷阱 8a），
+        # 所以这些赋值必须排在 dot-source **之后**。
+        $ReportPath = Join-Path $global:_guardDir 'no-such-report-9F3C.json'
+        $WhitelistPath = $global:_guardNoWhitelist
+        $Mode = 'C'; $DryRun = $false; $ConfirmFile = ''; $ItemsToClean = ''
+        $ProjectRootOverride = $global:_guardDir
+        $rc = 0
+        $null = (Main -ExitCode ([ref]$rc) *>&1)
+        $rc | Should -Be 1
+        # 可观测副作用：既然没读到报告，就一个字节都不该写出去。
+        (Test-Path -LiteralPath (Join-Path $global:_guardDir 'cleanup-log.json')) | Should -BeFalse
+        @(Get-ChildItem -LiteralPath $global:_guardDir -Filter 'backup-*' -Directory).Count | Should -Be 0
+    }
+
     It 'Treats a Danger item as ineligible even when listed in ConfirmFile (in-process, no delete)' {
         . $global:_guardScript
         Mock Test-AdminPrivilege { return $true }
