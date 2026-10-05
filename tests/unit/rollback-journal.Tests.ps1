@@ -289,6 +289,12 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         ($r.Reasons -join ' ') | Should -Match 'completed_at'
     }
 
+    It '缺少顶层 entries 字段（被损坏/篡改删掉）→ 自证失败，不当空恢复通过（评审修复）' {
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $j.Remove('entries')
+        (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
+    }
+
     It 'cleanup_log_* 三个都是空串（非 null）→ 等价于「无清理日志证据」，判合法（评审修复：空白≡缺失）' {
         $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
         $j['cleanup_log_path'] = ''

@@ -71,6 +71,23 @@ Describe 'S2 crash-window: cleanup succeeded but completed_at never written' {
         $d.Reason | Should -Be 'journal_completed'
     }
 
+    It 'override 指向的清理日志 failed==0 但日志未绑定哈希 → 仍抑制，不回落到重装（评审修复：守首要不变量）' {
+        $rid = [guid]::NewGuid().ToString()
+        $logPath = Join-Path $env:TEMP ("wrc-cw-unbound-" + [guid]::NewGuid().ToString('N') + '.json')
+        try {
+            [System.IO.File]::WriteAllText($logPath,
+                (@{ run_id = $rid; summary = @{ failed = 0 } } | ConvertTo-Json -Depth 6))
+            # 崩溃在写 cleanup_log_sha256 之前：三字段皆 null，靠 override 找到清理日志
+            $j = @{ run_id = $rid; completed_at = $null; cleanup_log_path = $null;
+                    cleanup_log_timestamp = $null; cleanup_log_sha256 = $null }
+            $d = Get-UnfinishedJournalFallbackDecision -Journal $j -CleanupLogPathOverride $logPath
+            $d.Suppress | Should -BeTrue
+            $d.NormalT3 | Should -BeFalse
+        } finally {
+            if (Test-Path $logPath) { Remove-Item $logPath -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
     It '清理日志哈希不匹配 → RejectCandidate=true 且不走自动恢复（评审修复：篡改/损坏日志不得当正常 T3）' {
         $rid = [guid]::NewGuid().ToString()
         $logPath = Join-Path $env:TEMP ("wrc-cw-rej-" + [guid]::NewGuid().ToString('N') + '.json')

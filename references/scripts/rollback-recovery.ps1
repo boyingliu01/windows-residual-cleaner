@@ -281,14 +281,12 @@ function Get-JournalSuppressionVerdict {
     $path = $clp
     if (-not [string]::IsNullOrWhiteSpace($CleanupLogPathOverride)) { $path = $CleanupLogPathOverride }
 
-    # 用外部 override 指向的日志做抑制，但这份日志本身从未记录过 cleanup_log_sha256
-    # （崩溃发生在写证据之前）：此时只有 run_id 匹配、没有日志侧记录的哈希可绑定该证据，
-    # 据其抑制等于凭「未绑定的外部证据」跳过可能需要的恢复。按证据缺失处理，交 Step 3。
-    if (-not [string]::IsNullOrWhiteSpace($CleanupLogPathOverride) -and ($null -eq $cls -or [string]::IsNullOrWhiteSpace([string]$cls))) {
-        $res.EvidenceMissing = $true
-        $res.Reason = 'override_without_journal_bound_hash'
-        return $res
-    }
+    # 用外部 override 指向的日志、且这份日志本身未记录 cleanup_log_sha256（崩溃发生在写证据之前）：
+    # 没有日志侧哈希可绑定，但清理日志仍以 run_id 绑定。此时仍遵循首要安全不变量——
+    # 「completed_at 为 null 且清理日志存在且 summary.failed==0 → 抑制」：failed==0 表示恢复并不
+    # 需要，据 run_id 绑定的证据抑制是安全的；反之若 failed>0 或判据缺失则不得凭未绑定哈希去抑制
+    # 可能需要的恢复。故这里不提前返回，交由下方 run_id + summary.failed 判定决定（评审修复：
+    # 修正上一版把该路径一律打成 EvidenceMissing→NormalT3、反而重装刚删内容的问题）。
 
     # ② 无路径可用 → 读不到日志就没有判据
     if ([string]::IsNullOrWhiteSpace([string]$path)) {

@@ -516,6 +516,11 @@ function Test-RollbackJournalSelfValid {
 
     $validKinds = @('registry_key', 'startup_value', 'path_entry', 'path_deleted', 'service', 'task')
     $validStates = @('planned', 'backup_created', 'mutation_succeeded', 'mutation_failed', 'not_restorable')
+    # entries 是必需顶层字段：缺失（被损坏/篡改删掉）不得当作「空恢复」而通过——否则一次确实删过
+    # 东西的清理，其回滚条目丢失后会被当成成功空恢复消费，永久阻止重试/上报（评审修复）。
+    if (-not $Journal.ContainsKey('entries')) {
+        $reasons += "缺少顶层 entries 字段"
+    }
     $entries = Get-RollbackJournalEntryList -Journal $Journal
     foreach ($e in $entries) {
         $k = [string]$e['kind']
