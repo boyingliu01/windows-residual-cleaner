@@ -208,6 +208,13 @@ function Select-RecoveryCandidate {
         return @{ Selected = $null; Others = @($Candidates); Ambiguous = $false; Reason = 'created_at_unparsable' }
     }
 
+    # 混合形态（部分可排序、部分 created_at 损坏）：损坏者其实可能是最新的一份，
+    # 把它默默排到有效者之后并据有效者恢复，等于在「无法判定谁最新」时贸然改动系统。
+    # 与并列同理判为歧义，要求显式确认，绝不静默选边（评审修复）。
+    if ($unparsable.Count -gt 0) {
+        return @{ Selected = $null; Others = @($Candidates); Ambiguous = $true; Reason = 'created_at_partially_unparsable' }
+    }
+
     $sorted = @($sortable | Sort-Object -Property Created -Descending)
     $newest = $sorted[0]
 

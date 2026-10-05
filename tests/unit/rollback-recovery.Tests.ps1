@@ -563,13 +563,13 @@ Describe 'S2 Select-RecoveryCandidate' {
         $r.Reason | Should -Be 'created_at_unparsable'
     }
 
-    It '最新者可解析 + 其余不可解析 → 选中最新者，不可解析者进 Others' {
+    It '可排序者与不可排序者混合 → 判为歧义，不静默选边（评审修复：损坏者可能才是最新）' {
         $new = New-Cand 'new' '2026-10-03T10:00:00Z'
         $bad = New-Cand 'bad' 'garbage'
         $r = Select-RecoveryCandidate -Candidates @($new, $bad)
-        $r.Selected.Journal.run_id | Should -Be 'new'
-        @($r.Others).Count | Should -Be 1
-        $r.Others[0].Journal.run_id | Should -Be 'bad'
+        $r.Selected | Should -BeNullOrEmpty
+        $r.Ambiguous | Should -BeTrue
+        $r.Reason | Should -Be 'created_at_partially_unparsable'
     }
 }
 
