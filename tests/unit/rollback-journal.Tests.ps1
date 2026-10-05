@@ -295,6 +295,14 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
     }
 
+    It 'created_at 为 null → Reason 报「缺失」而非「不可解析」（评审修复：诊断字符串正确）' {
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $j['created_at'] = $null
+        $r = Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP'
+        $r.Valid | Should -BeFalse
+        ($r.Reasons -join ' ') | Should -Match 'created_at 缺失'
+    }
+
     It 'cleanup_log_* 三个都是空串（非 null）→ 等价于「无清理日志证据」，判合法（评审修复：空白≡缺失）' {
         $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
         $j['cleanup_log_path'] = ''

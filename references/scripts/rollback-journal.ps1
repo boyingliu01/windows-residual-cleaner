@@ -423,7 +423,7 @@ function Test-RollbackJournalSelfValid {
     }
 
     $created = $Journal['created_at']
-    if ($null -ne $created -and $created -isnot [datetime] -and [string]::IsNullOrWhiteSpace([string]$created)) {
+    if ($null -eq $created -or ($created -isnot [datetime] -and [string]::IsNullOrWhiteSpace([string]$created))) {
         $reasons += "created_at 缺失"
     } elseif ($null -eq (ConvertFrom-IsoUtc -Text $created)) {
         $reasons += "created_at 不可解析: $created"
