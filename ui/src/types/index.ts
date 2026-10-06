@@ -122,6 +122,60 @@ export type AppPhase = 'idle' | 'scanning' | 'review' | 'selecting' | 'dry-run' 
 
 export interface ScanOutputLine {
   text: string
-  type: 'info' | 'success' | 'error' | 'step'
+  type: 'info' | 'success' | 'error' | 'step' | 'caution'
   timestamp: number
+}
+
+/**
+ * Real protection state as recorded on disk (REQ-014 / DD-011 / AC-023 / AC-065).
+ * 'unknown' means the evidence could not be read — the UI must NOT render it as available.
+ */
+export interface RestorePointStatus {
+  state: 'available' | 'unavailable' | 'unknown'
+  enabled: boolean
+  /** null = written by a version that did not record whether it even tried */
+  attempted: boolean | null
+  detail: string
+  source: string | null
+  timestamp: string | null
+}
+
+export interface UnfinishedJournal {
+  backup_dir: string
+  run_id: string | null
+  created_at: string | null
+  completed_at: string | null
+  unfinished: boolean
+  entries: number
+}
+
+export interface RollbackVerdict {
+  item_id: string | null
+  kind: string | null
+  target: string | null
+  verdict: string | null
+  reason: string | null
+  /** Spec: these must be listed separately from unrepaired items, never silently merged into "success". */
+  evidence_incomplete: boolean
+}
+
+export interface LastRollback {
+  backup_dir: string
+  run_id: string | null
+  executed_at: string | null
+  within_window: boolean
+  counts: Record<string, number>
+  verdicts: RollbackVerdict[]
+}
+
+export interface BackupStatus {
+  restore_point: RestorePointStatus
+  precise_protection: {
+    mechanism: string
+    journals: number
+    unfinished: number
+    newest_unfinished: UnfinishedJournal | null
+  }
+  last_rollback: LastRollback | null
+  recovery_window_hours: number
 }

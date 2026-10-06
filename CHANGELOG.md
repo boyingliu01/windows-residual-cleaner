@@ -4,7 +4,40 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-修复测试套件的**非密闭性**（假绿），并统一退出码传递机制。见 `docs/decisions/ADR-001-main-ref-exit-code.md`。
+### 自动回滚 Sprint T5：UI 诚实口径（2026-10-06）
+
+一个以「可恢复」为卖点的工具，此前在 UI 里把**没承诺过的那一层**写成了承诺：
+
+- `CleanupPanel.tsx` 的实际删除警告是「此操作不可逆，但可通过系统还原点恢复」，清理完成后又显示
+  「已通过系统还原点备份，如需恢复可使用 rollback.ps1 回滚」。两句都已删除。真实保证是
+  **强制逐项精准保护**（`rollback-journal.json` + 逐条 pre-image，写不出就 fail-closed 拒绝清理），
+  系统还原点只是**尽力而为**的最后一层（需管理员、24h 节流、可能被策略关闭）。
+- 新增 `GET /api/backup-status`（`ui/server/index.cjs`）：只读**盘上证据**（journal 索引、
+  未完成 journal、`restore-status.json`、`rollback-result.json`）。取不到证据就报 `unknown`，
+  **绝不默认 `available`**；PowerShell 写出的 PascalCase 字段在读侧归一化，
+  `evidence_incomplete` 不会因为字段名大小写而在读取时丢失。
+- 上一轮回滚的**逐条判定**现在可见（AC-065）：已恢复 / 未修复（`restore_failed`）/
+  证据不完整（`evidence_incomplete`）/ 本就无法自动恢复（`not_restorable`）四类分列，
+  证据不完整不再被悄悄并进「成功」；当它占可恢复条目多数时额外显示低置信提示。
+- 退出码矩阵可读化（DD-013 / REQ-025）：不再渲染裸「完成」；
+  **`null`（服务端没告诉我们）与 `0`（脚本报告成功）含义不同**，前者明确显示为「不能视为成功」。
+- 恢复边界如实告知（REQ-014 / REQ-016）：固定 24 小时 + 下次启动、不可配置；
+  还原点记录若已超过窗口，附带陈旧提示而不是继续当作可用。
+
+修复的真实缺陷：**流式 `type:'error'` 行只进了控制台，从未触发 `onError`** ——
+管道失败（`run-all` 退出码 2、报告缺失、清理中断）时 UI 会**永远转圈且零提示**，
+这比显示错误更不诚实。`startScan` / `startCleanup` 现已把 error 行同时上报给调用方。
+
+顺带消除两处真实重复：`useApp.tsx` 里两个流式读取器本是 102-token 克隆（archlint HIGH，
+正是它让本次提交被 Gate 6 拦下），`ui/server/index.cjs` 的两个 NDJSON 响应头 + `emit`
+是 51-token 克隆；两边都抽成单一实现。Gate 6 的 HIGH 归零，其余 MEDIUM 为既有结构性条目
+（React vendor coupling、测试文件 Dead Code 等），未做基线掩盖。
+
+测试与质量：vitest 8 文件 / 49 通过（PS 侧同期 Pester 704/704、PSScriptAnalyzer 0 findings、
+`tsc -b` 与 `eslint` 干净）。**pwsh 7 本机未安装 ⇒ AGENTS.md 的双引擎契约本次未验证。**
+
+以下条目来自 ADR-001：修复测试套件的**非密闭性**（假绿），并统一退出码传递机制。
+见 `docs/decisions/ADR-001-main-ref-exit-code.md`。
 
 ### Fixed
 - **测试套件在新克隆 / CI / worktree 下会静默整份塌掉（Critical，假绿）**

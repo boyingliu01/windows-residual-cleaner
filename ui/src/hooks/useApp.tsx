@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useReducer, type ReactNode } from 'react'
-import type { FinalReport, CleanupLog, AppPhase, ScanOutputLine, RiskLevel } from '@/types'
+import type { FinalReport, CleanupLog, AppPhase, ScanOutputLine, RiskLevel, BackupStatus } from '@/types'
 
 interface AppState {
   phase: AppPhase
@@ -132,20 +132,26 @@ export async function fetchReport(): Promise<FinalReport | null> {
   }
 }
 
-export function startScan(onLine: (line: ScanOutputLine) => void, onDone: (report: FinalReport) => void, onError: (err: string) => void): AbortController {
-  const controller = new AbortController()
+interface StreamHandlers {
+  onLine: (line: ScanOutputLine) => void
+  onDone: (parsed: any) => void
+  onError: (err: string) => void
+  failPrefix: string
+  readPrefix: string
+  fallbackMessage: string
+}
 
-  fetch(`${API_BASE}/scan`, {
-    method: 'POST',
-    signal: controller.signal,
-  }).then(async (res) => {
+async function streamNDJSON(url: string, init: RequestInit, handlers: StreamHandlers): Promise<void> {
+  const { onLine, onDone, onError } = handlers
+  try {
+    const res = await fetch(url, init)
     if (!res.ok) {
-      onError(`扫描失败: ${res.statusText}`)
+      onError(`${handlers.failPrefix}: ${res.statusText}`)
       return
     }
     const reader = res.body?.getReader()
     if (!reader) {
-      onError('无法读取扫描输出')
+      onError(handlers.readPrefix)
       return
     }
 
@@ -164,23 +170,42 @@ export function startScan(onLine: (line: ScanOutputLine) => void, onDone: (repor
         if (!line.trim()) continue
         try {
           const parsed = JSON.parse(line)
-          onLine({
-            text: parsed.text || line,
-            type: parsed.type || 'info',
-            timestamp: parsed.timestamp || Date.now(),
-          })
-          if (parsed.type === 'done' && parsed.report) {
-            onDone(parsed.report)
-          }
+          const type = parsed.type || 'info'
+          const text = parsed.text || line
+          onLine({ text, type, timestamp: parsed.timestamp || Date.now() })
+          if (parsed.type === 'done') onDone(parsed)
+          // The server signals failure with a `type:'error'` line. Forwarding those only
+          // to onLine left onError reachable just for network errors, so a pipeline that
+          // died (run-all exit 2, missing report, cleanup abort) kept the caller spinning
+          // with no message. Surface it; the line stays in the console too.
+          if (type === 'error') onError(text)
         } catch {
           onLine({ text: line, type: 'info', timestamp: Date.now() })
         }
       }
     }
-  }).catch((err) => {
-    if (err.name !== 'AbortError') {
-      onError(err.message || '扫描过程中出错')
+  } catch (err: any) {
+    if (err?.name !== 'AbortError') {
+      onError(err?.message || handlers.fallbackMessage)
     }
+  }
+}
+
+export function startScan(onLine: (line: ScanOutputLine) => void, onDone: (report: FinalReport) => void, onError: (err: string) => void): AbortController {
+  const controller = new AbortController()
+
+  void streamNDJSON(`${API_BASE}/scan`, {
+    method: 'POST',
+    signal: controller.signal,
+  }, {
+    onLine,
+    onError,
+    failPrefix: '扫描失败',
+    readPrefix: '无法读取扫描输出',
+    fallbackMessage: '扫描过程中出错',
+    onDone: (parsed) => {
+      if (parsed.report) onDone(parsed.report)
+    },
   })
 
   return controller
@@ -199,57 +224,26 @@ export async function confirmCleanup(ids: string[]): Promise<boolean> {
   }
 }
 
-export async function startCleanup(dryRun: boolean, onLine: (line: ScanOutputLine) => void, onDone: (log: any) => void, onError: (err: string) => void): Promise<AbortController> {
+export async function startCleanup(dryRun: boolean, onLine: (line: ScanOutputLine) => void, onDone: (log: any, exitCode?: number | null, detail?: string | null) => void, onError: (err: string) => void): Promise<AbortController> {
   const controller = new AbortController()
 
-  fetch(`${API_BASE}/cleanup`, {
+  void streamNDJSON(`${API_BASE}/cleanup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ dryRun }),
     signal: controller.signal,
-  }).then(async (res) => {
-    if (!res.ok) {
-      onError(`清理失败: ${res.statusText}`)
-      return
-    }
-    const reader = res.body?.getReader()
-    if (!reader) {
-      onError('无法读取清理输出')
-      return
-    }
-
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (!line.trim()) continue
-        try {
-          const parsed = JSON.parse(line)
-          onLine({
-            text: parsed.text || line,
-            type: parsed.type || 'info',
-            timestamp: parsed.timestamp || Date.now(),
-          })
-          if (parsed.type === 'done' && parsed.log) {
-            onDone(parsed.log)
-          }
-        } catch {
-          onLine({ text: line, type: 'info', timestamp: Date.now() })
-        }
-      }
-    }
-  }).catch((err) => {
-    if (err.name !== 'AbortError') {
-      onError(err.message || '清理过程中出错')
-    }
+  }, {
+    onLine,
+    onError,
+    failPrefix: '清理失败',
+    readPrefix: '无法读取清理输出',
+    fallbackMessage: '清理过程中出错',
+    onDone: (parsed) => {
+      if (!parsed.log) return
+      // null 与 0 含义不同：0 是「脚本报告成功」，null 是「服务端没告诉我们」，
+      // 后者绝不能显示成成功（诚实口径与 AC-065 同源）。
+      onDone(parsed.log, typeof parsed.exit_code === 'number' ? parsed.exit_code : null, typeof parsed.detail === 'string' ? parsed.detail : null)
+    },
   })
 
   return controller
@@ -265,11 +259,12 @@ export async function fetchCleanupLog(): Promise<CleanupLog | null> {
   }
 }
 
-export async function checkRestorePoint(): Promise<boolean> {
+export async function fetchBackupStatus(): Promise<BackupStatus | null> {
   try {
-    const res = await fetch(`${API_BASE}/restore-point`)
-    return res.ok
+    const res = await fetch(`${API_BASE}/backup-status`)
+    if (!res.ok) return null
+    return await res.json()
   } catch {
-    return false
+    return null
   }
 }

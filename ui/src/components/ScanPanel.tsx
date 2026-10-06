@@ -129,6 +129,7 @@ export function ScanPanel() {
               {lines.map((line, i) => (
                 <div key={i} className={`scan-line ${
                   line.type === 'error' ? 'text-danger' :
+                  line.type === 'caution' ? 'text-caution font-medium' :
                   line.type === 'success' ? 'text-safe' :
                   line.type === 'step' ? 'text-primary font-medium' :
                   'opacity-70'
