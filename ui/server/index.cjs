@@ -2,11 +2,30 @@ const express = require('express');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const cors = require('cors');
+const { createOriginGuard, validateItemIds } = require('./security.cjs');
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
-app.use(cors());
+
+// Server start
+// Bind loopback ONLY: this server spawns admin-privileged, destructive
+// clean-residuals.ps1. Default app.listen() binds 0.0.0.0 (all interfaces),
+// exposing those endpoints to the LAN. Override via HOST only deliberately.
+const HOST = process.env.HOST || '127.0.0.1';
+const PORT = process.env.PORT || 3456;
+
+// Loopback does not stop a browser: any page the user opens can POST here.
+// `app.use(cors())` used to answer those with Access-Control-Allow-Origin: *, so
+// even the response was readable cross-origin. The dev server proxies /api
+// (ui/vite.config.ts) and production serves the SPA from this same origin, so no
+// CORS is needed; the guard rejects browser cross-origin requests instead.
+const originGuard = createOriginGuard({
+  allowedOrigins: (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean),
+});
+app.use('/api', originGuard);
 
 // Paths
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
@@ -376,8 +395,9 @@ app.post('/api/scan', (req, res) => {
 // POST /api/confirm - Save selected IDs
 app.post('/api/confirm', (req, res) => {
   const { ids } = req.body;
-  if (!Array.isArray(ids)) {
-    return res.status(400).json({ error: 'ids must be an array' });
+  const checked = validateItemIds(ids);
+  if (!checked.ok) {
+    return res.status(400).json({ error: checked.error });
   }
   // Write as single-line JSON array (matching PS format)
   const filepath = path.join(PROJECT_ROOT, 'confirmed-ids.json');
@@ -457,7 +477,6 @@ app.get('/api/status', (req, res) => {
     has_report: hasReport,
     has_confirmed: hasConfirmed,
     has_log: hasLog,
-    project_root: PROJECT_ROOT,
   });
 });
 
@@ -489,12 +508,7 @@ if (fs.existsSync(DIST_DIR)) {
   });
 }
 
-// Server start
-// Bind loopback ONLY: this server spawns admin-privileged, destructive
-// clean-residuals.ps1. Default app.listen() binds 0.0.0.0 (all interfaces),
-// exposing those endpoints to the LAN. Override via HOST only deliberately.
-const HOST = process.env.HOST || '127.0.0.1';
-const PORT = process.env.PORT || 3456;
+// HOST / PORT and the loopback rationale live with the origin guard at the top.
 app.listen(PORT, HOST, () => {
   console.log(`API server running on http://${HOST}:${PORT}`);
   console.log(`Project root: ${PROJECT_ROOT}`);
