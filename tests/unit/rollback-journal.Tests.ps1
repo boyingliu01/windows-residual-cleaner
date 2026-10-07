@@ -281,6 +281,22 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         ($r.Reasons -join ' ') | Should -Match 'timestamp'
     }
 
+    It 'cleanup_log_timestamp 以 [datetime] 对象给出（pwsh7 ConvertFrom-Json 回读形态）→ 仍通过自证' {
+        # pwsh 7 的 ConvertFrom-Json 会把 ISO-Z 串解析成 [datetime]（Kind=Utc），PS 5.1 保持字符串。
+        # 自证必须直接接受 [datetime] 原始对象——先 [string] 化会丢 Z、再被严格解析器误拒，
+        # 于是同一个内含合法证据的日志在 5.1 下 restore、在 pwsh7 下 exit 14（2026-10-07 修复）。
+        $clp = Join-Path $script:Dir 'cl-dt.json'
+        [System.IO.File]::WriteAllText($clp, '{"summary":{"failed":0}}')
+        $hash = (Get-FileHash $clp -Algorithm SHA256).Hash
+        $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
+        $j['cleanup_log_path'] = $clp
+        $j['cleanup_log_timestamp'] = (Get-Item -LiteralPath $clp).LastWriteTimeUtc
+        $j['cleanup_log_sha256'] = $hash
+
+        $r = Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP'
+        $r.Valid | Should -BeTrue -Because ($r.Reasons -join ' ')
+    }
+
     It 'completed_at 非空但非合法时间戳（损坏/篡改）→ 自证失败，不永久静默阻断恢复（评审修复）' {
         $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
         $j['completed_at'] = 'completed'

@@ -506,15 +506,17 @@ function Test-RollbackJournalSelfValid {
                 $reasons += "cleanup_log_sha256 不匹配"
             }
             $tTol = $CleanupLogTimestampToleranceSeconds
-            $want = [string]$clt
-            if ([string]::IsNullOrWhiteSpace($want)) {
+            # 传原始对象给 ConvertFrom-IsoUtc：pwsh7 下 cleanup_log_timestamp 会被 ConvertFrom-Json
+            # 解析成 [datetime]（Kind=Utc），[string] 化会丢 Z、再被严格解析器误拒 →
+            # 自证失败 → exit 14（双引擎陷阱，与 created_at/completed_at 同一修法）。
+            if ($null -eq $clt -or ($clt -isnot [datetime] -and [string]::IsNullOrWhiteSpace([string]$clt))) {
                 # 三字段同为非 null 是 AC-083 的硬约束；此处 timestamp 却是空白 → 证据不一致。
                 $reasons += "cleanup_log_timestamp 为空但其余 cleanup_log_* 非空"
             } else {
-                $wd = ConvertFrom-IsoUtc -Text $want
+                $wd = ConvertFrom-IsoUtc -Text $clt
                 if ($null -eq $wd) {
                     # 非 null 但不可解析的时间戳不得被静默忽略（评审修复：AC-083 一致性）。
-                    $reasons += "cleanup_log_timestamp 不可解析: $want"
+                    $reasons += "cleanup_log_timestamp 不可解析: $clt"
                 } else {
                     # Get-Item 也可能因 ACL/占用/瞬时 IO 失败；自证契约是「不抛」，
                     # 读不到 mtime 记为证据不完整而非崩溃（评审修复）。
