@@ -562,6 +562,43 @@ Describe 'Invoke-RollbackRestore (REQ-024 两阶段 + REQ-021 PATH + REQ-030/031
         $r.Counts.restore_failed | Should -Be 1
     }
 
+    It '未注入 -MachinePathOverride 时读**真实** Machine PATH 比较（drill5 根因回归）' {
+        # 只读真实 PATH，绝不写：写回走 -SetPathScript 接缝。
+        # 原值 = 真实当前值 + 一个只存在于本 fixture 的段；本轮把它删掉后
+        # 「预期当前值」恰好等于真实值，迹象 (iii) 必须判 equal。
+        # 修复前：'' 被当成注入值 -> PathCompare 恒 mismatch -> 恒 conflict（drill5 的 5 项级联失败）。
+        $live = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+        $marker = 'C:\WRC-NoSuchSegment-951'
+        $orig = if ([string]::IsNullOrWhiteSpace($live)) { $marker } else { $live + ';' + $marker }
+
+        $script:rrWrites4 = [System.Collections.Generic.List[string]]::new()
+        $seam = {
+            param($p)
+            $script:rrWrites4.Add($p)
+            return $p
+        }
+
+        $j = ConvertTo-RollbackJournal -CreatedAt (Format-IsoUtc -Value $script:rrNow) -BackupDir $script:rrBackup -MachineFingerprint 'test' `
+            -MachinePathOriginal $orig -MachinePathScope 'Machine'
+        $j['entries'] = @(
+            (ConvertTo-RollbackJournalEntry -Id 'path_010' -Kind 'path_entry' -Target $marker `
+                -PreExisting $true -AbsentConfirmedAfterMutation $true -State 'mutation_succeeded')
+        )
+        $r = Invoke-RollbackRestore -Journal $j -BackupDir $script:rrBackup -ProjectRoot $script:rrRoot `
+            -Now $script:rrNow -SetPathScript $seam
+
+        $v = @($r.Verdicts | Where-Object { $_.Id -eq 'path_010' })[0]
+        if (-not [string]::IsNullOrWhiteSpace($live)) {
+            $v.PathCurrent | Should -Be $live
+            ([string]$v.PathCompare) | Should -Be 'equal'
+            ([string]$v.Verdict) | Should -Be 'restored'
+            $script:rrWrites4[0] | Should -Be $orig
+        }
+        # 无论本机 PATH 是什么，都不得再出现「拿空串当当前值」的判定
+        $v.PathCurrent | Should -Not -Be ''
+        ([string]$v.Reason) | Should -Not -Be 'conflict(external_change_sign_iii)'
+    }
+
     It '迹象 (ii)：父键在基线之后被外部写入 -> 整批降级 conflict，一条都不写' {
         $bk = Ensure-RrKey -Raw $script:rrA -Id 'rr-ii'
         Invoke-RegExe -Arguments @('delete', $script:rrA, '/f') | Out-Null

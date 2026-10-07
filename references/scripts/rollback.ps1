@@ -118,7 +118,10 @@ function Invoke-AutoRollback {
         AcknowledgeConflicts = [bool]$AcknowledgeConflicts
     }
     if ($null -ne $Now) { $consumeArgs['Now'] = $Now }
-    if ($null -ne $MachinePathOverride) { $consumeArgs['MachinePathOverride'] = $MachinePathOverride }
+    # 只在**调用方真的给了**这个注入点时才转发：`[string]` 参数未传时是空串而不是 null，
+    # 用 `$null -ne` 判断会把「未注入」伪装成「注入了空 PATH」，
+    # 让消费协议跳过真实注册表读取（AGENTS.md 陷阱 11）。
+    if ($PSBoundParameters.ContainsKey('MachinePathOverride')) { $consumeArgs['MachinePathOverride'] = $MachinePathOverride }
     if ($null -ne $SetPathScript) { $consumeArgs['SetPathScript'] = $SetPathScript }
     $o = Invoke-RollbackJournalConsumption @consumeArgs
 

@@ -646,7 +646,12 @@ function Invoke-RollbackRestore {
     $expectedPath = $null
     $removedSegments = @()
     if ($pathEntries.Count -gt 0) {
-        if ($null -ne $MachinePathOverride) {
+        # 用 $PSBoundParameters 而不是 `$null -ne $MachinePathOverride`：`[string]` 参数**永远**
+        # 不是 null，未传时读到的是空串，而 `$null -ne ''` 为真（AGENTS.md 陷阱 11）。
+        # 用 null 比较时「未注入」会被当成「注入了空 PATH」，真实注册表读取被跳过，
+        # 迹象 (iii) 于是恒拿 '' 与预期整串比较 -> 恒 mismatch -> 恒 conflict（fail-closed
+        # 误判），真实环境的 PATH 恢复因此永远失败。
+        if ($PSBoundParameters.ContainsKey('MachinePathOverride')) {
             $mpCurrent = [string]$MachinePathOverride
         } else {
             try { $mpCurrent = [Environment]::GetEnvironmentVariable('Path', 'Machine') } catch { $mpCurrent = $null }
@@ -1077,7 +1082,10 @@ function Invoke-RollbackJournalConsumption {
         AcknowledgeConflicts = [bool]$AcknowledgeConflicts
     }
     if ($null -ne $Now) { $restoreArgs['Now'] = $Now }
-    if ($null -ne $MachinePathOverride) { $restoreArgs['MachinePathOverride'] = $MachinePathOverride }
+    # 只在**调用方真的给了**这个注入点时才转发：`[string]` 未传时是空串而非 null，
+    # 用 `$null -ne` 转发会把「未注入」伪装成「注入了空 PATH」，
+    # 让下一层跳过真实注册表读取（AGENTS.md 陷阱 11）。
+    if ($PSBoundParameters.ContainsKey('MachinePathOverride')) { $restoreArgs['MachinePathOverride'] = $MachinePathOverride }
     if ($null -ne $SetPathScript) { $restoreArgs['SetPathScript'] = $SetPathScript }
     $result = Invoke-RollbackRestore @restoreArgs
 

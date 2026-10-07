@@ -789,3 +789,52 @@ Describe 'rollback.ps1 Main 的 -Auto 分派' {
         $rc | Should -Be 2
     }
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 真实的 PATH 读取（不 Mock 恢复引擎）。
+# 上面两组用例都把 Invoke-RollbackRestore 换成了假形状，因此**测不到**
+# 「注入接缝是否被空串伪装」——drill5 的 PATH 恒判 conflict 正是从这里漏掉的。
+# 本组跑真实实现，但写回仍走 -SetPathScript 接缝，一个字节都不碰本机 PATH。
+# ─────────────────────────────────────────────────────────────────────────────
+Describe '-Auto 未注入 PATH 接缝时读真实 Machine PATH（AGENTS.md 陷阱 11 / drill5 根因）' {
+    BeforeEach {
+        Reset-AutoProject
+        Mock Test-RollbackAdminPrivilege { return $true }
+    }
+
+    It '迹象 (iii) 必须拿真实当前整串比较：不得是空串（修复前恒 mismatch -> 恒 conflict）' {
+        $live = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+        $live | Should -Not -BeNullOrEmpty
+        $marker = 'C:\WRC-NoSuchSegment-951'
+        $orig = $live + ';' + $marker
+
+        $dir = New-AutoBackupDir -Name 'backup-inject-live'
+        $f = New-AutoJournal -Dir $dir -CreatedAt (Format-IsoUtc -Value (Get-Date).ToUniversalTime())
+        $f.Journal['machine_path_original'] = $orig
+        $f.Journal['machine_path_scope'] = 'Machine'
+        $f.Journal['entries'] = @(
+            (ConvertTo-RollbackJournalEntry -Id 'path_951' -Kind 'path_entry' -Target $marker `
+                -PreExisting $true -AbsentConfirmedAfterMutation $true -State 'mutation_succeeded')
+        )
+        $null = Write-RollbackJournal -BackupDir $dir -Journal $f.Journal
+        Bind-AutoCleanupLog -Journal $f.Journal -Path (Join-Path $script:proj 'cleanup-log-inject-live.json') -Failed 1
+
+        $script:autoLiveWrites = [System.Collections.Generic.List[string]]::new()
+        $seam = {
+            param($p)
+            $script:autoLiveWrites.Add($p)
+            return $p
+        }
+        $r = Invoke-AutoRollback -ProjectRoot $script:proj -JournalPath $f.Path -SetPathScript $seam |
+            Where-Object { $_ -is [hashtable] }
+
+        $v = @($r.Result.Verdicts | Where-Object { $_.Id -eq 'path_951' })[0]
+        $v.PathCurrent | Should -Be $live
+        ([string]$v.PathCompare) | Should -Be 'equal'
+        ([string]$v.Verdict) | Should -Be 'restored'
+        # 整作用域逐字写回原值（REQ-021），且只写一次
+        $script:autoLiveWrites.Count | Should -Be 1
+        $script:autoLiveWrites[0] | Should -Be $orig
+        $r.ExitCode | Should -Be 0
+    }
+}
