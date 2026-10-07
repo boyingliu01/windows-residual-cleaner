@@ -212,12 +212,39 @@ Describe 'Get-RollbackVerdict: REQ-024 decision table' {
         $v.Reason | Should -Be 'external_change_sign_iii'
     }
 
+    It 'path_entry 冲突必须留下比较证据（2026-10-07 drill5：只写 reason 导致现场不可复盘）' {
+        $e = New-VerdictEntry -Kind 'path_entry' -Target 'C:\Tools\WRC'
+        $v = Get-RollbackVerdict -Entry $e -TargetState 'absent' -WithinWindow $true `
+            -PathExpected 'A;C' -PathCurrent 'A;B;C'
+        $v.PathCompare | Should -Be 'mismatch'
+        $v.ExpectedPath | Should -Be 'A;C'
+        $v.PathCurrent | Should -Be 'A;B;C'
+    }
+
+    It 'path_entry 比较双方任一为 null 时必须与 mismatch 区分（null 是故障，不是漂移）' {
+        $e = New-VerdictEntry -Kind 'path_entry' -Target 'C:\Tools\WRC'
+        # 传 null 必须靠「省略参数」而非 `-PathCurrent $null`：PS 5.1 和 pwsh 7 都会把
+        # [string] 参数的显式 $null 强转成 ''，两种写法无从区分 null 与空串；
+        # 实现按 $PSBoundParameters 的绑定存在性判定 null。省略参数同时也是生产路径：
+        # Get-RestorableEntry 只注入非 null 的 extras。
+        $vCur = Get-RollbackVerdict -Entry $e -TargetState 'absent' -WithinWindow $true `
+            -PathExpected 'A;C'
+        $vCur.Verdict | Should -Be 'conflict'
+        $vCur.PathCompare | Should -Be 'current_null'
+        $vExp = Get-RollbackVerdict -Entry $e -TargetState 'absent' -WithinWindow $true `
+            -PathCurrent 'A;C'
+        $vExp.Verdict | Should -Be 'conflict'
+        $vExp.PathCompare | Should -Be 'expected_null'
+    }
+
     It 'path_entry 窗口内且无漂移 -> restore，且记录整作用域预期值' {
         $e = New-VerdictEntry -Kind 'path_entry' -Target 'C:\Tools\WRC'
         $v = Get-RollbackVerdict -Entry $e -TargetState 'absent' -WithinWindow $true `
             -PathExpected 'A;C' -PathCurrent 'A;C'
         $v.Verdict | Should -Be 'restore'
         $v.ExpectedPath | Should -Be 'A;C'
+        $v.PathCurrent | Should -Be 'A;C'
+        $v.PathCompare | Should -Be 'equal'
     }
 
     It 'path_deleted 条目 -> not_restorable 并给出原因，不参与决策表' {
@@ -305,6 +332,17 @@ Describe 'Format-RollbackReport' {
         # 诚实性关键词：24h 窗口 + 人工介入；不得出现无条件自动恢复承诺
         $text | Should -BeLike '*24*'
         $text | Should -Not -BeLike '*will be restored automatically*'
+    }
+
+    It 'path_entry 冲突的报告必须给出比较证据行（compare token + 长度 + 落盘指向）' {
+        $e = New-VerdictEntry -Kind 'path_entry' -Target 'C:\Tools\WRC'
+        $v = Get-RollbackVerdict -Entry $e -TargetState 'absent' -WithinWindow $true `
+            -PathExpected 'A;C' -PathCurrent 'A;B;C'
+        $text = (Format-RollbackReport -Verdicts @($v)) -join "`n"
+        $text | Should -BeLike '*path evidence: compare=mismatch*'
+        $text | Should -BeLike '*expected_len=3*'
+        $text | Should -BeLike '*current_len=5*'
+        $text | Should -BeLike '*rollback-result.json*'
     }
 
     It '空裁决集渲染为无操作说明（不抛）' {

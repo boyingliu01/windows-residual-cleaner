@@ -566,6 +566,11 @@ function Get-ReportedRollbackVerdict {
         Verdict            = $out
         Reason             = $reason
         EvidenceIncomplete = [bool]$Verdict['EvidenceIncomplete']
+        # 迹象 (iii) 的比较证据必须穿过投影进入 rollback-result.json：
+        # 只留一个 reason token 时，事后审计无法回答「哪个值 vs 哪个值」。
+        ExpectedPath       = $Verdict['ExpectedPath']
+        PathCurrent        = $Verdict['PathCurrent']
+        PathCompare        = [string]$Verdict['PathCompare']
     }
 }
 

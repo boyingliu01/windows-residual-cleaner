@@ -166,6 +166,8 @@ function Get-RollbackVerdict {
         Reason             = ''
         EvidenceIncomplete = $false
         ExpectedPath       = $null
+        PathCurrent        = $null
+        PathCompare        = ''
     }
 
     $restorable = Test-RollbackRestorable -Kind $kind
@@ -216,12 +218,27 @@ function Get-RollbackVerdict {
 
     if ($kind -eq 'path_entry') {
         # REQ-021：判定顺序固定「先窗口（上面已过），再漂移」；以整作用域为单位恢复。
-        if ($null -eq $PathExpected -or $null -eq $PathCurrent -or ($PathExpected -cne $PathCurrent)) {
+        # 证据留痕：冲突分支此前只写 reason、丢弃两个比较值，事后无法回答「到底什么漂移」
+        # （2026-10-07 drill5 现场因此不可复盘）。判定依赖可变外部值时，证据与结论同等重要，
+        # 必须随裁决产出并经 rollback-result.json 落盘。
+        # 「null」用绑定存在性判定而非 $null -eq：PS 5.1/pwsh 7 都会把 [string] 参数的
+        # 省略或显式 $null 强转成 ''（AGENTS.md 陷阱 9 同族），$null -eq $PathExpected 恒为
+        # False，null 与 mismatch 无法区分。Get-RestorableEntry 只注入非 null 的 extras，
+        # 因此「未绑定」== 生产路径的 null；显式空串仍如实按值比较。
+        $hasExpected = $PSBoundParameters.ContainsKey('PathExpected')
+        $hasCurrent = $PSBoundParameters.ContainsKey('PathCurrent')
+        if ($hasExpected) { $base.ExpectedPath = $PathExpected }
+        if ($hasCurrent) { $base.PathCurrent = $PathCurrent }
+        if (-not $hasExpected) { $base.PathCompare = 'expected_null' }
+        elseif (-not $hasCurrent) { $base.PathCompare = 'current_null' }
+        elseif ($PathExpected -cne $PathCurrent) { $base.PathCompare = 'mismatch' }
+        else { $base.PathCompare = 'equal' }
+
+        if ($base.PathCompare -ne 'equal') {
             $base.Verdict = 'conflict'
             $base.Reason = 'external_change_sign_iii'
             return $base
         }
-        $base.ExpectedPath = $PathExpected
     }
 
     $base.Verdict = 'restore'
@@ -270,6 +287,8 @@ function Get-RestorableEntry {
                 Reason             = 'missing_target_state'
                 EvidenceIncomplete = $true
                 ExpectedPath       = $null
+                PathCurrent        = $null
+                PathCompare        = ''
             }
         } else {
             $extra = $TargetIdMap[$iid]
@@ -316,6 +335,15 @@ function Format-RollbackReport {
         $lines += ('{0}  {1}  ->  {2}{3}' -f $v.ItemId, $v.Kind, $v.Verdict, $flag)
         if ($v.Verdict -ne 'restore' -and -not [string]::IsNullOrWhiteSpace($v.Reason)) {
             $lines += ('    reason: {0}' -f $v.Reason)
+            # 迹象 (iii) 的冲突必须给出可行动证据：null 与 mismatch 是两种不同故障，
+            # 长度对比让「漂移与否」当场可见；完整比较值在 rollback-result.json。
+            if ([string]$v.Kind -eq 'path_entry' -and [string]$v.PathCompare -in @('mismatch', 'current_null', 'expected_null')) {
+                $el = 'null'; $cl = 'null'
+                if ($null -ne $v.ExpectedPath) { $el = [string]([string]$v.ExpectedPath).Length }
+                if ($null -ne $v.PathCurrent) { $cl = [string]([string]$v.PathCurrent).Length }
+                $lines += ('    path evidence: compare={0}, expected_len={1}, current_len={2} (full values in rollback-result.json)' -f `
+                    [string]$v.PathCompare, $el, $cl)
+            }
         }
     }
 

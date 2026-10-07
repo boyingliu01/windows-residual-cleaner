@@ -506,7 +506,19 @@ Describe 'Invoke-RollbackRestore (REQ-024 两阶段 + REQ-021 PATH + REQ-030/031
         $r.Counts.restored | Should -Be 0
         $r.Counts.restore_failed | Should -Be 1
         $r.Counts.already_present | Should -Be 1
-        @($r.Verdicts | Where-Object { $_.Id -eq 'path_001' })[0].Reason | Should -Be 'conflict(external_change_sign_iii)'
+        $vA = @($r.Verdicts | Where-Object { $_.Id -eq 'path_001' })[0]
+        $vA.Reason | Should -Be 'conflict(external_change_sign_iii)'
+        # 2026-10-07（drill5 复盘）：冲突分支必须把比较双方带出判定层 ——
+        # 只剩 reason token 时「漂移到底是什么」永久不可复盘。
+        $vA.PathCompare | Should -Be 'mismatch'
+        $vA.ExpectedPath | Should -Be 'C:\Windows'
+        $vA.PathCurrent | Should -Be 'C:\Windows;C:\WRC-AppB'
+        # 证据必须穿过 Get-ReportedRollbackVerdict 的投影进入 rollback-result.json。
+        $doc = Get-Content -LiteralPath $r.ResultPath -Raw | ConvertFrom-Json
+        $jvA = @($doc.verdicts | Where-Object { $_.Id -eq 'path_001' })[0]
+        $jvA.PathCompare | Should -Be 'mismatch'
+        $jvA.ExpectedPath | Should -Be 'C:\Windows'
+        $jvA.PathCurrent | Should -Be 'C:\Windows;C:\WRC-AppB'
         @($r.Verdicts | Where-Object { $_.Id -eq 'path_002' })[0].Verdict | Should -Be 'already_present'
     }
 
