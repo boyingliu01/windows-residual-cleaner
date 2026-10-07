@@ -523,6 +523,13 @@ It 'Works against real registry data' {
   worktree 里的整套重复脚本与测试）与 `wrc-drill/` 的演练脚本都会被当作源文件与测试收集
   ——测试重复执行、覆盖率被稀释。补丁（把 `-name .worktrees -o` 加进 prune 列表）位于
   `~/.config/xp-gate` 下、需用户手工执行；补丁落地前别把 pwsh 放进钩子 PATH。
+  **补充（2026-10-07 实测）**：适配器的 Gate 1 静态分析是未按目录过滤的
+  `Invoke-ScriptAnalyzer -Path . -Recurse`，整仓 Error/Warning 共 **675 条**
+  （tests 330 + `.worktrees` 255 + `wrc-drill` 88 + `.sprint-state` 2；root 运行时
+  会自动套用仓库根的 `PSScriptAnalyzerSettings.psd1`，故 `references/scripts` 计 0）。
+  **即使 `.worktrees` 补丁落地，只要 pwsh 上了钩子 PATH，Gate 1 就会拿这数百条既有
+  告警拦下每次提交**——想真正启用 pwsh，必须连同分析范围（排除 `*.Tests.ps1` 与
+  prune 目录）一起收敛。
 - **测试密闭性**：`backup-*` 是 gitignored 的运行时目录。任何「非 DryRun + 走 ConfirmFile/Mode A-C」
   的清理测试都需要它存在，否则 `Main` 会在备份门提前中止。**测试必须自建自清该 fixture**，
   不得依赖主仓里遗留的 `backup-*`（否则新克隆 / CI 下会出现假绿或假红）。
