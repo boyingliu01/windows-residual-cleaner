@@ -106,6 +106,8 @@ function Invoke-ScExe {
 # 否则一份仍躺在磁盘上的 `~X.deleted` 会被报告成「已删除」——而 DD-006 明确
 # 规定重命名内容**不**参与自动恢复，谎报会直接让用户失去找回它的时间窗。
 # 取值：dry_run / absent / deleted / renamed:<新名> / failed。
+# 成功流契约：除最终布尔返回值外，本函数不得向成功流输出任何对象。
+# 调用方以 `-not $deleted` 判真值，多一个对象就会把失败读成成功（见下方 Tier-3 注释）。
 function Remove-ItemRobust {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions','')]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSupportsShouldProcess','')]
@@ -160,13 +162,17 @@ function Remove-ItemRobust {
     }
 
     # Strategy 3: cmd rd /s /q (sometimes works where PS fails)
+    # 输出必须显式吞掉：原生命令的 stderr 经 `2>&1` 会被包成 ErrorRecord 写进**成功流**，
+    # 泄漏出去就让调用方的 `$deleted = Remove-ItemRobust …` 拿到 @(ErrorRecord, $false)
+    # 非空数组，真值恒为 $true —— 四层全失败却被记成删除成功、failedCount 保持 0、
+    # 自动回滚不触发（drill5 实测，REQ-002 / AC-016）。
     try {
         $isDir = (Get-Item $Path).PSIsContainer
         if ($isDir) {
-            cmd /c "rd /s /q `"$Path`"" 2>&1
+            $null = cmd /c "rd /s /q `"$Path`"" 2>&1
             if ($LASTEXITCODE -eq 0 -and -not (Test-Path $Path)) { & $setOutcome 'deleted'; return $true }
         } else {
-            cmd /c "del /f /q `"$Path`"" 2>&1
+            $null = cmd /c "del /f /q `"$Path`"" 2>&1
             if ($LASTEXITCODE -eq 0 -and -not (Test-Path $Path)) { & $setOutcome 'deleted'; return $true }
         }
     } catch {
@@ -185,7 +191,9 @@ function Remove-ItemRobust {
             $renamed = Join-Path $parent "~$leaf.deleted$counter"
         }
         Rename-Item -Path $Path -NewName (Split-Path $renamed -Leaf) -Force -ErrorAction Stop
-        Write-Output "  → Renamed to $(Split-Path $renamed -Leaf) (deferred delete - may be in use)"
+        # 走 Warning 而非 Write-Output：改名 = 内容没删（延迟删除），既是用户必须看到的
+        # 警示，也避免污染本函数的成功流（成功流只允许携带最终布尔返回值）。
+        Write-Warning "  → Renamed to $(Split-Path $renamed -Leaf) (deferred delete - may be in use)"
         # REQ-002：改名不是删除。内容仍在磁盘上（只是换了名字），必须回传 renamed:<新名>，
         # 由调用方如实记录并供人工定位；DD-006 规定这类条目不参与自动恢复。
         & $setOutcome ('renamed:' + (Split-Path $renamed -Leaf))

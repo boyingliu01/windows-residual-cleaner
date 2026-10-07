@@ -641,14 +641,27 @@ Describe 'confirm-cleanup.ps1 display helpers' {
 }
 
 # Remove-ItemRobust：四层降级删除策略的入口契约。
-# 只覆盖在普通用户环境下可确定复现的分支（WhatIf / 路径不存在 / Strategy 1 正常删除）。
-# Strategy 2-4（takeown→icacls→cmd rd→改名延迟删除）需要真实被占用或 ACL 锁定的文件，
-# 按 AGENTS.md 测试策略属管理员环境集成验证范畴，此处不注入脆弱 mock。
+# WhatIf / 路径不存在 / Strategy 1 正常删除为常规分支；Strategy 2-4 的全部失败路径
+# 用 share=0 目录句柄做真实注入（无需管理员，普通用户即可锁死目录，drill5 同款手法），
+# 不注入脆弱 mock —— mock 掉的正是「四层全失败」这一最关键副作用的观测点。
 Describe 'Remove-ItemRobust (clean-residuals.ps1)' {
     BeforeAll {
         $global:_rirScript = "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
         $global:_rirRoot = "$PSScriptRoot\..\..\wrc-robust-fixture"
         . $global:_rirScript
+        if (-not ('WrcRirLock' -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class WrcRirLock {
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern IntPtr CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode,
+        IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool CloseHandle(IntPtr hObject);
+}
+"@
+        }
     }
     BeforeEach {
         Remove-Item $global:_rirRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -682,6 +695,31 @@ Describe 'Remove-ItemRobust (clean-residuals.ps1)' {
         [System.IO.File]::WriteAllText((Join-Path $target 'nested\f.txt'), 'x')
         Remove-ItemRobust -Path $target | Should -Be $true
         Test-Path $target | Should -Be $false
+    }
+
+    It 'Returns exactly $false (success stream carries no extra objects) when all four tiers fail' {
+        # share=0 目录句柄锁死目标：tier 1-4 全部失败。修复前 tier-3 的裸
+        # `cmd /c ... 2>&1` 会把 cmd 的 stderr 包成 ErrorRecord 泄漏进**成功流**，
+        # 调用方 `$deleted = Remove-ItemRobust …` 拿到 @(ErrorRecord, $false) 非空数组，
+        # 真值恒为 $true → 删除失败被记成 mutation_succeeded 且 failedCount=0，
+        # 自动回滚永不触发（drill5 实测踩中，REQ-002 / AC-016 的反面）。
+        # 本用例钉死契约：成功流只允许携带那一个布尔返回值。
+        $target = Join-Path $global:_rirRoot 'locked'
+        New-Item -Path $target -ItemType Directory -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $target 'inner.txt'), 'x')
+        $h = [WrcRirLock]::CreateFileW($target, [uint32]2147483648, [uint32]0,
+            [IntPtr]::Zero, [uint32]3, [uint32]0x02000000, [IntPtr]::Zero)
+        try {
+            $h.ToInt64() | Should -Not -Be -1
+            $outcome = ''
+            $result = Remove-ItemRobust -Path $target -Outcome ([ref]$outcome)
+            @($result).Count | Should -Be 1
+            $result | Should -Be $false
+            $outcome | Should -Be 'failed'
+            Test-Path -LiteralPath $target | Should -Be $true
+        } finally {
+            if ($h.ToInt64() -ne -1) { [void][WrcRirLock]::CloseHandle($h) }
+        }
     }
 }
 
@@ -867,6 +905,115 @@ Describe 'clean-residuals.ps1 safety guards (fail-closed, static + subprocess)' 
         # danger 项被过滤掉，不进入 eligible 集合
         $out | Should -Match 'matched 0 items'
         $out | Should -Not -Match 'Deleting path: .*danger-dir'
+    }
+}
+
+# clean-residuals.ps1：自动回滚链路（REQ-011）的真实失败集成。
+# drill5（管理员真机演练）在同一链路上验证 Machine PATH / 服务 / 退出码；
+# 这里是它的进程内孪生——share=0 锁目录制造四层全败，HKCU 自建键作可恢复项。
+# 全部 fixture 自建自清（DR-004），无需管理员。关键回归点：
+# 真实失败必须 → cleanup_failed → failedCount>0 → 进程内回滚 → 退出码 10。
+# Remove-ItemRobust 成功流泄漏缺陷（drill5 实测）正好断在「失败被谎报为成功」
+# 这一步：失败不进 failedCount，回滚永不触发，退出码为 0。
+Describe 'clean-residuals.ps1 auto-rollback chain (real failure integration)' {
+    BeforeAll {
+        $global:_arbScript = "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
+        $global:_arbRoot = "$PSScriptRoot\..\..\wrc-arb-fixture"
+        $global:_arbWl = Join-Path $global:_arbRoot 'whitelist-empty.json'
+        $global:_arbRegPs = 'HKCU:\Software\WRC-ARB-Fixture'
+        if (-not ('WrcRirLock' -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class WrcRirLock {
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern IntPtr CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode,
+        IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool CloseHandle(IntPtr hObject);
+}
+"@
+        }
+    }
+    BeforeEach {
+        Remove-Item $global:_arbRoot -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -Path $global:_arbRoot -ItemType Directory -Force | Out-Null
+        [System.IO.File]::WriteAllText($global:_arbWl, '{"registry_patterns":[],"path_patterns":[],"service_names":[]}')
+        Remove-Item $global:_arbRegPs -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    AfterAll {
+        Remove-Item $global:_arbRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item $global:_arbRegPs -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'Turns a real failed deletion into cleanup_failed -> in-process rollback -> exit 10' {
+        . $global:_arbScript
+        Mock Test-AdminPrivilege { return $true }
+
+        # fixture 1：可恢复的 HKCU 键（rollback 从 .reg 备份装回来）
+        $regPs = $global:_arbRegPs
+        New-Item -Path $regPs -Force | Out-Null
+        New-ItemProperty -Path $regPs -Name 'Probe' -Value 'arb' -Force | Out-Null
+        # fixture 2：share=0 锁死的目录（四层删除全败）
+        $locked = Join-Path $global:_arbRoot 'locked'
+        New-Item -Path $locked -ItemType Directory -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $locked 'inner.dat'), 'x')
+
+        $reportF = Join-Path $global:_arbRoot 'report.json'
+        $confirmF = Join-Path $global:_arbRoot 'confirm.json'
+        $report = @{
+            scan_time = '2026-01-01T00:00:00'
+            summary = @{ total_residuals=2; safe=0; caution=2; danger=0; estimated_space_recoverable_mb=0 }
+            filesystem_residuals = @(@{ id='fs_arb1'; path=$locked; name='WRC-ARB-Locked'; type='residual_directory'; file_count=1; size_mb=0; risk='caution'; reason='arb fixture' })
+            registry_residuals = @(@{ id='reg_arb1'; key='HKCU\Software\WRC-ARB-Fixture'; name='WRC-ARB-Fixture'; type='vendor_key'; subkey_count=0; risk='caution'; reason='arb fixture' })
+            ghost_services=@(); ghost_tasks=@(); startup_residuals=@(); shell_residuals=@(); path_residuals=@(); uninstalled_software=@()
+        }
+        [System.IO.File]::WriteAllText($reportF, ($report | ConvertTo-Json -Depth 5))
+        [System.IO.File]::WriteAllText($confirmF, '["fs_arb1","reg_arb1"]')
+
+        $h = [WrcRirLock]::CreateFileW($locked, [uint32]2147483648, [uint32]0, [IntPtr]::Zero, [uint32]3, [uint32]0x02000000, [IntPtr]::Zero)
+        try {
+            $h.ToInt64() | Should -Not -Be -1
+            # 输入必须在 dot-source 之后赋值（AGENTS.md 陷阱 8a）
+            $ReportPath = $reportF; $ConfirmFile = $confirmF
+            $WhitelistPath = $global:_arbWl; $DryRun = $false; $Mode = 'A'; $ItemsToClean = ''
+            $ProjectRootOverride = $global:_arbRoot
+            $rc = -999
+            $null = (Main -ExitCode ([ref]$rc) *>&1)
+            $rc | Should -Be 10
+
+            # 可恢复项被自动回滚装回原位（reg import）
+            (Get-ItemProperty -Path $regPs -Name 'Probe' -ErrorAction SilentlyContinue).Probe | Should -Be 'arb'
+            # 锁死目录原样存在且未改名：tier-4 不得冒充成功
+            (Test-Path -LiteralPath $locked) | Should -Be $true
+            (Test-Path -LiteralPath (Join-Path $global:_arbRoot '~locked.deleted')) | Should -Be $false
+
+            # 清理日志：真实失败如实记 cleanup_failed，不得被谎报为成功
+            $log = Get-Content (Join-Path $global:_arbRoot 'cleanup-log.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+            @($log.entries | Where-Object { $_.id -eq 'reg_arb1' -and $_.success -eq $true }).Count | Should -Be 1
+            @($log.entries | Where-Object { $_.id -eq 'fs_arb1' -and $_.action -eq 'cleanup_failed' }).Count | Should -Be 1
+            $log.summary.succeeded | Should -Be 1
+            $log.summary.failed | Should -Be 1
+
+            # 回滚留痕：journal 状态如实（失败停 mutation_failed，成功才 mutation_succeeded）
+            $bdir = @(Get-ChildItem -Path $global:_arbRoot -Directory -Filter 'backup-*')[0].FullName
+            $j = Get-Content (Join-Path $bdir 'rollback-journal.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+            $states = @{}
+            foreach ($e in @($j.entries)) {
+                $eid = [string]$e.item_id
+                $states[$eid] = [string]$e.state
+            }
+            [string]$states["path_deleted:$locked"] | Should -Be 'mutation_failed'
+            [string]$states['registry_key:hkcu\software\wrc-arb-fixture'] | Should -Be 'mutation_succeeded'
+
+            # 回滚结果：1 恢复 / 1 不可恢复 / 0 失败
+            $r = Get-Content (Join-Path $bdir 'rollback-result.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+            $r.counts.restored | Should -Be 1
+            $r.counts.not_restorable | Should -Be 1
+            $r.counts.restore_failed | Should -Be 0
+        } finally {
+            if ($h.ToInt64() -ne -1) { [void][WrcRirLock]::CloseHandle($h) }
+        }
     }
 }
 
