@@ -304,3 +304,69 @@ that a build plus tests answers definitively in one pass.
   deletion (DD-018). And **T3 automatic recovery is the exception, not the rule** — a user who
   restarts more than 24h after a crash gets `conflict` plus recovery clues, not an automatic
   restore. That limitation is now written into REQ-024 and the design's capability ceiling.
+
+---
+
+## DR-012 — VERIFY re-check of the open medium/low findings (2026-10-07)
+
+**Context.** Both Delphi releases (DR-010, DR-011) recorded that their open **medium/low**
+findings "must be re-checked in VERIFY". This is that re-check, performed against the built
+code plus the current spec/design text (master `@ 896d0fe` with the 2026-10-07 fixes).
+
+**Scope.** 29 findings total: r21 (4), r22 (6), d1 (4), d2 (6), d3 (7), d4 (2).
+
+**Result: 27 resolved, 2 residuals recorded.**
+
+Resolved — fixed in spec/design text during the review rounds, verified present in the
+current files: REQ-021 window order ("先看窗口，再看漂移") and the T2 two-signal arbitration
+rule are now written into the normative text, not just notes; REQ-005's atomic-write
+protocol is rewritten (File.Move first write / File.Replace after; no copy-first phrase);
+REQ-019 gained the corrupt-sidecar-forensics rule ("解析失败的旁路文件…不得在 Step 1 被改写
+或删除") and the `rollback-consumed.failed.json` gate; the sign-(ii) leftover phrase is gone;
+the duplicate YAML keys are gone; AC-074 covers **both** entry points (in-process T2 and
+startup T3, compare-all-then-restore-all, cleanup phase intentionally different); AC-060
+asserts the unrepaired-list write order; the design's run_id example is a GUID with an
+explicit callout of the earlier mistake; promise wording is bounded ("bounded, not proven").
+
+Resolved — in the built implementation, verified by code inspection plus tests/drill:
+multi-journal convergence (newest consumed, older get `skipped_older_journal`; tie →
+ambiguous → 14; partial-unparsable → ambiguous — `rollback-auto.Tests.ps1:555`,
+`rollback-recovery.Tests.ps1:555/572`); suppression is evaluated as Step 2.5 but its
+outcome is gated by Step 3 self-validation, so a schema-invalid journal is rejected and can
+never be suppressed (`Get-RollbackConsumptionDecision`); exit 15's definition was broadened
+to include the unrepaired-list write (its documented meaning now: 日志落盘 / 未修复清单 /
+完成或消费标记); a mid-run flush failure stops the destructive sequence and marks the entry
+`restore_failed(unjournaled)` — the code explicitly does not claim to "return to the last
+durable point"; the unrepaired list has one writer and one schema (`Write-UnrepairedList`,
+fields `run_id`/`created_at`/`reason`/`backup_dir`/`candidate_unparseable`/`unrepaired[]`);
+the reg-export trim keeps the version header and parent-key rows (`reg import` minimum) and
+re-checks its own output; restore-point failure paths (disabled protection, Checkpoint
+failure, WMI exceptions) are covered by `create-restore-point.Tests.ps1` + exit code 4.
+The d3 falsification test demanded by the panel — crash **after** the cleanup-log write,
+**before** `completed_at` — was executed as drill5 fixture `fs_951`: suppressed, items were
+**not** reinstalled.
+
+Residual 1 (code-adjacent, open): **AC-094's aggregate `restored_with_low_confidence` is
+not implemented.** The spec requires that when **all** restorable entries are
+evidence-incomplete, the run is judged `restored_with_low_confidence` and requires human
+confirmation — "不得静默宣告完全成功". The code implements the per-entry half
+(`EvidenceIncomplete` flag in every verdict + `[evidence-incomplete]` annotation in the
+report; such entries count as restored and do not force 14), but there is no aggregate
+verdict/flag and `counts` only splits `restored`/`already_present`/`not_restorable`/
+`restore_failed` (`rollback-exec.ps1:794`). The mechanical semantics of "需人工确认" (exit
+code? UI gate?) are unspecified in the spec, so wiring it unilaterally would be a new
+design decision — deferred and flagged for the next touch of `rollback-exec.ps1`.
+
+Residual 2 (doc-note): **design §8 Q2 is stale draft text.** It still recommends per-item
+undo ("the items we could not complete plus the ones tied to them"), which contradicts
+normative REQ-024 (any partial failure restores every reversible `mutation_succeeded`
+entry). The design doc was intentionally **left unedited** so its sha256 keeps matching
+`design_hash` in `delphi-reviewed.json`; REQ-024 is normative and the built behavior follows
+it (verified by tests + drill5).
+
+**Data-quality note.** The per-round expert JSONs (r1–r22, d1–d4) were captured with a
+double-encoding defect: Chinese segments are stored mojibake and bytes 0x80–0x9F were
+stripped, so parts are irrecoverable. English text, severities, titles and REQ/AC citations
+are intact; this re-check used those plus the readable sources (spec/design/code). The full
+raw set has been synced from the sprint worktree into the main repo's `.sprint-state/delphi/`
+(it previously existed only in the worktree).

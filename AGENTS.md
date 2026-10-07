@@ -10,7 +10,7 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 287 个测试，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 710 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -258,6 +258,65 @@ F    # -> P=''      ← 不是 CALLER
 `Main` 的 `param()`，这些调用**全部静默写去默认路径**（实测一次踩掉 6 个用例）。
 现在的写法是：`Main` **不**声明这些名字，改用 `-XxxOverride` 参数显式覆盖，其余情况读作用域变量。
 
+### 9. 原生命令的 stderr 经 `2>&1` 被包成 ErrorRecord 写进**成功流**
+
+```powershell
+# ❌ 错误: cmd.exe 的 stderr（如「拒绝访问」）会被包成 ErrorRecord，
+#          与 $false 一起进入成功流 → 调用方拿到非空数组，真值恒 $true
+$deleted = Remove-ItemRobust -Path $p   # 内部: cmd /c "rd /s /q ..." 2>&1
+if (-not $deleted) { $failed++ }        # 永不触发
+
+# ✅ 正确: 显式 `$null =` 吞掉；成功流只允许携带最终布尔返回值
+$null = cmd /c "rd /s /q `"$Path`"" 2>&1
+```
+
+**影响**: drill5 实测（share=0 独占句柄锁目录）：四层降级全部失败时，`$deleted` 拿到
+`@(ErrorRecord, $false)`（Count=2），`-not $deleted` 恒为 `$false` → 被记成「删除成功」→
+`failedCount` 保持 0 → **自动回滚不触发**（REQ-002 / AC-016）。修复后用 `WrcRirLock`
+P/Invoke（`CreateFileW` share=0）写了可稳定复现的测试：断言成功流**恰好**为单个 `$false`。
+
+### 10. pwsh 7 的 `ConvertFrom-Json` 把 ISO 8601 串解析成 `[datetime]`
+
+PS 5.1 保留原字符串，pwsh 7 会解析为 `[datetime]`（与陷阱 6 同源的引擎差异，方向相反：
+那次是数组展开，这次是标量类型）。
+
+```powershell
+# ❌ 错误: pwsh 7 下 $v 已是 [datetime]，-isnot [string] 成立 → 合法输入被判「不可解析」
+$v = (Get-Content x.json -Raw | ConvertFrom-Json).timestamp
+if ($v -isnot [string]) { throw 'unparsable' }
+
+# ✅ 正确: 接受 datetime 对象
+if ($null -eq $v -or ($v -isnot [datetime] -and [string]::IsNullOrWhiteSpace([string]$v))) {
+    throw 'unparsable'
+}
+```
+
+**影响**: `rollback-journal.ps1` 的自校验在 pwsh 7 下把合法 journal 判为「不可解析」
+（修复：`cleanup_log_timestamp` 直接接受 `[datetime]`）。**测试断言同样不要依赖
+`ConvertFrom-Json` 之后的类型**——断言「可 `[datetime]::Parse`」+ 断言原始 JSON 文本。
+
+### 11. `[string]` 参数永远不可能是 `$null`——「未传」与「显式传 null」靠值区分不了
+
+```powershell
+function F { param([string]$A)
+    if ($null -eq $A) { 'is null' }   # 永不打印
+    else { "'$A'" }                    # 缺席与 -A $null 都是 ''
+}
+F            # -> ''
+F -A $null   # -> ''    ← 值完全相同
+
+# ✅ 区分「未传」与「显式传 null」只能查 $PSBoundParameters：
+if ($PSBoundParameters.ContainsKey('A')) { 'bound' } else { 'omitted' }
+```
+
+实测（PS 5.1 与 pwsh 7 一致）：省略 → `isBound=false`；`-A $null` → `isBound=true`；
+两种情况下 `$A -eq ''` 为真、`$null -eq $A` 为假。
+
+**影响**: `rollback-verdicts.ps1` 的 PATH 冲突判定曾把「两侧证据都缺席」
+（都空串 → `'' -cne ''` 为假 → 判「相等」→ 无冲突）当成「相符」，fail-open 放行恢复。
+现改用 `$PSBoundParameters.ContainsKey` 判断证据存在性，四态
+`PathCompare`（mismatch / current_null / expected_null / equal）留痕进 `rollback-result.json`。
+
 ---
 
 ## 多条件检测逻辑设计原则
@@ -292,41 +351,56 @@ Windows 文件可能被进程占用或权限锁定，需要逐级降级:
 
 ```powershell
 function Remove-ItemRobust {
-    param([string]$Path, [switch]$WhatIf)
-    if ($WhatIf) { return $true }
-    if (-not (Test-Path $Path)) { return $true }
+    param([string]$Path, [switch]$WhatIf, [ref]$Outcome)
+    $setOutcome = { param($v) if ($null -ne $Outcome) { $Outcome.Value = $v } }
+
+    if ($WhatIf) { & $setOutcome 'dry_run'; return $true }
+    if (-not (Test-Path $Path)) { & $setOutcome 'absent'; return $true }
 
     # Tier 1: 标准 PowerShell 删除
     try {
         Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
-        return $true
-    } catch { }
+        & $setOutcome 'deleted'; return $true
+    } catch { Write-Warning "  → Standard delete failed: $($_.Exception.Message)" }
 
-    # Tier 2: 夺取所有权 + 修改 ACL
+    # Tier 2: 夺取所有权 + 修改 ACL（takeown/icacls 走 Start-Process 拿真实退出码）
     try {
-        takeown /f "$Path" /r /d Y 2>$null
-        icacls "$Path" /grant Administrators:F /T /C 2>$null
+        $isDir = (Get-Item $Path).PSIsContainer
+        $takeownArgs = if ($isDir) { '/r', '/d', 'Y', '/f', $Path } else { '/f', $Path }
+        Start-Process takeown.exe -ArgumentList $takeownArgs -Wait -PassThru -WindowStyle Hidden
+        $icaclsArgs = if ($isDir) { $Path, '/grant', 'Administrators:F', '/T', '/C' }
+                      else { $Path, '/grant', 'Administrators:F', '/C' }
+        Start-Process icacls.exe -ArgumentList $icaclsArgs -Wait -PassThru -WindowStyle Hidden
         Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
-        return $true
-    } catch { }
+        & $setOutcome 'deleted'; return $true
+    } catch { Write-Warning "  → Takeown+ACL delete failed: $($_.Exception.Message)" }
 
-    # Tier 3: CMD 强制删除
+    # Tier 3: CMD 强制删除 —— 原生命令输出必须显式 $null = 吞掉（见陷阱 9）
     try {
-        cmd /c "rd /s /q `"$Path`"" 2>$null
-        if (-not (Test-Path $Path)) { return $true }
-    } catch { }
+        $null = cmd /c "rd /s /q `"$Path`"" 2>&1
+        if ($LASTEXITCODE -eq 0 -and -not (Test-Path $Path)) { & $setOutcome 'deleted'; return $true }
+    } catch { Write-Warning "  → cmd delete failed: $($_.Exception.Message)" }
 
-    # Tier 4: 重命名 + 延迟删除 (下次启动时)
+    # Tier 4: 重命名 + 延迟删除（下次启动时）—— 走 Warning，不得污染成功流
     try {
         $renamed = Join-Path (Split-Path $Path -Parent) "~$(Split-Path $Path -Leaf).deleted"
-        Rename-Item -Path $Path -NewName $renamed -Force
-        # MoveFileEx 标记延迟删除 (可选)
+        Rename-Item -Path $Path -NewName (Split-Path $renamed -Leaf) -Force -ErrorAction Stop
+        Write-Warning "  → Renamed (deferred delete - may be in use)"
+        # REQ-002: 改名不是删除（内容仍在磁盘上），必须回传 renamed:<新名>
+        & $setOutcome ('renamed:' + (Split-Path $renamed -Leaf))
         return $true
-    } catch { }
+    } catch { Write-Warning "  → Rename fallback also failed: $($_.Exception.Message)" }
 
+    & $setOutcome 'failed'
     return $false
 }
 ```
+
+契约：**成功流只允许携带最终布尔返回值**；所有诊断输出走 Warning 流；语义结果经
+`[ref]$Outcome` 回传（`dry_run` / `absent` / `deleted` / `renamed:<新名>` / `failed`），
+其中 `renamed:` **不得**被记成删除成功（REQ-002，DD-006 规定其不参与自动恢复）。
+`$deleted = Remove-ItemRobust …` 拿到的必须是**裸布尔**——任何多余输出都会让它变成
+真值恒为 `$true` 的数组（见陷阱 9）。
 
 ### 注册表路径处理 checklist
 
@@ -408,16 +482,17 @@ It 'Works against real registry data' {
   覆盖率插桩不再有「执行一行都不计入」的盲区。
 - `setup.ps1` 仍是例外：它没有 `Main`/`[ref]` 结构，末尾直接 `exit`，因此**结构性不可插桩**，
   已在 `.xp-gate-powershell-coverage-ignore` 中排除；它仍有子进程端到端测试覆盖。
-- `references/scripts` 行覆盖率 **80.0%**（1065/1331），**已达到** pre-commit 门禁的 80% 阈值
-  （ADR-001 前为 70.4%，ADR-001 后为 77%，随后靠补真实测试拉到 80.0%）。剩余 266 行缺口
-  已定位且是**结构性**的，不是「懒得写测试」：
+- `references/scripts` 行覆盖率 **83.94%**（2765/3294，16 个脚本，2026-10-07 JaCoCo 实测），
+  已超过 pre-commit 门禁的 80% 阈值（ADR-001 前为 70.4%；随后补真实测试到 80.0%；
+  自动回滚 Sprint 落地后为 83.94%）。剩余缺口已定位且是**结构性**的，不是「懒得写测试」：
   - `confirm-cleanup.ps1` —— 未覆盖行中绝大多数是 `Read-Host` 交互式 TUI 循环
     （`Show-Page` 之后的命令分发）；只有少量属于可单测范围，已补测。
-  - `clean-residuals.ps1` —— 未覆盖行集中在 `Remove-ItemRobust` 的 **tier 2-4**
-    （takeown/icacls/cmd/delayed-delete，需管理员 + ACL 受限文件）与 HKLM/PATH 写入分支。
+  - `clean-residuals.ps1` —— 未覆盖行集中在 HKLM/PATH 写入分支与 tier 2-4 的**成功**路径
+    （需管理员 + ACL 受限文件；失败路径已由 `WrcRirLock` share=0 独占锁测试覆盖）。
   这两块属于 AGENTS.md 明确划给「管理员环境集成演练」的范围，**不用 Mock 硬拉**。
-  达到 80% 靠的是把可测逻辑抽成纯函数并补真实测试，**未使用 `--no-verify`、
-  未向 `.xp-gate-powershell-coverage-ignore` 添加任何文件**。
+  达到 80%+ 靠的是把可测逻辑抽成纯函数并补真实测试，**未使用 `--no-verify`、
+  未向 `.xp-gate-powershell-coverage-ignore` 添加任何文件**（该文件至今只排除
+  `setup.ps1` 一个结构性不可插桩的脚本）。
 - **测试与门禁的双引擎要求**：pre-commit 的 Gate 5 用 **`pwsh` 7** 跑 Pester，
   而项目运行时基线是 **PS 5.1**。两者对 `ConvertFrom-Json` 的处理不同
   （见陷阱 6），因此**测试断言必须在两个引擎下都成立**。
@@ -431,11 +506,29 @@ It 'Works against real registry data' {
   powershell.exe -NoProfile -Command "Invoke-Pester tests"   # 5.1
   pwsh -NoProfile -Command "Invoke-Pester tests"             # 7（门禁用的引擎）
   ```
+- **本机工具链路径与门禁降级链（2026-10-07 实测）**：`pwsh` 7 位于
+  `C:\Users\think\AppData\Local\Microsoft\WindowsApps\pwsh.exe`，`node.exe` 位于
+  `C:\Program Files\nodejs\node.exe`——**git-bash 的 PATH 里都没有裸命令名**，`jq` 未安装。
+  钩子继承 git 的环境，工具缺席时门禁**静默降级**：Gate 5 → SKIP（跳过测试与覆盖率生成），
+  Gate 11 → SKIP（打印 "no JSON parser available"，**放行提交**）。
+  需要在钩子里拿到真实 Gate 11 时：`PATH="/c/Program Files/nodejs:$PATH" git commit …`。
+  **不要**顺手把 pwsh 加进钩子 PATH——当前文件发现不排除 `.worktrees`（见下下条）。
+- **Gate 5 的陈旧 `coverage.xml` 陷阱（2026-10-07 实测）**：hook 适配器在找不到 pwsh 时
+  跳过测试与覆盖率**生成**，但 Stage-2 仍会解析仓库根目录**既有的** `coverage.xml`
+  （只要 node 在 PATH 上）。于是旧产物会拦新提交（实测：2026-10-01 的 68% 产物拦下了
+  2026-10-07 的提交）。**不跑 pwsh 覆盖率就提交时，先手动跑一次覆盖率管线刷新
+  `coverage.xml`**（该文件已 gitignore，属于本机门禁工件）。
+- **hook 的文件发现不排除 `.worktrees` / `wrc-drill`**：适配器的 `_find_powershell_files`
+  只 prune `.git/node_modules/dist/coverage/plugins/*`，因此 `.worktrees/`（sprint 隔离
+  worktree 里的整套重复脚本与测试）与 `wrc-drill/` 的演练脚本都会被当作源文件与测试收集
+  ——测试重复执行、覆盖率被稀释。补丁（把 `-name .worktrees -o` 加进 prune 列表）位于
+  `~/.config/xp-gate` 下、需用户手工执行；补丁落地前别把 pwsh 放进钩子 PATH。
 - **测试密闭性**：`backup-*` 是 gitignored 的运行时目录。任何「非 DryRun + 走 ConfirmFile/Mode A-C」
   的清理测试都需要它存在，否则 `Main` 会在备份门提前中止。**测试必须自建自清该 fixture**，
   不得依赖主仓里遗留的 `backup-*`（否则新克隆 / CI 下会出现假绿或假红）。
   见 `tests/unit/hermeticity.Tests.ps1`、`tests/unit/rollback.Tests.ps1`（`BackupRoot` 可注入）
-  与 `scripts.Tests.ps1` 的 `backup-svcregress` fixture。
+  与 `scripts.Tests.ps1` 的 `backup-svcregress` fixture。**2026-10-07 复查**：主仓
+  `backup-*` 目录数为 0，双引擎 710 全绿——隐藏前置依赖确已消除。
 - **覆盖率门禁的口径**：`xp-gate` 的 80% 阈值写死在共享 hook 里，唯一受支持的调节手段是
   `.xp-gate-powershell-coverage-ignore`（**按文件**排除）。该文件的注释已明确写下
   「Do NOT add files here merely because they are hard to test」——所以**不要**为了过门禁
@@ -482,6 +575,28 @@ if ($MyInvocation.InvocationName -ne '.') {
 | 1 | 通用错误 | 文件未找到、解析失败 |
 | 2 | 权限错误 | 非管理员运行写入脚本 |
 | 3 | 依赖缺失 | 必需的 JSON 输入文件不存在 |
+
+**自动回滚扩展码（10–15，`clean-residuals.ps1`）**：由纯函数 `Get-CleanupExitCode`
+（`rollback-producer.ps1`）统一判定，优先级 `14 > 15 > 0 > 13 > 12 > 1 > 11 > 10`：
+
+| 退出码 | 含义 |
+|--------|------|
+| 10 | 部分失败且自动回滚**完全成功** |
+| 11 | 部分失败且回滚未完全成功（存在 `restore_failed`） |
+| 12 | 部分失败但回滚日志缺失/不可读 |
+| 13 | 部分失败且显式 `-NoAutoRollback` |
+| 14 | 上一轮日志未能安全消费，本轮**未开始**即中止（判定在本轮任何写入之前） |
+| 15 | 本轮持久化写入失败（日志落盘 / 未修复清单 / 完成或消费标记）——**终态** |
+
+「部分失败但本轮没有任何已变更记录」= 1，排在 11/10 **之前**：此时恢复端一条都不会动，
+把 0 条恢复当成「回滚完全成功」会虚报保护效果。权限(2)/输入(1)/依赖(3) 由更早的分支直接返回。
+
+`rollback.ps1 -Auto` 用 `Get-AutoRollbackExitCode` 把消费协议 Outcome 映射到同一套编码
+（`partial_restore`→11；`no_journal`/`unreadable`→12；`ambiguous`/`needs_acknowledgement`/
+`rejected`/`consumed_with_skipped`→14；`persistence_failed`→15；成功态→0；**未知 Outcome 落 14**——
+映射表没更新不得宣告成功）。`clean-residuals.ps1` 启动期 T3 的 `Get-StartupRecoveryExitCode`
+语义不同：它回答「新一轮清理能不能开始」——完整恢复（`consumed`）在此是**继续**（0），
+`persistence_failed`→15，其余未安全消费→14。
 
 退出码由 `Main` 通过 `[ref]$ExitCode` 回传，**在执行守卫处**统一 `exit`：
 
@@ -600,3 +715,29 @@ if ($MyInvocation.InvocationName -ne '.') {
     `.sprint-state/delphi-reviewed.json`。**如实记录相位，不伪造评审产物。**
   - 阻塞项 B1（测试不密闭）标记为 `resolved`，并附复查证据：本 worktree 内
     `backup-*` 目录数为 **0**，而 287 个测试全绿 —— 原先的隐藏前置依赖确已消除。
+- 2026-10-07: 自动回滚 Sprint VERIFY —— drill5 修复、双引擎 710 测试、PATH 证据留痕
+  - **真实缺陷（drill5 实测命中）**：`Remove-ItemRobust` 的 tier-3/tier-4 原生命令输出经
+    `2>&1` 被包成 ErrorRecord 写进**成功流**，调用方 `$deleted` 拿到
+    `@(ErrorRecord, $false)` 非空数组（真值恒 `$true`）→ 四层全失败被记「删除成功」→
+    `failedCount=0` → **自动回滚不触发**（REQ-002 / AC-016）。修复（`def77d9`）：
+    tier-3 显式 `$null =` 吞输出、tier-4 走 `Write-Warning`；新增 `WrcRirLock`
+    P/Invoke share=0 独占锁测试（断言成功流**恰为**单个 `$false`）+ 进程内自动回滚
+    链路集成测试（期望 rc=10）。见陷阱 9。
+  - **PATH 冲突判定 fail-open 关闭（`0d7b658`）**：`rollback-verdicts.ps1` 曾把
+    「两侧证据都缺席」（`'' -cne ''` 为假）当「相符」放行恢复。改用
+    `$PSBoundParameters.ContainsKey` 判证据存在性，四态 `PathCompare`（mismatch /
+    current_null / expected_null / equal）与两侧值留痕进 `rollback-result.json`。
+    见陷阱 11。
+  - **pwsh 7 兼容修复（`b613d71`）**：journal 自校验把 pwsh 7 反序列化出的合法
+    `[datetime]` 判为「不可解析」，现直接接受。见陷阱 10。
+  - **管理员真实演练（drill5，2026-10-07 21:41，用户已授权）**：23 项检查 18 项通过。
+    share=0 锁目录的不变量全部通过（tier-4 改名未伪装成功、journal 如实记
+    `mutation_failed`、清理摘要 6/5/1）。5 项失败全部级联自同一起点：PATH 条目
+    `pe_951` 的恢复被自我校验拒绝（`conflict(external_change_sign_iii)`，fail-closed）
+    → rc=11（期望 10）、`completed_at` 未写、PATH 段未回填（drill 自身 finally 已把
+    PATH 还原为字节一致）。该冲突未能在后续受控复现中重现，且当时的报告未记录比较
+    两侧的值——本次落地的证据字段（`0d7b658`）即为让下次发生可诊断。
+  - 测试数 287 → **710**（PS 5.1 与 pwsh 7 双引擎均 710/710 通过）；`references/scripts`
+    行覆盖率 80.0% → **83.94%**（2765/3294，16 脚本）。
+  - 陷阱清单新增第 9/10/11 条；退出码规范补 10–15 自动回滚矩阵。
+  - `wrc-drill/`（drill3/4/5 + rdlab + teardown）仍为 untracked，去向待定。

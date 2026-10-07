@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 自动回滚 Sprint VERIFY：drill5 修复、双引擎 710 测试、PATH 证据留痕（2026-10-07）
+
+管理员真实演练（drill5）暴露了一个**把失败记成成功**的真实缺陷与一个 fail-open，
+两者都已修复且带回归测试。修复后的复跑 23 项检查 18 项通过，其余 5 项失败全部级联自
+一个不可重现的 PATH 冲突——本轮把该冲突的比较证据做成留痕字段，下次发生即可诊断。
+
+- **删除失败被记成「删除成功」→ 自动回滚不触发（Critical，drill5 实测）**：
+  `Remove-ItemRobust` 的 tier-3/tier-4 原生命令输出经 `2>&1` 被包成 ErrorRecord 写进
+  **成功流**，调用方 `$deleted = Remove-ItemRobust …` 拿到 `@(ErrorRecord, $false)`
+  非空数组（真值恒 `$true`），`-not $deleted` 恒为 `$false` → 四层降级全失败却被记
+  「删除成功」、`failedCount=0`、**自动回滚不触发**。drill5 用 `CreateFileW` share=0
+  独占句柄锁目录稳定复现。修复：tier-3 显式 `$null =` 吞输出、tier-4 改
+  `Write-Warning`；新增 `WrcRirLock` P/Invoke 测试（断言成功流**恰为**单个 `$false`）
+  与进程内自动回滚链路集成测试（期望 rc=10）。
+- **PATH 冲突判定 fail-open 关闭**：`rollback-verdicts.ps1` 把「两侧证据都缺席」
+  （`'' -cne ''` 为假）当成「相符」→ 无冲突 → 放行恢复；根因是 `[string]` 参数
+  永远不可能为 `$null`。改用 `$PSBoundParameters.ContainsKey` 判证据存在性，并把四态
+  比较结果（`mismatch` / `current_null` / `expected_null` / `equal`）与两侧值写入
+  `rollback-result.json`。drill5 的 `pe_951` 冲突（`conflict(external_change_sign_iii)`，
+  恢复端 fail-closed 拒绝了 PATH 段回填）正是因缺这份证据而无法归因，且**后续受控复现
+  未再见**；该字段落地后下次发生即可诊断。
+- **pwsh 7 下 journal 自校验误杀**：pwsh 7 的 `ConvertFrom-Json` 会把 ISO 8601 串
+  解析成 `[datetime]`，自校验此前据此判「不可解析」。现直接接受 datetime 对象；相关断言
+  改为「可 `[datetime]::Parse` + 原始 JSON 文本」，双引擎下都成立。
+- 验证口径：测试 287 → **710**（PS 5.1 与 pwsh 7 均 710/710 通过，5.1 全量 118s）；
+  JaCoCo 行覆盖率 **83.94%**（2765/3294，16 个脚本，`references/scripts` 范围）。
+- **更正**（不修改历史条目）：上文 T5 条目末尾所记「pwsh 7 本机未安装 ⇒ 双引擎契约本次
+  未验证」仅对 T5 那一次提交成立；pwsh 7 现已可用（本机路径见 AGENTS.md），T5 之后的
+  修改均按双引擎验证。
+- 环境备注（本机门禁）：Gate 5 需要 pwsh 在钩子 PATH 上、Gate 11 需要 jq/node，缺席时
+  会**静默降级为 SKIP**；另注意 Gate 5 Stage-2 会解析**仓库根目录既有的** `coverage.xml`
+  ——不跑覆盖率就提交时，先手动刷新该文件，否则可能被旧产物误拦（2026-10-07 实测踩坑）。
+
 ### 自动回滚 Sprint T5：UI 诚实口径（2026-10-06）
 
 一个以「可恢复」为卖点的工具，此前在 UI 里把**没承诺过的那一层**写成了承诺：
