@@ -10,7 +10,7 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 710 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 727 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -317,6 +317,65 @@ if ($PSBoundParameters.ContainsKey('A')) { 'bound' } else { 'omitted' }
 现改用 `$PSBoundParameters.ContainsKey` 判断证据存在性，四态
 `PathCompare`（mismatch / current_null / expected_null / equal）留痕进 `rollback-result.json`。
 
+> **同一陷阱的「注入接缝」变体（2026-10-08，drill5 根因）**：判断「调用方有没有注入 override」时，
+> `$null -ne $XxxOverride` 在 `[string]` 参数上**恒为真**，于是「未注入」被读成「注入了空值」，
+> 真实的系统读取分支被整条跳过。这类缺陷**单测永远看不到**——Mock/fixture 用例本来就显式传了
+> override，只有真实机器上不传才暴露（drill5 因此每个 `path_entry` 都被拒为
+> `conflict(external_change_sign_iii)`，rc=11）。凡有「注入接缝」（可覆盖真实读取的参数），
+> 存在性一律用 `$PSBoundParameters.ContainsKey`，且转发层同样要用它（否则上一层的
+> `$null -ne` 会把空串继续往下伪装）；并补一条「不传 ⇒ 必须读到活系统值」的端到端断言。
+
+---
+
+### 12. 跑 Pester 的包装脚本里设 `$ErrorActionPreference = 'Stop'` 会**凭空造出失败**
+
+本项目不少用例**故意**触发非终止错误（`Write-Error` / `-ErrorAction SilentlyContinue` 的失败分支）
+再断言其行为。Pester 宿主默认把这类错误记为 Warning 继续跑；一旦外层包装脚本设了 `Stop`，
+它们变成**终止错误**，用例即判失败。
+
+```powershell
+# ❌ 错误: 本地覆盖率/验证包装脚本里加这一行
+$ErrorActionPreference = 'Stop'
+Invoke-Pester -Configuration $cfg     # 实测凭空 30 个失败，行覆盖率被压到 79.63%
+
+# ✅ 正确: 不设该偏好（钩子适配器的片段同样不设，所以只有本地包装会骗人）
+$cfg = New-PesterConfiguration
+$cfg.Run.Path = 'tests'
+$cfg.Run.PassThru = $true
+Invoke-Pester -Configuration $cfg
+```
+
+症状是「同一份代码，钩子跑绿、本地跑红（或反之），且失败集合恰好是 error-action 敏感的那一类」
+（本项目为 `hermeticity` 契约、`Test-AdminPrivilege`、`run-all` 传播、Mode D）。
+**排查顺序**：先看宿主偏好，再怀疑代码。
+
+---
+
+### 13. Pester 5 的 `It` 标题里 `<...>` 是数据占位符；`BeforeDiscovery` 造的 `-ForEach` 数据不可用
+
+```powershell
+# ❌ 错误: 标题含非 ASCII 占位符 —— Pester 会对标题做 <> 替换后重新
+#          [ScriptBlock]::Create，得到坏字符串并抛
+#          "Exception calling "Create" ... The string is missing the terminator"
+It '每个 Main 内都没有 return <数字>' -ForEach $cases { ... }
+
+# ❌ 错误: -ForEach 数据在 BeforeDiscovery 里构造
+BeforeDiscovery { $script:C = @(...) }
+It 'x' -ForEach $script:C { ... }    # 实测拿不到数据（Count=1 / 标题未替换）
+```
+
+```powershell
+# ✅ 正确: 标题里不写尖括号；数据在 BeforeAll 构造，循环写在用例内部
+It '每个 Main 内都没有 return 数字常量' {
+    foreach ($c in $script:C) { … accumulate $violations … }
+    $violations | Should -BeNullOrEmpty
+}
+```
+
+**影响**: `tests/unit/hermeticity.Tests.ps1` 把 ADR-001 契约做成穷举时先踩了这两个坑
+（12 个失败、标题未替换），改用「`BeforeAll` 造数据 + 用例内循环 + 汇总违规断言」后稳定。
+附带好处：失败信息直接列出**全部**违规文件，而不是只报第一个。
+
 ---
 
 ## 多条件检测逻辑设计原则
@@ -477,22 +536,29 @@ It 'Works against real registry data' {
   `[ref]` 回传（ADR-001），所以「在 Pester 进程内调用会杀死宿主」这一障碍**已消除**；
   剩下的只是 `Read-Host` 本身需要重定向 stdin 才能驱动。
 - ~~任何 `Main` 内含 `exit` 的脚本都不能在 Pester 进程内直接调用~~
-  → **已于 2026-10-01 修复（ADR-001）**：全部 8 个含 `Main` 的脚本都不再于 `Main` 内 `exit`，
-  改为 `[ref]$ExitCode` 回传。因此「dot-source + 进程内调用 `Main`」对**所有**脚本都可用，
-  覆盖率插桩不再有「执行一行都不计入」的盲区。
-- `setup.ps1` 仍是例外：它没有 `Main`/`[ref]` 结构，末尾直接 `exit`，因此**结构性不可插桩**，
-  已在 `.xp-gate-powershell-coverage-ignore` 中排除；它仍有子进程端到端测试覆盖。
-- `references/scripts` 行覆盖率 **83.94%**（2765/3294，16 个脚本，2026-10-07 JaCoCo 实测），
-  已超过 pre-commit 门禁的 80% 阈值（ADR-001 前为 70.4%；随后补真实测试到 80.0%；
-  自动回滚 Sprint 落地后为 83.94%）。剩余缺口已定位且是**结构性**的，不是「懒得写测试」：
+  → **已于 2026-10-01 修复（ADR-001）**：全部含 `Main` 的脚本（现 **11 个**：`references/scripts` 下
+  10 个 + 根目录 `setup.ps1`）都不再于 `Main` 内 `exit`，改为 `[ref]$ExitCode` 回传。
+  因此「dot-source + 进程内调用 `Main`」对**所有**脚本都可用，覆盖率插桩不再有
+  「执行一行都不计入」的盲区。该契约现为**穷举式 AST 断言**（`tests/unit/hermeticity.Tests.ps1`），
+  新增脚本一旦违反即在门禁变红。
+- ~~`setup.ps1` 是例外：没有 `Main`/`[ref]` 结构、结构性不可插桩，已在
+  `.xp-gate-powershell-coverage-ignore` 中排除~~ → **2026-10-08 修正**：那条豁免**是把代码缺陷
+  写成了结构性限制**。`setup.ps1` 现已重构为 `function Main` + `param([ref]$ExitCode)` +
+  统一守卫（唯一注入接缝 `-PSVersionOverride`，用于测「环境不满足 → 回传 1」），
+  可在 Pester 进程内插桩；`.xp-gate-powershell-coverage-ignore` 现为**空列表**。
+  子进程端到端用例仍保留（验证真实 `exit` 码与输出）。
+- `references/scripts` + `setup.ps1` 行覆盖率 **84.08%**（2804/3335，**17 个文件**，
+  2026-10-08 JaCoCo 实测），已超过 pre-commit 门禁的 80% 阈值（ADR-001 前为 70.4%；
+  随后补真实测试到 80.0%；自动回滚 Sprint 落地后为 83.94%（2765/3294，16 个文件）；
+  `setup.ps1` 摘掉豁免后为 84.08%）。剩余缺口已定位且是**结构性**的，不是「懒得写测试」：
   - `confirm-cleanup.ps1` —— 未覆盖行中绝大多数是 `Read-Host` 交互式 TUI 循环
     （`Show-Page` 之后的命令分发）；只有少量属于可单测范围，已补测。
   - `clean-residuals.ps1` —— 未覆盖行集中在 HKLM/PATH 写入分支与 tier 2-4 的**成功**路径
     （需管理员 + ACL 受限文件；失败路径已由 `WrcRirLock` share=0 独占锁测试覆盖）。
   这两块属于 AGENTS.md 明确划给「管理员环境集成演练」的范围，**不用 Mock 硬拉**。
   达到 80%+ 靠的是把可测逻辑抽成纯函数并补真实测试，**未使用 `--no-verify`、
-  未向 `.xp-gate-powershell-coverage-ignore` 添加任何文件**（该文件至今只排除
-  `setup.ps1` 一个结构性不可插桩的脚本）。
+  未向 `.xp-gate-powershell-coverage-ignore` 添加任何文件**（该文件现已**不排除任何文件**；
+  历史上进过列表的唯一一项 `setup.ps1` 于 2026-10-08 以重构方式解决）。
 - **测试与门禁的双引擎要求**：pre-commit 的 Gate 5 用 **`pwsh` 7** 跑 Pester，
   而项目运行时基线是 **PS 5.1**。两者对 `ConvertFrom-Json` 的处理不同
   （见陷阱 6），因此**测试断言必须在两个引擎下都成立**。
@@ -542,6 +608,9 @@ It 'Works against real registry data' {
   而把 `clean-residuals.ps1` / `confirm-cleanup.ps1` 整文件排除：那会连同已覆盖的
   163/170 行一起丢掉。正确方向是把可测逻辑抽成纯函数（`ConvertFrom-*`、`Get-*Verdict`、
   `Get-MatchingRestorePoint` 等，本次已示范）并补测。
+  **判断口径**：若某脚本看起来「结构性不可插桩」，先怀疑它违反了 ADR-001（`Main` 内 `exit`），
+  而不是往列表里加一行——`setup.ps1` 正是这样一条被写成豁免的代码缺陷，2026-10-08 已重构消除，
+  该文件现为空列表。
 
 ---
 
@@ -549,7 +618,8 @@ It 'Works against real registry data' {
 
 ### 函数/执行分离模式
 
-`references/scripts/` 下全部 10 个脚本统一使用函数/执行分离模式，确保可测试性（dot-source 只加载函数定义，不触发任何副作用）：
+`references/scripts/` 下全部 10 个含 `Main` 的脚本 + 根目录 `setup.ps1`（共 **11 个**）统一使用
+函数/执行分离模式，确保可测试性（dot-source 只加载函数定义，不触发任何副作用）：
 
 ```powershell
 function Main {
@@ -604,6 +674,28 @@ if ($MyInvocation.InvocationName -ne '.') {
 映射表没更新不得宣告成功）。`clean-residuals.ps1` 启动期 T3 的 `Get-StartupRecoveryExitCode`
 语义不同：它回答「新一轮清理能不能开始」——完整恢复（`consumed`）在此是**继续**（0），
 `persistence_failed`→15，其余未安全消费→14。
+
+**完成标记（`completed_at`）的抑制判定** —— 由纯函数 `Test-CompletionMarkerSuppressed`
+（`rollback-producer.ps1`）统一回答，判据只有一个问题：**系统此刻是否仍有本轮没能修复的改动**。
+`completed_at` 的语义是「本轮清理已正常结束」，写下去就等于告诉下一次启动「这轮不用再管」，
+T3 便永不再尝试恢复。例外只有两类：
+
+| 退出码 | 是否写 `completed_at` | 原因 |
+|--------|----------------------|------|
+| 11 | **不写** | 回滚跑过但有 `restore_failed` |
+| 15 且 (a) `restore_failed > 0` | **不写** | 回滚没修完 |
+| 15 且 (b) 未记账变更 > 0 | **不写** | 变更日志落盘失败（AC-052），恢复端一条都看不到 |
+| 15 且 (c) `failedCount > 0` 且 `$rollbackAttempted` 为假 | **不写** | 清理有失败，而 T2 因持久化早退**整轮没跑** |
+| 15 且本轮无任何失败 | 写（尽力补） | 该轮是干净的，留 `null` 会让下次 T3 把刚清掉的残留**重新装回去**（REQ-024 规则 3） |
+| 0 / 1 / 10 / 12 / 13 | 写 | 正常结束的终态 |
+| 14 | 不参与 | 本轮未开始即中止，没有本轮日志 |
+
+> **为什么 (c) 不可省略**：每个中途失败点都先置 `$persistenceError = $true` 再 `break`，而
+> `clean-residuals.ps1:1195` 在 `$persistenceError` 已置真时**跳过 T2** —— 因此**每个 15 的
+> `restore_failed` 恒为 0**。只写「15 且 `restore_failed > 0`」的窄判据是**不可达代码**，
+> 会把「有失败但整轮没回滚」这一最常见形状照常标记为完成（2026-10-08 实测盲区，已修）。
+> 调用方需为此提供 `$rollbackAttempted` 接缝（`clean-residuals.ps1:1191/1205`），
+> 不能靠 `restoreFailed` 反推。
 
 退出码由 `Main` 通过 `[ref]$ExitCode` 回传，**在执行守卫处**统一 `exit`：
 
@@ -747,4 +839,35 @@ if ($MyInvocation.InvocationName -ne '.') {
   - 测试数 287 → **710**（PS 5.1 与 pwsh 7 双引擎均 710/710 通过）；`references/scripts`
     行覆盖率 80.0% → **83.94%**（2765/3294，16 脚本）。
   - 陷阱清单新增第 9/10/11 条；退出码规范补 10–15 自动回滚矩阵。
-  - `wrc-drill/`（drill3/4/5 + rdlab + teardown）仍为 untracked，去向待定。
+  - `wrc-drill/`（drill3/4/5 + rdlab + teardown）**按用户决定保持 untracked**（本机管理员演练
+    脚手架，会创建真实服务/PATH/注册表对象，不进仓）。
+- 2026-10-08: 自动回滚 Sprint 收尾 —— drill5 根因、CORS 收紧、REQ-031 盲区、setup.ps1 摘豁免
+  - **drill5 根因定位（`12bf152`，Critical）**：`$null -ne $MachinePathOverride` 在三处
+    （两处转发 + 一处读取）把「未注入」读成「注入了空 PATH」，跳过真实注册表读取 →
+    每个 `path_entry` 恒被 fail-closed 拒为 `conflict(external_change_sign_iii)` →
+    2026-10-07 那 5 项级联失败（rc=11、PATH 未回填、`completed_at` 为空）由此解释并消除。
+    这是陷阱 11 的**注入接缝**变体：Mock 用例本来就传 override，所以单测永远看不到。
+    存在性改用 `$PSBoundParameters.ContainsKey`，并钉住「不传 ⇒ 读到活系统值」的端到端断言。
+  - **UI CORS 收紧（`d2cd8c6`，Security）**：loopback 服务上的 `app.use(cors())` 发出
+    `Access-Control-Allow-Origin: *`，而它的 POST 路由会拉起**管理员权限的破坏性 PowerShell** ——
+    用户打开的任意页面都能触发清理并读回结果。改为 `ui/server/security.cjs` 的同源守卫
+    （放行同源 / vite dev 源 / 无 Origin 头的本地客户端，拒绝非 loopback `Host` 头以挡 DNS
+    rebinding）、`/api/confirm` 按报告形状校验 id、`/api/status` 不再泄露项目根。
+  - **REQ-031 的 15 号盲区（`fec90f6` + 规范修订 `5dd0a17`）**：只有 11 会跳过写 `completed_at`，
+    于是 rc=15 照常标记「本轮已正常结束」，而 T3 只吃未完成日志 —— 下一轮的恢复机会被永久抹掉。
+    新增纯函数 `Test-CompletionMarkerSuppressed`，按「系统此刻是否仍有本轮没能修复的改动」判定，
+    覆盖 (a) `restore_failed>0` / (b) 未记账变更>0 / (c) `failedCount>0` 且回滚整轮未跑 三种形状；
+    其中 (c) 是必须的，因为 `$persistenceError` 会让 T2 整轮跳过，导致**每个 15 的
+    `restore_failed` 恒为 0**（只写 (a) 是不可达代码）。见「退出码规范」的完成标记表。
+  - **setup.ps1 摘掉覆盖率豁免（`721cada`）**：`.xp-gate-powershell-coverage-ignore` 里唯一一项
+    把「违反 ADR-001」写成了「结构性不可插桩」。现已重构为 `Main` + `[ref]$ExitCode` +
+    `-PSVersionOverride` 接缝，该忽略列表为**空**；`hermeticity.Tests.ps1` 的 ADR-001 契约
+    改成对**所有含 `function Main` 的脚本**（现 11 个）穷举 AST 断言，防止同类债再长回来。
+  - **管理员真实演练复跑（drill5，2026-10-08 09:43，用户已授权 UAC）**：23 项检查 **23 项通过**，
+    `pe_951` 的 `path_entry=restored`、rc=10、计数 3/0/3/0、journal 写出 `completed_at`、
+    机器 PATH 回合 `-ceq` 字节一致；share=0 锁目录不变量继续通过。
+  - 陷阱清单新增第 12/13 条（Pester 宿主偏好会凭空造失败；`It` 标题尖括号 + `BeforeDiscovery`
+    的 `-ForEach` 数据不可用）；测试数 710 → **727**（双引擎各 727/727）；行覆盖率
+    83.94%（2765/3294，16 脚本）→ **84.08%（2804/3335，17 文件）**；PSScriptAnalyzer 维持 0。
+  - 未复现抖动如实记录：pwsh 7 一次全量运行报 720/1，随后两次同样运行 721/0、定向 5 轮各 243/0，
+    本次收尾双引擎复跑 727/727；未能定位到具体用例，判为环境级争用。

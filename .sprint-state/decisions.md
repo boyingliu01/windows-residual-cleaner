@@ -370,3 +370,79 @@ stripped, so parts are irrecoverable. English text, severities, titles and REQ/A
 are intact; this re-check used those plus the readable sources (spec/design/code). The full
 raw set has been synced from the sprint worktree into the main repo's `.sprint-state/delphi/`
 (it previously existed only in the worktree).
+
+## DR-013 — REQ-031's completion marker under exit code 15 (2026-10-08)
+
+**Context.** REQ-031 / AC-070 exempt **only exit code 11** from writing `completed_at`; every
+other terminal code marks the journal complete. Startup T3 recovery consumes **unfinished**
+journals only, so a written marker permanently removes the next launch's chance to restore.
+Exit 15 (this run's persistence write failed) is exactly a state where damage can remain
+unrepaired while the marker still gets written.
+
+**Question.** Follow the letter (only 11) or the intent (never mark a still-damaged round done)?
+
+**Options**: (A) keep the literal rule; (B) amend per intent — suppress the marker while this
+round's changes are still unrepaired, and amend REQ-031 in the spec; (C) suppress for all 15.
+
+**Choice**: **B** (user ruling: 按精神补判定：仍受损就不写标记).
+
+**Key finding during implementation.** The narrow rule "15 && `restore_failed > 0`" is
+**unreachable code**: every mid-run failure site sets `$persistenceError = $true` before
+`break`, and `clean-residuals.ps1:1195` skips T2 entirely once that flag is set — so **every**
+exit 15 has `restore_failed == 0`. Damage under 15 therefore had to be expressed as three
+shapes: (a) `restore_failed > 0`; (b) un-journaled mutations > 0 (AC-052 — the recovery side
+sees nothing); (c) `failedCount > 0` **and** the rollback never ran, which required a new
+`$rollbackAttempted` seam in `Main` (it cannot be inferred from `restoreFailed`).
+
+**Outcome**. Pure predicate `Test-CompletionMarkerSuppressed` (`rollback-producer.ps1`) is the
+single answer to the question "is the system still carrying changes this round failed to fix";
+`completed_at == null` for 11 and for 15(a)/(b)/(c), written otherwise (a clean 15 round must
+still be marked, or the next T3 reinstalls what was correctly removed — REQ-024 rule 3).
+Code `fec90f6`, spec amendment `5dd0a17`. Tests: 8 predicate cases plus a `Main`-level
+integration case that forces 15(c) by planting `cleanup-log.json` as a **directory**, asserted
+against a **negative control** (the case goes red without the fix).
+
+## DR-014 — setup.ps1 was exempted from coverage for the wrong reason (2026-10-08)
+
+**Context.** `.xp-gate-powershell-coverage-ignore` contained exactly one entry, `setup.ps1`,
+justified as "structurally uninstrumentable: its Main ends in `exit`, which kills the Pester
+host". AGENTS.md repeated that justification in 已知限制.
+
+**Question.** Keep the exemption, or treat it as the code defect it actually was?
+
+**Options**: (A) refactor `setup.ps1` to ADR-001 (`function Main` + `param([ref]$ExitCode)` +
+one injection seam), measure it, empty the ignore list; (B) leave the exemption and its note;
+(C) leave it but add more scripts to the list as coverage work gets hard.
+
+**Choice**: **A** (user ruling: 本 sprint 重构为 Main + [ref]$ExitCode).
+
+**Rationale.** The exemption dressed up an **ADR-001 violation** as a structural limit: the
+same "cannot be instrumented" claim had already been disproved for 8 other scripts by the
+2026-10-01 refactor. C was rejected on the ignore file's own rule ("Do NOT add files here
+merely because they are hard to test").
+
+**Outcome** (`721cada`). `setup.ps1` now has `Main` + `[ref]$ExitCode` + the uniform guard, with
+`-PSVersionOverride` as its only seam (so "environment not satisfied → 1" is testable); the
+ignore list is **empty**; the child-process end-to-end case is kept (it proves the real
+process `exit` code). The ADR-001 contract in `tests/unit/hermeticity.Tests.ps1` was turned
+into an **exhaustive** AST sweep over every script containing `function Main` (currently 11:
+10 under `references/scripts` + `setup.ps1`) — previously it named only 2 scripts, which is
+precisely how this debt survived. Line coverage 83.94% (2765/3294, 16 files) →
+**84.08% (2804/3335, 17 files)**.
+
+## DR-015 — drill5 elevated re-run authorized; wrc-drill stays out of the repo (2026-10-08)
+
+**Context.** DR-004 requires the user to run/authorize every real-machine destructive/admin
+action. The 2026-10-07 drill ended 18/23, its 5 failures cascading from one PATH-entry restore
+refused as `conflict(external_change_sign_iii)` that controlled reproduction could not
+recreate. `12bf152` root-caused it (an unbound `[string]` override read as "injected as empty"
+masked the live registry read — AGENTS.md trap 11's injection-seam variant).
+
+**Choice.** User authorized an immediate elevated re-run and completed the UAC prompt
+(推荐: 现在跑，我点 UAC). Result: **23/23 PASS**, `pe_951` restored, rc=10 with counts
+3/0/3/0, machine PATH byte-identical after the drill's own finally-round-trip check.
+
+**Disposition of `wrc-drill/`.** Stays **untracked** by user decision: the drills create real
+services, machine-PATH segments and registry keys on the developer's own machine, their safety
+depends on running them by hand under UAC, and committing them would invite an agent to run
+them unattended. AGENTS.md 变更历史 now records that disposition instead of "去向待定".

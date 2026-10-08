@@ -4,6 +4,78 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 自动回滚 Sprint 收尾：drill5 根因定位、CORS 通配收紧、REQ-031 的 15 号盲区、setup.ps1 摘掉豁免（2026-10-08）
+
+收尾共落地 **4 个真实缺陷**：一个让自动回滚保护在最需要时失效，一个把外部页面接到管理员破坏性
+接口上，一个让「本轮未修复」被写成「本轮已结束」，一个把代码缺陷写成结构性豁免。
+管理员真实演练（drill5）复跑 **23 项 23 通过**。
+
+- **PATH 恢复在真实机器上恒被拒（Critical，drill5 根因，`12bf152`）**：陷阱 11 的**注入接缝**变体。
+  `[string]$MachinePathOverride` 未传时是空串而**不是** `$null`，于是三处
+  `$null -ne $MachinePathOverride`（两处转发 + 一处读取）把「未注入」读成「注入了空 PATH」，
+  **跳过了真实的注册表读取**；迹象 (iii) 因此恒拿 `''` 与预期整串比较 → 恒 `mismatch` →
+  每个 `path_entry` 都被 fail-closed 拒为 `conflict(external_change_sign_iii)`。
+  这正是 2026-10-07 drill5 那 5 项级联失败的唯一起点（rc=11、PATH 段未回填、`completed_at` 为空），
+  当时记为「后续受控复现未再见」——**Mock 测试永远看不到，因为它们本来就传了 override**。
+  修复：存在性一律改 `$PSBoundParameters.ContainsKey(...)`，并把「未注入 ⇒ 必须读到活注册表值」
+  钉成端到端断言（`rollback-auto` / `rollback-exec` 各一组）。
+- **UI 服务端从通配 CORS 改为同源守卫（Security，`d2cd8c6`）**：`app.use(cors())` 在一个
+  **只监听 loopback、但 POST 路由会拉起管理员权限破坏性 PowerShell** 的服务上发
+  `Access-Control-Allow-Origin: *`——用户打开的任意页面都能触发一次清理**并读回流式结果**。
+  dev 走 vite 代理、生产同源，本就不需要 CORS。现由 `ui/server/security.cjs` 的
+  `createOriginGuard` 只放行同源 / vite dev 源 / 无 Origin 头的本地客户端，拒绝外来 Origin，
+  并拒绝非 loopback 的 `Host` 头（DNS rebinding）；`/api/confirm` 用 `validateItemIds`
+  按报告形状校验 id，不再把任意字符串交给 `clean-residuals.ps1`；`/api/status` 不再泄露项目根路径。
+- **REQ-031 的 15 号盲区（Critical，`fec90f6` + 规范修订 `5dd0a17`）：持久化失败仍写 `completed_at`，
+  下一轮 T3 机会被永久抹掉**。`completed_at` 的语义是「本轮清理已正常结束」，不是「回滚已执行」。
+  此前只有 `11` 会跳过写标记，于是 **rc=15**（本轮持久化写入失败）照常落完成标记——而 15
+  恰恰可能伴随「系统仍有本轮没修复的改动」。T3 启动期恢复只吃**未完成**的日志，标记一写，
+  下一次启动就再也不会尝试恢复。修复：新增纯函数 `Test-CompletionMarkerSuppressed`
+  （`rollback-producer.ps1`），判据只有一个问题——**系统此刻是否仍有本轮没能修复的改动**：
+  - (a) `restore_failed > 0`；(b) 未记账的变更 > 0；
+  - (c) `failedCount > 0` **且回滚从未尝试**（`clean-residuals.ps1` 新引入 `$rollbackAttempted` 接缝）。
+  **为什么必须有 (c)**：每个中途失败点都先置 `$persistenceError = $true` 再 `break`，而
+  `clean-residuals.ps1:1195` 在 `$persistenceError` 已置真时**跳过 T2**，所以**每个 15 的
+  `restore_failed` 恒为 0**——只写 (a) 的窄判据是不可达代码。这一点是复核时发现的，
+  不是先想到再补的。
+  - 测试：`rollback-producer.Tests.ps1` 8 个用例覆盖三形状 + 14 无对象 + 0/1/10/12/13 一律写；
+    `scripts.Tests.ps1` 用「把 `cleanup-log.json` 占位成目录」稳定复现 15(c)，断言日志保持
+    `"completed_at": null`、无 `rollback-result.json`、注册表项未被恢复，并跑过**负向对照**
+    （去掉修复即变红），避免断言靠环境碰巧成立。
+- **`setup.ps1` 摘掉覆盖率豁免（`721cada`）：那是把代码缺陷写成「结构性不可插桩」（ADR-001）**。
+  它原先是 `.xp-gate-powershell-coverage-ignore` 里**唯一**一项，理由写作「`Main` 末尾的 `exit`
+  会杀死 Pester 宿主，因此结构上无法插桩」。真相是：**它根本没有 `Main`/`[ref]` 结构**，
+  而同一缺陷在其余脚本已于 2026-10-01（ADR-001）修好——「难测」不是「不可测」。
+  重构后：`function Main` + `param([ref]$ExitCode)` + 守卫统一 `exit`，只留一个注入接缝
+  `-PSVersionOverride`（让「环境不满足 → 回传 1」可测）；`.xp-gate-powershell-coverage-ignore`
+  现为**空列表**（只保留注释说明这段教训）。
+- **把契约做成穷举，这类债不能再悄悄长回来**：`tests/unit/hermeticity.Tests.ps1` 原先只对
+  2 个脚本做 ADR-001 断言，`setup.ps1` 因此能在 `Main` 里留 `exit` 而无人拦得住。
+  现改为对**每个含 `function Main` 的脚本**（当前 11 个：10 个 `references/scripts/*.ps1` + `setup.ps1`）
+  做 AST 断言：`Main` 内 0 处 `exit`、0 处 `return 数字常量`、执行守卫以 `[ref]` 接住退出码再 `exit`；
+  并断言清单本身不为空（≥8）。新增脚本一旦违反即在门禁变红。
+- **drill5 管理员复跑：23 项 23 通过（2026-10-08，用户已授权 UAC）**。上一条 PATH 根因修复后，
+  2026-10-07 的 5 项级联失败全部消失：`pe_951` 的 `path_entry=restored`、rc=10、
+  计数 3/0/3/0、journal 写出 `completed_at`、机器 PATH 回合 `-ceq` 字节一致。
+  share=0 锁目录的全部不变量继续通过（tier-4 改名未伪装成删除、journal 如实记 `mutation_failed`）。
+- **验证口径更新**：测试 710 → **727**（PS 5.1 与 pwsh 7 双引擎各 727/727，0 失败）；
+  JaCoCo 行覆盖率 83.94%（2765/3294，16 脚本）→ **84.08%（2804/3335，17 个文件：
+  `references/scripts` 16 个 + 现已可插桩的 `setup.ps1`）**；PSScriptAnalyzer 带设置文件
+  对 `references/scripts` 与 `setup.ps1` 均 **0 条**；UI 侧 vitest **9 文件 / 59 通过**
+  （含新增 `ui/server/security.test.mjs` 10 例：同源守卫与 id 校验）。
+- **新增陷阱 12/13（测试宿主侧，都会造出「数字看起来不对」的假象）**：
+  覆盖率刷新包装脚本里写 `$ErrorActionPreference = 'Stop'` 会把 Pester 的**非终止错误**
+  （测试内故意触发的 `Write-Error`）变成失败——实测凭空造出 30 个失败、并把行覆盖率压到 79.63%；
+  钩子适配器自己的片段并不设该偏好，所以只有本地包装会骗人。另一条：Pester 5 会把 `It` 标题里的
+  `<...>` 当数据占位符，非 ASCII 的 `<数字>` 会让 Pester 重新 `[ScriptBlock]::Create` 出坏字符串并抛
+  「string is missing the terminator」；`BeforeDiscovery` 里构造的 `-ForEach` 数据本次实测不可用，
+  改为 `BeforeAll` 构造 + 用例内循环。
+- **如实记录一次未复现的抖动（不做掩盖）**：pwsh 7 一次全量运行报 `720 passed / 1 failed`
+  （总数 721，即补 REQ-031 用例之前的规模），随后两次同样运行 721/0，且对
+  `scripts` / `rollback-auto` / `rollback-exec` / `permission-gates` 做 5 轮定向复跑各 243/0；
+  本次收尾的双引擎全量复跑亦为 727/727。未能定位到具体用例，判定为环境级争用（背靠背运行时的
+  fixture / 句柄残留），保留该记录以便再次出现时有对照。
+
 ### 自动回滚 Sprint VERIFY：drill5 修复、双引擎 710 测试、PATH 证据留痕（2026-10-07）
 
 管理员真实演练（drill5）暴露了一个**把失败记成成功**的真实缺陷与一个 fail-open，
