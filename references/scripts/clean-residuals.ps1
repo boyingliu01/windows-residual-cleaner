@@ -1188,6 +1188,7 @@ function Main {
     $hadMutations = $false
     $journalMissing = $false
     $restoreFailed = 0
+    $rollbackAttempted = $false
     $rollbackResult = $null
 
     if ($needsProtection -and $failedCount -gt 0 -and -not $NoAutoRollback) {
@@ -1201,6 +1202,7 @@ function Main {
                 $journalMissing = $true
             } else {
                 $hadMutations = Test-JournalHasMutation -Journal $journal
+                $rollbackAttempted = $true
                 Write-Output "`nAuto-rollback: cleanup failed for $failedCount item(s), restoring what this run changed..."
                 $rollbackResult = Invoke-RollbackRestore -Journal $journal -BackupDir $backupDir `
                     -ProjectRoot $projectRoot -AcknowledgeConflicts:$AcknowledgeConflicts
@@ -1242,18 +1244,24 @@ function Main {
         -HadMutations ([bool]$hadMutations) `
         -RestoreFailedCount $restoreFailed
 
-    # ── REQ-031：本轮正常结束必须把日志标记为完成；唯一例外是 11 ──
+    # ── REQ-031：本轮正常结束必须把日志标记为完成；例外是「系统仍受损」──
     # 不写完成标记，下一轮会把**已经正确清理过**的一轮当成未完成 T3，
     # 按 REQ-024 规则 3 把刚清掉的残留重新装回去。
     if ($null -ne $journal) {
-        $skipCompletion = ($exitValue -eq 11)
+        $skipCompletion = Test-CompletionMarkerSuppressed -ExitCode $exitValue `
+            -FailedCount $failedCount -RestoreFailedCount $restoreFailed `
+            -UnjournaledCount @($unjournaledMutations).Count -RollbackAttempted:$rollbackAttempted
+        $skipReason = ''
+        if ($skipCompletion) {
+            $skipReason = if ($exitValue -eq 11) { 'rollback_incomplete' } else { 'rollback_incomplete_persistence_failed' }
+        }
         try {
             $cmp = Complete-RollbackJournal -BackupDir $backupDir -Journal $journal `
-                -Skip:$skipCompletion -SkipReason $(if ($skipCompletion) { 'rollback_incomplete' } else { '' })
+                -Skip:$skipCompletion -SkipReason $skipReason
             if ($cmp.Written) {
                 Write-Output "Rollback journal marked complete: $($cmp.CompletedAt)"
             } else {
-                Write-Warning "回滚日志保持未完成（退出码 11，系统仍有未修复项）: $($cmp.Reason)"
+                Write-Warning "回滚日志保持未完成（退出码 $exitValue，系统仍有未修复项）: $($cmp.Reason)"
             }
         } catch {
             Write-Error "完成标记写入失败: $($_.Exception.Message)"

@@ -1015,6 +1015,58 @@ public static class WrcRirLock {
             if ($h.ToInt64() -ne -1) { [void][WrcRirLock]::CloseHandle($h) }
         }
     }
+
+    It '退出码 15 且本轮有失败未回滚时，日志保持未完成（REQ-031 15(c)：仍受损就不写标记）' {
+        . $global:_arbScript
+        Mock Test-AdminPrivilege { return $true }
+
+        $regPs = $global:_arbRegPs
+        New-Item -Path $regPs -Force | Out-Null
+        New-ItemProperty -Path $regPs -Name 'Probe' -Value 'arb' -Force | Out-Null
+        $locked = Join-Path $global:_arbRoot 'locked'
+        New-Item -Path $locked -ItemType Directory -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $locked 'inner.dat'), 'x')
+        # 清理日志的落点先做成**目录**：WriteAllText 必抛 → persistenceError → 终态 15，
+        # 而 T2 在这之前就被持久化失败挡住了（restore_failed 恒为 0）。
+        # 这正是旧实现漏掉的形状：只看 restore_failed 会把「改了却一条都没回滚」的一轮
+        # 写成 completed_at，下一轮 T3 便永不接手。
+        New-Item -Path (Join-Path $global:_arbRoot 'cleanup-log.json') -ItemType Directory -Force | Out-Null
+
+        $reportF = Join-Path $global:_arbRoot 'report.json'
+        $confirmF = Join-Path $global:_arbRoot 'confirm.json'
+        $report = @{
+            scan_time = '2026-01-01T00:00:00'
+            summary = @{ total_residuals=2; safe=0; caution=2; danger=0; estimated_space_recoverable_mb=0 }
+            filesystem_residuals = @(@{ id='fs_arb1'; path=$locked; name='WRC-ARB-Locked'; type='residual_directory'; file_count=1; size_mb=0; risk='caution'; reason='arb fixture' })
+            registry_residuals = @(@{ id='reg_arb1'; key='HKCU\Software\WRC-ARB-Fixture'; name='WRC-ARB-Fixture'; type='vendor_key'; subkey_count=0; risk='caution'; reason='arb fixture' })
+            ghost_services=@(); ghost_tasks=@(); startup_residuals=@(); shell_residuals=@(); path_residuals=@(); uninstalled_software=@()
+        }
+        [System.IO.File]::WriteAllText($reportF, ($report | ConvertTo-Json -Depth 5))
+        [System.IO.File]::WriteAllText($confirmF, '["fs_arb1","reg_arb1"]')
+
+        $h = [WrcRirLock]::CreateFileW($locked, [uint32]2147483648, [uint32]0, [IntPtr]::Zero, [uint32]3, [uint32]0x02000000, [IntPtr]::Zero)
+        try {
+            $h.ToInt64() | Should -Not -Be -1
+            $ReportPath = $reportF; $ConfirmFile = $confirmF
+            $WhitelistPath = $global:_arbWl; $DryRun = $false; $Mode = 'A'; $ItemsToClean = ''
+            $ProjectRootOverride = $global:_arbRoot
+            $rc = -999
+            $null = (Main -ExitCode ([ref]$rc) *>&1)
+            $rc | Should -Be 15
+
+            $bdir = @(Get-ChildItem -Path $global:_arbRoot -Directory -Filter 'backup-*')[0].FullName
+            # 副作用断言（不是「打印了什么」）：日志仍缺完成标记 → 下次启动照常走 T3
+            $raw = Get-Content -LiteralPath (Join-Path $bdir 'rollback-journal.json') -Raw -ErrorAction Stop
+            $raw | Should -Match '"completed_at":\s*null'
+            $j = $raw | ConvertFrom-Json
+            $j.completed_at | Should -BeNullOrEmpty
+            # T2 确实一条都没恢复：本轮删掉的 HKCU 键仍在原地缺席
+            (Get-Item -Path $regPs -ErrorAction SilentlyContinue) | Should -BeNullOrEmpty
+            (Test-Path -LiteralPath (Join-Path $bdir 'rollback-result.json')) | Should -BeFalse
+        } finally {
+            if ($h.ToInt64() -ne -1) { [void][WrcRirLock]::CloseHandle($h) }
+        }
+    }
 }
 
 Describe 'clean-residuals.ps1 ConfirmFile integration' {

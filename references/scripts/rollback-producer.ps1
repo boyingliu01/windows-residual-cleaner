@@ -320,6 +320,43 @@ function Get-CleanupExitCode {
     return 10
 }
 
+function Test-CompletionMarkerSuppressed {
+    <#
+    .SYNOPSIS
+        本轮是否**不得**给回滚日志写 completed_at（REQ-031，纯函数）。
+    .DESCRIPTION
+        completed_at 的语义是「本轮清理已正常结束」。写下去就等于告诉下一次启动
+        「这一轮不用再管了」，T3 便不会再尝试恢复。因此判定标准只有一个问题：
+        **系统此刻是否仍有本轮没能修复的改动**。
+        - 11：回滚跑过但有未修复项 → 抑制（REQ-031 原有的例外）。
+        - 15：只是「记录不可靠」的终态，它**不**说明本轮的改动已被修复。三种受损形状
+          都必须抑制（2026-10-08 裁决：仍受损就不写标记）：
+            (a) 回滚跑过但没修完（restore_failed > 0）；
+            (b) 有变更后日志落盘失败（AC-052 unjournaled，恢复端一条都看不到）；
+            (c) 清理本身有失败、而 T2 因持久化早退**整轮没跑** —— 这条最容易漏，
+                旧实现按「15 尽力而为」把标记写下去，未修复的改动就此永久失去
+                下一次 T3 的机会。
+          15 且本轮没有任何失败时**不**抑制：把一条干净的一轮留在 completed_at == null，
+          下一次启动会按 REQ-024 规则 3 把刚清理掉的残留重新装回去，那是更严重的错误。
+        - 0 / 1 / 10 / 12 / 13：正常结束的终态，一律写标记（12 可能根本没有日志对象，
+          13 是用户明确要求不回滚 —— 都由调用方各自的分支处理）。
+        - 14：本轮未开始即中止，此时**没有本轮日志**，不参与本判定。
+    #>
+    param(
+        [Parameter(Mandatory)][int]$ExitCode,
+        [int]$FailedCount = 0,
+        [int]$RestoreFailedCount = 0,
+        [int]$UnjournaledCount = 0,
+        [switch]$RollbackAttempted
+    )
+
+    if ($ExitCode -eq 11) { return $true }
+    if ($ExitCode -ne 15) { return $false }
+
+    if ($RestoreFailedCount -gt 0 -or $UnjournaledCount -gt 0) { return $true }
+    return ($FailedCount -gt 0 -and -not $RollbackAttempted)
+}
+
 function Get-RollbackFailureKindFromCleanupAction {
     <#
     .SYNOPSIS

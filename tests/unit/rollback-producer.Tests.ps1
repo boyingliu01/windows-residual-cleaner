@@ -349,6 +349,46 @@ Describe 'Get-CleanupExitCode（REQ-026 矩阵唯一实现处）' {
     }
 }
 
+Describe 'Test-CompletionMarkerSuppressed（REQ-031：仍受损就不写标记）' {
+    It '11 → 抑制（REQ-031 原有的例外）' {
+        Test-CompletionMarkerSuppressed -ExitCode 11 -RollbackAttempted -RestoreFailedCount 1 | Should -BeTrue
+    }
+
+    It '15(a) 回滚跑过但没修完 → 抑制' {
+        Test-CompletionMarkerSuppressed -ExitCode 15 -FailedCount 2 -RollbackAttempted -RestoreFailedCount 1 | Should -BeTrue
+    }
+
+    It '15(b) 变更后日志落盘失败（AC-052）→ 抑制：恢复端一条都看不到' {
+        Test-CompletionMarkerSuppressed -ExitCode 15 -FailedCount 1 -UnjournaledCount 1 | Should -BeTrue
+    }
+
+    It '15(c) 清理有失败而 T2 整轮没跑 → 抑制，把修复机会留给下一次 T3' {
+        # 这是旧实现真正漏掉的形状：15 下 restore_failed 恒为 0（T2 被持久化失败提前挡住），
+        # 只看 restore_failed 就会把「改了却没回滚」的一轮标记成已结束。
+        Test-CompletionMarkerSuppressed -ExitCode 15 -FailedCount 1 | Should -BeTrue
+    }
+
+    It '15 且本轮没有任何失败 → 不抑制（尽力补标记，干净的一轮不得被下次启动装回残留）' {
+        Test-CompletionMarkerSuppressed -ExitCode 15 | Should -BeFalse
+    }
+
+    It '15 且回滚已把所有改动修好、清理无失败 → 不抑制' {
+        Test-CompletionMarkerSuppressed -ExitCode 15 -RollbackAttempted -RestoreFailedCount 0 | Should -BeFalse
+    }
+
+    It '正常结束的终态（0 / 1 / 10 / 12 / 13）一律不抑制' {
+        Test-CompletionMarkerSuppressed -ExitCode 0 | Should -BeFalse
+        Test-CompletionMarkerSuppressed -ExitCode 1 -FailedCount 1 | Should -BeFalse
+        Test-CompletionMarkerSuppressed -ExitCode 10 -FailedCount 1 -RollbackAttempted | Should -BeFalse
+        Test-CompletionMarkerSuppressed -ExitCode 12 -FailedCount 1 | Should -BeFalse
+        Test-CompletionMarkerSuppressed -ExitCode 13 -FailedCount 1 | Should -BeFalse
+    }
+
+    It '14 不抑制：那是「本轮未开始即中止」，此时根本没有本轮日志可标记' {
+        Test-CompletionMarkerSuppressed -ExitCode 14 -FailedCount 1 -RestoreFailedCount 1 | Should -BeFalse
+    }
+}
+
 Describe 'Get-RollbackFailureKindFromCleanupAction（REQ-002 / AC-016）' {
     It 'deleted → 非重命名' {
         $r = Get-RollbackFailureKindFromCleanupAction -Outcome 'deleted'
