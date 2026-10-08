@@ -723,7 +723,7 @@ public static class WrcRirLock {
     }
 }
 
-# setup.ps1：环境自检脚本。此前无任何测试覆盖（0%）。
+# setup.ps1：环境自检脚本。
 # 关键点：必须「dot-source + 进程内调用 Main」才能被 Pester 覆盖率观测到。
 # 用子进程（-File）执行会让覆盖率归零——覆盖率只在当前进程内插桩，
 # 这是本项目最容易写出「测试通过但覆盖率不动」假象的地方。
@@ -734,9 +734,6 @@ Describe 'setup.ps1 environment check' {
 
     It 'Is dot-sourceable and exposes Main without side effects' {
         # 架构规范：dot-source 只加载函数定义，不得触发执行。
-        # 注意：**不要**在 Pester 进程内调用 setup.ps1 的 Main——
-        # 它末尾的 exit 会破坏 Pester 宿主状态（MethodException on Add）。
-        # 因此这里只验证 dot-source 契约，执行结果由下一个用例在子进程中验证。
         $out = & {
             . $global:_setupScript
             'DOTSOURCE_DONE'
@@ -746,29 +743,50 @@ Describe 'setup.ps1 environment check' {
         (Get-Command Main -ErrorAction SilentlyContinue) | Should -Not -BeNullOrEmpty
     }
 
-    It 'Has a Main that would exit 0 on a supported environment (static contract)' {
-        # 静态断言：Main 必须包含版本分支与 summary 分支
+    It 'Main 可在进程内调用：本机环境回传 0（ADR-001 后可插桩，不再杀死宿主）' {
+        . $global:_setupScript
+        $rc = -999
+        $out = ((Main -ExitCode ([ref]$rc)) -join "`n")
+        $rc | Should -Be 0 -Because '当前引擎（5.1 / 7）都在支持范围内'
+        $out | Should -Match 'Environment check PASSED'
+        $out | Should -Match 'PowerShell:'
+        $out | Should -Match 'Administrator:'
+        $out | Should -Match 'Pester:'
+        $out | Should -Match 'Node\.js:'
+        # 退出码只能经 [ref] 回传，不得漏进输出流
+        $out | Should -Not -Match '(?m)^\s*0\s*$'
+    }
+
+    It '环境不满足时 Main 回传 1 并列出问题（不得 exit 杀死调用方）' {
+        . $global:_setupScript
+        $rc = -999
+        $out = ((Main -ExitCode ([ref]$rc) -PSVersionOverride '4.0') -join "`n")
+        $rc | Should -Be 1
+        $out | Should -Match 'Environment check FAILED'
+        $out | Should -Match 'PowerShell 5\.1\+ required'
+    }
+
+    It 'Has a Main that reports both outcomes (static contract)' {
         $content = Get-Content $global:_setupScript -Raw
         $content | Should -Match '\$psVersion\.Major -lt 5'
         $content | Should -Match 'Environment check PASSED'
         $content | Should -Match 'Environment check FAILED'
-        $content | Should -Match 'exit 1'
     }
 
     It 'Executes end-to-end in a child process and exits 0 on this machine' {
+        # 路径必须加引号：Start-Process 的 -ArgumentList 是数组，元素原样拼接，
+        # 结在带空格的路径下会被截断（评审 D03）。
+        $outFile = Join-Path $env:TEMP 'wrc-setup-out.txt'
+        $errFile = Join-Path $env:TEMP 'wrc-setup-err.txt'
         $p = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-            -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $global:_setupScript `
+            -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $global:_setupScript + '"') `
             -NoNewWindow -Wait -PassThru `
-            -RedirectStandardOutput "$env:TEMP\wrc-setup-out.txt" `
-            -RedirectStandardError "$env:TEMP\wrc-setup-err.txt"
+            -RedirectStandardOutput $outFile `
+            -RedirectStandardError $errFile
         $p.ExitCode | Should -Be 0
-        $text = Get-Content "$env:TEMP\wrc-setup-out.txt" -Raw
+        $text = Get-Content $outFile -Raw
         $text | Should -Match 'Environment Check'
-        $text | Should -Match 'PowerShell:'
-        $text | Should -Match 'Administrator:'
-        $text | Should -Match 'Pester:'
-        $text | Should -Match 'Node\.js:'
-        Remove-Item "$env:TEMP\wrc-setup-out.txt", "$env:TEMP\wrc-setup-err.txt" -Force -ErrorAction SilentlyContinue
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
     }
 }
 

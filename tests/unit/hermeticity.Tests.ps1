@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # hermeticity.Tests.ps1 — 套件必须能在「干净环境」下真跑，而不是静默塌掉
 # =============================================================================
 # 背景 (Sprint 2026-10-01-01, blocker B1):
@@ -12,6 +12,82 @@
 #     Main 必须 *返回* 退出码，绝不能调用 exit。
 #
 # 这些测试在修复前必须 FAIL（RED），修复后 PASS（GREEN）。
+
+Describe 'ADR-001 契约覆盖全仓：每个含 Main 的脚本都必须用 [ref] 回传退出码' {
+    # 此前本文件只对 clean-residuals / confirm-cleanup 两个脚本做契约断言，
+    # setup.ps1 因此可以在 Main 里留着 `exit 0` / `exit 1` 而无人拦得住
+    # （它靠覆盖率排除文件「解释」自己不可插桩 —— 那是把代码缺陷写成豁免）。
+    # 这里把契约做成**穷举**：新增脚本一旦违反就会在这里红。
+    BeforeAll {
+        $script:HerdRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
+        $script:HerdCandidates = @(
+            (Get-ChildItem -LiteralPath (Join-Path $script:HerdRoot 'references\scripts') -Filter '*.ps1' -File).FullName
+            (Join-Path $script:HerdRoot 'setup.ps1')
+        )
+        $script:HerdCases = @(
+            foreach ($f in $script:HerdCandidates) {
+                if ((Get-Content -LiteralPath $f -Raw) -match '(?m)^function Main\b') {
+                    @{ Path = $f ; Label = (Split-Path $f -Leaf) }
+                }
+            }
+        )
+    }
+
+    It '清单不是空的：全仓至少 8 个含 Main 的脚本都纳入契约' {
+        @($script:HerdCases).Count | Should -BeGreaterOr 8 -Because '清单本身漏掉脚本就等于契约没覆盖到它'
+    }
+
+    It '每个 Main 内都没有 exit 语句' {
+        $violations = @()
+        foreach ($case in $script:HerdCases) {
+            $tokens = $null; $parseErrors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($case.Path, [ref]$tokens, [ref]$parseErrors)
+            if (@($parseErrors).Count -gt 0) { $violations += "$($case.Label): 解析失败"; continue }
+            $mainFn = @($ast.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Main'
+            }, $true)) | Select-Object -First 1
+            $exitCount = @($mainFn.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.ExitStatementAst]
+            }, $true)).Count
+            if ($exitCount -gt 0) { $violations += "$($case.Label): $exitCount 处 exit" }
+        }
+        # exit 在 Main 内会杀死 dot-source 它的测试宿主（套件静默塌掉 = 假绿）
+        $violations | Should -BeNullOrEmpty
+    }
+
+    It '每个 Main 内都没有 return 数字常量（退出码只能经 [ref] 回传）' {
+        $violations = @()
+        foreach ($case in $script:HerdCases) {
+            $tokens = $null; $parseErrors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($case.Path, [ref]$tokens, [ref]$parseErrors)
+            $mainFn = @($ast.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Main'
+            }, $true)) | Select-Object -First 1
+            $retNums = @($mainFn.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.ReturnStatementAst] -and
+                $null -ne $n.Pipeline -and
+                $n.Pipeline.PipelineElements[0] -is [System.Management.Automation.Language.CommandExpressionAst] -and
+                $n.Pipeline.PipelineElements[0].Expression -is [System.Management.Automation.Language.ConstantExpressionAst] -and
+                $n.Pipeline.PipelineElements[0].Expression.Value -is [int]
+            }, $true))
+            if ($retNums.Count -gt 0) { $violations += "$($case.Label): $($retNums.Count) 处 return <数字>" }
+        }
+        # return <数字> 会把退出码漏进输出流，污染调用方的输出断言
+        $violations | Should -BeNullOrEmpty
+    }
+
+    It '每个脚本的执行守卫都用 [ref] 接住退出码再 exit' {
+        $violations = @()
+        foreach ($case in $script:HerdCases) {
+            $code = @(Get-Content -LiteralPath $case.Path | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+            if ($code -notmatch 'Main\s+-ExitCode\s+\(\[ref\]\$exitCode\)') { $violations += "$($case.Label): 守卫未传 [ref]" }
+            if ($code -notmatch 'exit\s+\$exitCode') { $violations += "$($case.Label): 守卫未按 \$exitCode 退出" }
+            # exit (Main) 会吞掉 Main 的全部 Write-Output（实测）
+            if ($code -match 'exit\s*\(\s*Main\s*\)') { $violations += "$($case.Label): exit (Main) 吞 stdout" }
+        }
+        $violations | Should -BeNullOrEmpty
+    }
+}
 
 Describe 'Main returns exit code instead of calling exit (hermeticity contract)' {
 

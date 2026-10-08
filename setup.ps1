@@ -1,10 +1,24 @@
 ﻿# setup.ps1 — Environment compatibility check
 function Main {
+    # ADR-001: 退出码用 [ref] 回传；Main 内不得 exit，也不得 `return <数字>`
+    # （前者会杀死 dot-source 它的测试宿主 / 覆盖率插桩，后者会把整数漏进输出流）。
+    param(
+        [ref]$ExitCode,
+        # 唯一的注入接缝：让「环境不满足 → 回传 1」这条分支可测
+        # （宿主自身的 $PSVersionTable 在测试里改不了）。
+        [string]$PSVersionOverride = ''
+    )
+    $setRc = { param([int]$v) if ($null -ne $ExitCode) { $ExitCode.Value = $v } }
+
     Write-Output "=== Windows Residual Cleaner — Environment Check ==="
     $issues = @()
 
     # PowerShell version
-    $psVersion = $PSVersionTable.PSVersion
+    if ([string]::IsNullOrWhiteSpace($PSVersionOverride)) {
+        $psVersion = $PSVersionTable.PSVersion
+    } else {
+        $psVersion = [Version]$PSVersionOverride
+    }
     Write-Output "PowerShell: $psVersion"
     if ($psVersion.Major -lt 5 -or ($psVersion.Major -eq 5 -and $psVersion.Minor -lt 1)) {
         $issues += "PowerShell 5.1+ required (found: $psVersion)"
@@ -39,14 +53,17 @@ function Main {
     # Summary
     if ($issues.Count -eq 0) {
         Write-Output "`nEnvironment check PASSED."
-    } else {
-        Write-Output "`nEnvironment check FAILED:"
-        $issues | ForEach-Object { Write-Output "  - $_" }
-        exit 1
+        & $setRc 0
+        return
     }
-    exit 0
+    Write-Output "`nEnvironment check FAILED:"
+    $issues | ForEach-Object { Write-Output "  - $_" }
+    & $setRc 1
 }
 
+# Execution guard — only runs when script is directly executed, not when dot-sourced
 if ($MyInvocation.InvocationName -ne '.') {
-    Main
+    $exitCode = 0
+    Main -ExitCode ([ref]$exitCode)
+    exit $exitCode
 }

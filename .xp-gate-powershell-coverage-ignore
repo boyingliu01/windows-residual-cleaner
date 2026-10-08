@@ -3,28 +3,15 @@
 # One glob per line. Blank lines and lines starting with '#' are ignored.
 # Matched source files are removed from Pester's -CodeCoverage path list.
 #
-# Why this file exists
-# --------------------
-# The gate measures LINE coverage across every *.ps1 in the repo. Some scripts
-# cannot be instrumented by a unit-test runner at all; counting them as 0%
-# permanently caps the achievable percentage, so the 80% threshold becomes
-# unsatisfiable no matter how good the suite is.
+# The list is intentionally EMPTY.
+# -------------------------------
+# It used to hold exactly one file, setup.ps1, on the grounds that its `Main`
+# ended in `exit 0` / `exit 1` and therefore killed the Pester host when
+# dot-sourced, making it "structurally unmeasurable". That was a code defect
+# dressed up as a structural limit: ADR-001 moved the exit code to
+# `[ref]$ExitCode` and put `exit` only in the execution guard, so setup.ps1 is
+# now instrumented like every other script (tests/unit/scripts.Tests.ps1 calls
+# its Main in-process).
 #
-# setup.ps1 is the motivating case:
-#   - Its only logic lives in `function Main`, which ends in `exit 0` / `exit 1`.
-#   - Pester's coverage instrumentation only observes the CURRENT process, so the
-#     script must be dot-sourced and Main invoked in-process to be measured.
-#   - Invoking Main in-process terminates the Pester host mid-run. This was
-#     verified: it aborts the whole suite with
-#     "MethodException: 找不到"Add"的参数计数为"1"的重载" and silently drops the
-#     remaining tests (109 passed -> 66 passed, 18 "failed").
-#   - Running it in a child process works and IS covered by a real end-to-end
-#     test, but that contributes 0 instrumented lines by definition.
-# So setup.ps1 is exercised (by tests) yet structurally unmeasurable. Excluding
-# it keeps the threshold meaningful instead of gaming it.
-#
-# Do NOT add files here merely because they are hard to test. Everything else in
-# references/scripts/ is instrumentable and expected to be covered; system-level
-# branches (ACL fallbacks, HKLM mutation, restore points) belong in the
-# admin-environment integration runs described in AGENTS.md.
-setup.ps1
+# Do NOT add files here merely because they are hard to test. If a script really
+# cannot be instrumented, prove it in the commit message and fix the script first.
