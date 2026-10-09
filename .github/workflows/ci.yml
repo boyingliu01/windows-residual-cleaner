@@ -91,11 +91,22 @@ jobs:
           $cfg.CodeCoverage.Path = @('references/scripts/*.ps1', 'setup.ps1')
           $cfg.CodeCoverage.OutputFormat = 'JaCoCo'
           $cfg.CodeCoverage.OutputPath = 'coverage-ci.xml'
-          $results = Invoke-Pester -Configuration $cfg
-          $pct = [math]::Round($results.CodeCoverage.CoveragePercent, 1)
-          Write-Output "Coverage: $pct%"
+          Invoke-Pester -Configuration $cfg
+          # Metric alignment: the local xp-gate gate measures LINE coverage
+          # from the report-level LINE counter of the JaCoCo report. Two
+          # traps observed in CI run #3: Pester's returned
+          # .CodeCoverage.CoveragePercent is (a) COMMAND coverage, not line
+          # coverage, and (b) unreliable under Run.Exit=$true (reported 0
+          # while Pester's own output printed the correct figure). Parse the
+          # XML the same way the local adapter does.
+          [xml]$cov = Get-Content coverage-ci.xml
+          $line = $cov.report.counter | Where-Object { $_.type -eq 'LINE' }
+          $covered = [int]$line.covered
+          $total = $covered + [int]$line.missed
+          $pct = [math]::Round(100 * $covered / $total, 2)
+          Write-Output "Line coverage: $pct% ($covered/$total)"
           if ($pct -lt 80) {
-            Write-Output "FAILED: coverage $pct% is below the 80% threshold"
+            Write-Output "FAILED: line coverage $pct% is below the 80% threshold"
             exit 1
           }
 

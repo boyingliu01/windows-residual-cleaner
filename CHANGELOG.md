@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### CI run #3 收尾：测试全绿，覆盖率门禁对齐行覆盖口径（2026-10-09）
+
+run #3（37876910842）双引擎 **722 通过 / 0 失败 / 5 跳过**、UI 绿——run #1 的
+30+ 环境性失败全部清零，上述三类修复全部实证生效。唯一残留：覆盖率门禁步骤
+误报红，两个叠加根因一次修掉：
+
+- Pester 5 在 `Run.Exit = $true` 下返回对象的 `.CodeCoverage.CoveragePercent`
+  不可靠（Pester 自身输出明明是 79.24%，属性却读出 0）——不再依赖返回对象。
+- Pester 报告的百分比是**命令覆盖**，本地 xp-gate 门禁的 84% 是**行覆盖**，
+  口径不同不可混用。改为解析 JaCoCo 报告的 report 级 `LINE` 计数器
+  （与本地适配器完全同法），阈值 80% 维持不变。
+
 ### CI 首跑修复：编码、EAP 语义、管理员环境假设（2026-10-09）
 
 CI 首跑（run 37868204798）双引擎 job 红、UI job 绿，30+ 失败全部是**环境差异**
