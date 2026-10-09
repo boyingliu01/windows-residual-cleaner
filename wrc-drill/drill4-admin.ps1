@@ -111,12 +111,14 @@ try {
     Write-Host ""
     Write-Host "PHASE 4: Run the REAL clean-residuals.ps1" -ForegroundColor Cyan
     # -------------------------------------------------------------------------
-    $args = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$script,
-              '-ReportPath',$rPath,'-ConfirmFile',$cPath,'-Mode','A','-WhitelistPath',$whitelist)
-    if ($DryRun) { $args += '-DryRun' }
+    # Quote path elements explicitly: Start-Process -ArgumentList does NOT
+    # quote array elements, and paths with spaces would split into fragments.
+    $psiArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File', ('"{0}"' -f $script),
+              '-ReportPath', ('"{0}"' -f $rPath), '-ConfirmFile', ('"{0}"' -f $cPath), '-Mode', 'A', '-WhitelistPath', ('"{0}"' -f $whitelist))
+    if ($DryRun) { $psiArgs += '-DryRun' }
     $o = Join-Path $drillRoot 'admin-out.txt'; $e = Join-Path $drillRoot 'admin-err.txt'
     $p = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-        -ArgumentList $args -NoNewWindow -Wait -PassThru `
+        -ArgumentList $psiArgs -NoNewWindow -Wait -PassThru `
         -RedirectStandardOutput $o -RedirectStandardError $e
     $text = (Get-Content $o -Raw -EA SilentlyContinue) + (Get-Content $e -Raw -EA SilentlyContinue)
     Write-Host "    (exit $($p.ExitCode))" -ForegroundColor DarkGray

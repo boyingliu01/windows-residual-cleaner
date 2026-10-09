@@ -1,14 +1,31 @@
 name: CI
 
+# Scope note: this workflow mirrors the LOCAL xp-gate pre-commit gates that can
+# run in a clean process (Pester full suite + PSScriptAnalyzer) and adds the
+# coverage threshold (80%) so the local-only gate is not the single line of
+# defense. Gates that need interactive/admin tooling (drill5 UAC, sprint-flow
+# state) remain local-only by design.
+#
+# Flaky-run policy: the suite is hermetic, but AGENTS.md records one
+# unreproduced environment-level flake (720/1 under pwsh). If a CI run fails
+# with no related change, re-run once before investigating.
+
 on:
   push:
     branches: [master]
   pull_request:
     branches: [master]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   powershell:
-    name: Pester + PSSA (${{ matrix.engine }})
+    name: Pester + coverage + PSSA (${{ matrix.engine }})
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -24,21 +41,44 @@ jobs:
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
           Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
-          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          Install-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Force -Scope CurrentUser
+          # Explicit import: windows-latest ships Pester 3.4.0 in $PSHOME, and
+          # implicit version resolution may pick it over the installed 5.x.
+          Import-Module Pester -MinimumVersion 5.5.0 -Force
+          Import-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Force
 
-      - name: Run Pester suite (727 tests)
+      - name: Run Pester suite (727 tests) with coverage gate (>= 80%)
         run: |
-          $pconfig = New-PesterConfiguration
-          $pconfig.Run.Path = 'tests'
-          $pconfig.Run.Exit = $true
-          $pconfig.Output.Verbosity = 'Normal'
-          Invoke-Pester -Configuration $pconfig
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = 'tests'
+          $cfg.Run.Exit = $true
+          $cfg.Output.Verbosity = 'Normal'
+          # Same denominator as the local xp-gate coverage gate: product code
+          # only (references/scripts + setup.ps1). Drill/review tooling is
+          # excluded locally via .xp-gate-powershell-coverage-ignore and is
+          # simply not included here.
+          $cfg.CodeCoverage.Enabled = $true
+          $cfg.CodeCoverage.Path = @('references/scripts/*.ps1', 'setup.ps1')
+          $cfg.CodeCoverage.OutputFormat = 'JaCoCo'
+          $cfg.CodeCoverage.OutputPath = 'coverage-ci.xml'
+          $results = Invoke-Pester -Configuration $cfg
+          $pct = [math]::Round($results.CodeCoverage.CoveragePercent, 1)
+          Write-Output "Coverage: $pct%"
+          if ($pct -lt 80) {
+            Write-Output "FAILED: coverage $pct% is below the 80% threshold"
+            exit 1
+          }
 
       - name: PSScriptAnalyzer (must be 0 findings)
         run: |
           $findings = @()
-          $findings += Invoke-ScriptAnalyzer -Path references/scripts -Recurse -Settings PSScriptAnalyzerSettings.psd1
-          $findings += Invoke-ScriptAnalyzer -Path setup.ps1 -Settings PSScriptAnalyzerSettings.psd1
+          # @() + Invoke-ScriptAnalyzer would append a single $null on a clean
+          # run ("@() + $null" yields a 1-element array), making "0 findings"
+          # fail closed in the wrong direction. Guard instead.
+          $r1 = Invoke-ScriptAnalyzer -Path references/scripts -Recurse -Settings PSScriptAnalyzerSettings.psd1
+          if ($r1) { $findings += @($r1) }
+          $r2 = Invoke-ScriptAnalyzer -Path setup.ps1 -Settings PSScriptAnalyzerSettings.psd1
+          if ($r2) { $findings += @($r2) }
           if ($findings.Count -gt 0) {
             $findings | Format-Table -AutoSize | Out-String | Write-Output
             exit 1

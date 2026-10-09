@@ -1,5 +1,5 @@
 # Teardown: remove every artefact the drill may have created. Idempotent.
-$repoRoot  = 'D:\Study\LLM\windows-residual-cleaner'
+$repoRoot  = Split-Path $PSScriptRoot -Parent
 $drillRoot = Join-Path $repoRoot 'wrc-drill'
 
 Write-Host "=== Tearing down drill artefacts ==="

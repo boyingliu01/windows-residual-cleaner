@@ -59,8 +59,10 @@ if (-not (Test-IsAdmin)) {
     $null = New-Item -ItemType Directory -Path $work -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $rcFile) { Remove-Item -LiteralPath $rcFile -Force -ErrorAction SilentlyContinue }
     try {
+        # Quote the script path: -ArgumentList does not quote elements, and a
+        # checkout path containing spaces would split into fragments.
         $null = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru `
-            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', $PSCommandPath, '-ElevatedChild')
+            -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File', ('"{0}"' -f $PSCommandPath), '-ElevatedChild')
     } catch {
         Write-Host "Elevation was cancelled or failed: $($_.Exception.Message)"
         exit 2

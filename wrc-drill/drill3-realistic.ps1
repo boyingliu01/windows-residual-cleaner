@@ -1,9 +1,8 @@
 # Realistic-fidelity drill: use the EXACT schema the scanner emits.
 # Purpose: determine whether the "silent no-op" is reachable with real data.
-. 'D:\Study\LLM\windows-residual-cleaner\references\scripts\clean-residuals.ps1'
-
-$drillRoot = 'D:\Study\LLM\windows-residual-cleaner\wrc-drill'
-$repoRoot  = 'D:\Study\LLM\windows-residual-cleaner'
+$drillRoot = $PSScriptRoot
+$repoRoot  = Split-Path $PSScriptRoot -Parent
+. (Join-Path $repoRoot 'references\scripts\clean-residuals.ps1')
 
 # --- Realistic artefacts (schema copied from scan-residuals.ps1) --------------
 # ghost_task: {type='ghost_task'; name; execute; expanded_path; risk; reason}

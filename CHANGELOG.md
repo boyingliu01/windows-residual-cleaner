@@ -4,9 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### 工程化收尾：wrc-drill 入库、GitHub Actions CI 上线、旧评估报告下线（2026-10-08）
+### 工程化收尾：wrc-drill 入库、GitHub Actions CI 上线、旧评估报告下线（2026-10-09）
 
-项目自 Qoder 迁入 WorkBuddy 继续开发的接管收尾。代码零改动，全部是工程化与仓库卫生。
+项目自 Qoder 迁入 WorkBuddy 继续开发的接管收尾。产品 PowerShell 代码零改动，
+全部是工程化、仓库卫生与评审修复。本节含两批条目：初版落地 + Delphi code-walkthrough
+（三专家 Round 1 共识 REQUEST_CHANGES）后的修复。
 
 - **`wrc-drill/` 演练脚本入库**：drill3-realistic / drill4-admin / drill5-autorollback / rdlab /
   teardown 共 5 个脚本随仓分发，drill5 的 23 项管理员演练从此可复现。
@@ -28,8 +30,29 @@ All notable changes to this project will be documented in this file.
   `.delphi-work` 归档副本入库后把分母从 3335 稀释到 3912，84.08% 被拉到 72%，触发
   Gate 5 的 80% 阈值。排除的理由与 setup.ps1 当年被豁免有本质区别：这些是**结构上
   不属于产品代码**的演练/评审工具（靠管理员手动演练验证，进 Pester 反而要 mock 掉
-  它们存在的意义），且 covered 行数 2805 与产品基线 2804 完全吻合，产品代码覆盖
-  分毫未动。
+  它们存在的意义），且 covered 行数 2805 与产品基线 2804 相差仅 1 行，产品代码覆盖
+  分毫未动。排除的命中证据：Gate 5 实际输出对全部 7 个文件逐条打印
+  `Coverage exclusion matched`。同时在文件头部写死三条硬边界规则
+  （产品脚本永不可列、优先精确文件而非目录 glob、记录适配器 prune 跟进项）。
+
+- **Delphi code-walkthrough 修复（三专家 Round 1 全 REQUEST_CHANGES，0 Critical 分歧）**：
+  - **Critical（Expert B）**：`ci.yml` 的 PSSA 判定 `$findings += Invoke-ScriptAnalyzer`
+    在 0 findings 时 `@() + $null` 得到含单元素 `$null` 的数组，`Count -gt 0` 恒真——
+    CI 会在**完全合规**的代码上假红，恰好击穿本次「0 findings」门槛。改为先判空再追加。
+  - **覆盖率口径差（Expert A/C）**：CI 只跑测试不跑覆盖率，80% 门禁只剩本地单点保护。
+    现 CI 的 Pester 直接以 `CodeCoverage.Enabled` 运行（与 Run.Exit 合并为一次跑），
+    分母与本地门禁同口径（references/scripts + setup.ps1），低于 80% 即红。
+  - **Pester 3.4.0 遮蔽风险（Expert C）**：windows runner 自带 Pester 3.4.0，隐式解析
+    可能命中 v3。安装后显式 `Import-Module Pester -MinimumVersion 5.5.0`；
+    PSSA 同样加下限（1.21.0）并显式导入，消除版本漂移（Expert A#4）。
+  - **演练脚本可复现性（三专家一致）**：drill3/teardown 硬编码作者本机绝对路径，
+    与「随仓分发可复现」直接矛盾，改为 `Split-Path $PSScriptRoot -Parent`；
+    drill4/drill5 的 `Start-Process -ArgumentList` 对路径元素手动加引号
+    （PS 不自动加引号，检出路径含空格即碎裂）；drill4 的 `$args` 遮蔽自动变量改名。
+  - **权限与并发**：workflow 补 `permissions: contents: read` 与 `concurrency` 取消过期运行。
+  - **杂项**：`*.tsbuildinfo` 进 .gitignore；`ui` 显式声明 `globals` 依赖
+    （原先靠 npm 提升的传递依赖）；`wrc-drill/README.md` 加误跑警示；
+    ignore 文件的 glob 语义注释与条目对齐。
 
 ### 自动回滚 Sprint 收尾：drill5 根因定位、CORS 通配收紧、REQ-031 的 15 号盲区、setup.ps1 摘掉豁免（2026-10-08）
 

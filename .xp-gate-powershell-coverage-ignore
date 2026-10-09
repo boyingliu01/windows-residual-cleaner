@@ -18,9 +18,12 @@
 # never by Pester; wiring them into unit tests would mean mocking away the
 # very realness they exist to verify.
 # -------------------------------
-# .sprint-state/delphi-run.ps1 and .delphi-work/**/delphi-run.ps1 — Delphi
-# multi-round review orchestration tooling (the .delphi-work copy is an
-# archived worktree snapshot). Review process tooling, not shipped scripts.
+# .sprint-state/delphi-run.ps1 and the archived worktree copy under
+# .delphi-work/ — Delphi multi-round review orchestration tooling, not shipped
+# scripts. Note: the entry is the directory glob `.delphi-work/*`; the matcher
+# is a bash `case`, whose `*` crosses `/`, so it covers arbitrarily deep
+# nesting (this is intentional — but do not port the pattern to a
+# path-aware glob matcher without re-checking).
 # -------------------------------
 wrc-drill/*.ps1
 .sprint-state/delphi-run.ps1
@@ -38,3 +41,14 @@ wrc-drill/*.ps1
 # Do NOT add files here merely because they are hard to test. If a script
 # really cannot be instrumented, prove it in the commit message and fix the
 # script first.
+#
+# HARD BOUNDARY RULES (do not weaken):
+# 1. references/scripts/** and setup.ps1 are PRODUCT CODE and must NEVER be
+#    listed here. If they are hard to test, that is a defect to fix, not to
+#    exclude (see the setup.ps1 history above).
+# 2. Prefer exact file entries over directory globs. A directory-level glob
+#    silently exempts anything later dropped into that directory.
+# 3. Root cause note: the local adapter's coverage denominator is a whole-repo
+#    `find . -name '*.ps1'`; its prune list should eventually cover these
+#    directories so this list can return to empty. Follow-up, not done here
+#    (the adapter is a global hook outside this repo).
