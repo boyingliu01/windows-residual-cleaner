@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 工程化收尾：wrc-drill 入库、GitHub Actions CI 上线、旧评估报告下线（2026-10-08）
+
+项目自 Qoder 迁入 WorkBuddy 继续开发的接管收尾。代码零改动，全部是工程化与仓库卫生。
+
+- **`wrc-drill/` 演练脚本入库**：drill3-realistic / drill4-admin / drill5-autorollback / rdlab /
+  teardown 共 5 个脚本随仓分发，drill5 的 23 项管理员演练从此可复现。
+  运行产物目录 `wrc-drill/drill5-work/`（backup、transcript、结果 JSON）进 `.gitignore`。
+- **`.delphi-work/` 进 `.gitignore`**：Delphi 多轮评审的中间产物（2MB），按项目惯例不入库。
+- **新增 `.github/workflows/ci.yml`**：push / PR 到 master 触发，两个 job——
+  - `powershell`：windows-latest 双引擎矩阵（`powershell` 5.1 与 `pwsh` 7），
+    每个引擎各跑 Pester 全量（727 用例，`Run.Exit = $true` 失败即红）+
+    PSScriptAnalyzer（带 `PSScriptAnalyzerSettings.psd1`，对 `references/scripts` 与
+    `setup.ps1` 必须 0 findings）。
+  - `ui`：ubuntu-latest + Node 22，`npm ci` → `tsc -b` → `eslint` → `vitest run`（59 用例）。
+  - 注意：本地 WorkBuddy 会话跑 Pester 有 5 个环境性误报（会话注入的 `Remove-Item`
+    回收站代理拦截 `Remove-Item $p -ErrorAction SilentlyContinue`），CI 是干净进程，
+    双引擎 727/727 是预期基线。
+- **删除 `RELEASE-READINESS-REPORT.md`**：v1.0.0 时代（2026-05-04）的发布就绪评估，
+  所指缺口此后均已修复（CHANGELOG 可考），留着会误导后来者。历史可从 git 找回。
+- **`.xp-gate-powershell-coverage-ignore` 新增三条结构性排除**：适配器的覆盖率分母是
+  `find .` 全仓库 .ps1，wrc-drill 演练脚本（5 个）、`.sprint-state/delphi-run.ps1` 及
+  `.delphi-work` 归档副本入库后把分母从 3335 稀释到 3912，84.08% 被拉到 72%，触发
+  Gate 5 的 80% 阈值。排除的理由与 setup.ps1 当年被豁免有本质区别：这些是**结构上
+  不属于产品代码**的演练/评审工具（靠管理员手动演练验证，进 Pester 反而要 mock 掉
+  它们存在的意义），且 covered 行数 2805 与产品基线 2804 完全吻合，产品代码覆盖
+  分毫未动。
+
 ### 自动回滚 Sprint 收尾：drill5 根因定位、CORS 通配收紧、REQ-031 的 15 号盲区、setup.ps1 摘掉豁免（2026-10-08）
 
 收尾共落地 **4 个真实缺陷**：一个让自动回滚保护在最需要时失效，一个把外部页面接到管理员破坏性

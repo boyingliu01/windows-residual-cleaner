@@ -1,5 +1,7 @@
 # Windows Residual Cleaner
 
+[![CI](https://github.com/boyingliu01/windows-residual-cleaner/actions/workflows/ci.yml/badge.svg)](https://github.com/boyingliu01/windows-residual-cleaner/actions/workflows/ci.yml)
+
 Scan and clean up residuals left by uninstalled software on Windows systems.
 
 ## Features

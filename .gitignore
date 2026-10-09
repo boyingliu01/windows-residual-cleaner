@@ -26,6 +26,15 @@ tests-run.log
 .quality-history.jsonl
 .sprint.diff
 
+# Delphi review intermediate artifacts
+.delphi-work/
+
+# WorkBuddy agent workspace data (memory, session artifacts)
+.workbuddy/
+
+# Drill run artifacts (drill scripts themselves ARE tracked)
+wrc-drill/drill5-work/
+
 # Worktree directories (sprint-flow isolation)
 .worktrees/
 

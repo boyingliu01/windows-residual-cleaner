@@ -3,15 +3,38 @@
 # One glob per line. Blank lines and lines starting with '#' are ignored.
 # Matched source files are removed from Pester's -CodeCoverage path list.
 #
-# The list is intentionally EMPTY.
-# -------------------------------
-# It used to hold exactly one file, setup.ps1, on the grounds that its `Main`
-# ended in `exit 0` / `exit 1` and therefore killed the Pester host when
-# dot-sourced, making it "structurally unmeasurable". That was a code defect
-# dressed up as a structural limit: ADR-001 moved the exit code to
-# `[ref]$ExitCode` and put `exit` only in the execution guard, so setup.ps1 is
-# now instrumented like every other script (tests/unit/scripts.Tests.ps1 calls
-# its Main in-process).
+# Current entries (2026-10-09): the adapter's coverage denominator is
+# `find . -name '*.ps1'` over the WHOLE repo, so any non-product script on
+# disk dilutes the ratio. The project baseline (84.08%, 2804/3335, 17 files:
+# references/scripts + setup.ps1) covers product code only. The files below
+# are excluded because they are NOT product code and are BY DESIGN never
+# exercised by the Pester suite — this is a structural distinction, not the
+# "hard to test" excuse that setup.ps1's entry once was (see below).
 #
-# Do NOT add files here merely because they are hard to test. If a script really
-# cannot be instrumented, prove it in the commit message and fix the script first.
+# -------------------------------
+# wrc-drill/*.ps1 — admin drill harnesses (drill3/4/5, rdlab, teardown).
+# They deliberately touch live system state (services, PATH, registry) and
+# are exercised by the manual 23-check admin drill recorded in CHANGELOG,
+# never by Pester; wiring them into unit tests would mean mocking away the
+# very realness they exist to verify.
+# -------------------------------
+# .sprint-state/delphi-run.ps1 and .delphi-work/**/delphi-run.ps1 — Delphi
+# multi-round review orchestration tooling (the .delphi-work copy is an
+# archived worktree snapshot). Review process tooling, not shipped scripts.
+# -------------------------------
+wrc-drill/*.ps1
+.sprint-state/delphi-run.ps1
+.delphi-work/*
+#
+# The list was previously exactly one file, setup.ps1, on the grounds that
+# its `Main` ended in `exit 0` / `exit 1` and therefore killed the Pester
+# host when dot-sourced, making it "structurally unmeasurable". That was a
+# code defect dressed up as a structural limit: ADR-001 moved the exit code
+# to `[ref]$ExitCode` and put `exit` only in the execution guard, so
+# setup.ps1 is now instrumented like every other script (it was REMOVED from
+# this list in 721cada). The entries above differ: they are not product code
+# and never will be.
+#
+# Do NOT add files here merely because they are hard to test. If a script
+# really cannot be instrumented, prove it in the commit message and fix the
+# script first.
