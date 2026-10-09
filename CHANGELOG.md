@@ -21,16 +21,19 @@ CI 首跑（run 37868204798）双引擎 job 红、UI job 绿，30+ 失败全部�
   契约），在 Stop 语义下全被升级成终止错误。Pester 步骤显式改回 `Continue`
   （并设 `$PSNativeCommandUseErrorActionPreference = $false`），与干净本地跑对齐。
   产品代码零改动——脚本行为本来就对。
-- **管理员环境假设（权限门 3 用例 + 还原点 2 用例）**：windows runner 会话是
-  管理员。「非管理员契约」用例（`Test-AdminPrivilege -Mandatory` 返回 false、
-  guard path 子进程 exit 2、无还原点中止）在管理员下无法观测，加
+- **管理员环境假设（4 个非管理员契约用例）**：windows runner 会话是
+  管理员。「非管理员契约」用例（`Test-AdminPrivilege -Mandatory` 返回 false
+  ×2、guard path 子进程 exit 2、无还原点中止）在管理员下无法观测，加
   `-Skip:$IsAdmin`（Pester 5 的 `-Skip:` 在发现阶段求值，变量在文件顶层计算，
   附注释）。其中「无还原点中止」一条是 S3 取代 B-M7 之前的旧契约——管理员下
-  S3 自建回滚保护后正常跑完 exit 0 是正确行为，注释已写明。
+  S3 自建回滚保护后正常跑完 exit 0 是正确行为，注释已写明。覆盖率影响可忽略：
+  4 条中 2 条是子进程用例，本就不计入 Pester 进程内覆盖率；进程内的仅
+  `Test-AdminPrivilege` 的非管理员分支几行，距 80% 阈值余量 136 行。
   另修 create-restore-point 的 `restore-status.json` 路径断言：runner TEMP 是
-  8.3 短路径（`RUNNER~1`），两侧经 `Get-Item` 归一化后比较。
+  8.3 短路径（`RUNNER~1`），脚本写出侧经 `Get-Item` 归一化（另一侧
+  `DirectoryInfo.FullName` 天然为长名）后比较。
 
-本地（非管理员、双引擎）语义不受影响：三条 skip 的用例本地照跑。
+本地（非管理员、双引擎）语义不受影响：四条 skip 的用例本地照跑。
 
 ### 工程化收尾：wrc-drill 入库、GitHub Actions CI 上线、旧评估报告下线（2026-10-09）
 

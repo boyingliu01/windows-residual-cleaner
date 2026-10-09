@@ -1,5 +1,12 @@
 ﻿# Pester Unit Tests for Windows Residual Cleaner Scripts (Pester 3.x Compatible)
 # Tests pure functions that don't require admin privileges
+#
+# 管理员会话（如 windows runner）下「非管理员契约」用例不可观测，跳过。
+# 注意：-Skip: 在 Pester 5 的**发现阶段**求值，必须在文件顶层计算，
+# 不能放进 BeforeAll（那要到 Run 阶段才执行，届时变量还是 $null）。
+$script:IsAdmin = [Security.Principal.WindowsPrincipal]::new(
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 Describe 'Extract-ExecutablePath (scan-residuals.ps1)' {
     BeforeAll {
@@ -864,7 +871,7 @@ Describe 'clean-residuals.ps1 safety guards (fail-closed, static + subprocess)' 
         $combined | Should -Match 'ConfirmFile not found|Administrator privileges required'
     }
 
-    It 'Aborts with exit 2 (privilege) or 1 in a child process when no restore point exists' -Skip:([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    It 'Aborts with exit 2 (privilege) or 1 in a child process when no restore point exists (non-admin only)' -Skip:$script:IsAdmin {
         # 非 DryRun 且无 backup-* → exit 1；非管理员则先 exit 2。
         # 注意：这条契约只在**非管理员**会话可观测。管理员会话（如 CI runner）下
         # 权限门放行，S3「强制精准保护」会自建回滚日志 + 备份目录并正常跑完

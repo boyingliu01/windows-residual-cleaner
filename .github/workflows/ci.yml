@@ -37,21 +37,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Pester + PSScriptAnalyzer
-        run: |
-          Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
-          Install-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Force -Scope CurrentUser
-          # Explicit import: windows-latest ships Pester 3.4.0 in $PSHOME, and
-          # implicit version resolution may pick it over the installed 5.x.
-          Import-Module Pester -MinimumVersion 5.5.0 -Force
-          Import-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Force
-
       - name: Encoding guard (non-ASCII .ps1 must be UTF-8 with BOM)
         # Windows PowerShell 5.1 reads BOM-less files in the system ANSI
         # codepage (CP1252 on runners): UTF-8 Chinese in test files becomes
         # mojibake and can even break parsing (observed in CI run #1). All
         # product scripts already carry a BOM; this keeps it that way.
+        # Placed BEFORE module installs so an encoding regression fails fast.
         run: |
           $bad = Get-ChildItem -Recurse -Filter *.ps1 -File |
             Where-Object { $_.FullName -notmatch '\\\.git\\' } |
@@ -67,6 +58,16 @@ jobs:
             exit 1
           }
           Write-Output 'Encoding guard: all non-ASCII .ps1 files carry a UTF-8 BOM'
+
+      - name: Install Pester + PSScriptAnalyzer
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Install-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Force -Scope CurrentUser
+          # Explicit import: windows-latest ships Pester 3.4.0 in $PSHOME, and
+          # implicit version resolution may pick it over the installed 5.x.
+          Import-Module Pester -MinimumVersion 5.5.0 -Force
+          Import-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Force
 
       - name: Run Pester suite (727 tests) with coverage gate (>= 80%)
         run: |
