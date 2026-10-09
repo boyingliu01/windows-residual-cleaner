@@ -26,6 +26,13 @@ tests-run.log
 .quality-history.jsonl
 .sprint.diff
 
+# Personal development-process notes (kept local, not part of the published
+# project; Gate 11 reads sprint state from disk, which is unaffected)
+.sprint-state/
+.session-learnings.md
+.code-walkthrough-result.json
+.xp-gate/
+
 # Delphi review intermediate artifacts
 .delphi-work/
 

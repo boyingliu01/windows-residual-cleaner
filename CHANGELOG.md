@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.2.0] - 2026-10-09
+
+### 开源准备：CI 硬化、过程文档移出跟踪、issue #1 验证关闭（2026-10-09）
+
+- **CI 硬化**：两个 job 加 `timeout-minutes`（30/15）防止挂死；Pester 跑完后把
+  `coverage-ci.xml` 按 `coverage-<engine>` 上传为 artifact（`if: always()`，
+  便于排查覆盖率门禁争议）；`actions/checkout`、`actions/setup-node`、
+  `actions/upload-artifact` 升到 v7（消除 Node 20 deprecation 告警）。
+- **仓库卫生（开源前审查）**：`.sprint-state/`（16 个 sprint 流程文档）与
+  `.session-learnings.md`（个人开发笔记）移出 git 跟踪、进 `.gitignore`
+  （本地保留，xp-gate Gate 11 从磁盘读取不受影响）；`.code-walkthrough-result.json`
+  与 `.xp-gate/`（评审证据、质量门禁状态）同样不随仓库分发。
+- **issue #1 验证关闭**：五项修复（ghost task 分支、文件系统递归计数+受保护
+  目录、PATH danger→caution、path_entry 清理分支、报告估算随误报消除而修正）
+  逐条核对，全部已在 master 落地并有对应测试覆盖。
+- **提交身份**：历史提交邮箱由公司邮箱改写为 GitHub noreply（git filter-repo，
+  内容零变更，仅元数据）。
+
 ### CI run #3 收尾：测试全绿，覆盖率门禁对齐行覆盖口径（2026-10-09）
 
 run #3（37876910842）双引擎 **722 通过 / 0 失败 / 5 跳过**、UI 绿——run #1 的
