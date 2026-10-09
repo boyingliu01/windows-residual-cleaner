@@ -1,4 +1,4 @@
-# ADR-001 解锁的覆盖率补强：Main 现在可在 Pester 进程内安全调用。
+﻿# ADR-001 解锁的覆盖率补强：Main 现在可在 Pester 进程内安全调用。
 # 本文件专门驱动 confirm-cleanup.ps1 / clean-residuals.ps1 的 Main，
 # 覆盖此前「因 Main 内含 exit 而完全无法插桩」的分支。
 #

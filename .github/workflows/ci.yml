@@ -47,8 +47,37 @@ jobs:
           Import-Module Pester -MinimumVersion 5.5.0 -Force
           Import-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Force
 
+      - name: Encoding guard (non-ASCII .ps1 must be UTF-8 with BOM)
+        # Windows PowerShell 5.1 reads BOM-less files in the system ANSI
+        # codepage (CP1252 on runners): UTF-8 Chinese in test files becomes
+        # mojibake and can even break parsing (observed in CI run #1). All
+        # product scripts already carry a BOM; this keeps it that way.
+        run: |
+          $bad = Get-ChildItem -Recurse -Filter *.ps1 -File |
+            Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+            Where-Object {
+              $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+              $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+              $hasNonAscii = $false
+              foreach ($b in $bytes) { if ($b -gt 0x7F) { $hasNonAscii = $true; break } }
+              -not $hasBom -and $hasNonAscii
+            }
+          if ($bad) {
+            $bad.FullName | ForEach-Object { Write-Output "Missing BOM with non-ASCII content: $_" }
+            exit 1
+          }
+          Write-Output 'Encoding guard: all non-ASCII .ps1 files carry a UTF-8 BOM'
+
       - name: Run Pester suite (727 tests) with coverage gate (>= 80%)
         run: |
+          # GitHub Actions' powershell/pwsh wrapper prepends
+          # $ErrorActionPreference = 'stop' to every run step. The suite's
+          # error-path tests call Main() in-process and capture its
+          # non-terminating Write-Error via 2>&1; under 'stop' those become
+          # terminating and fail the tests (observed in CI run #1). Restore
+          # the semantics of a clean local run.
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false # no-op on PS 5.1
           $cfg = New-PesterConfiguration
           $cfg.Run.Path = 'tests'
           $cfg.Run.Exit = $true

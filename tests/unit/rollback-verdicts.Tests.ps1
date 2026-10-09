@@ -1,4 +1,4 @@
-# tests/unit/rollback-verdicts.Tests.ps1
+﻿# tests/unit/rollback-verdicts.Tests.ps1
 # S3 — §3.4 缺失纯函数：可恢复性、REQ-024 唯一权威决策表、PATH 作用域/预期值、裁决与报告渲染。
 # 断言必须在 PS 5.1 与 pwsh 7 下都成立（pre-commit Gate 5 用 pwsh 7）。
 #

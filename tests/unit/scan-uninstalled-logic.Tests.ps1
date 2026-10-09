@@ -1,4 +1,4 @@
-# scan-uninstalled.ps1 的残留判定纯函数。
+﻿# scan-uninstalled.ps1 的残留判定纯函数。
 #
 # 这些判定逻辑原本内联在 Main 的注册表循环里，需要真实注册表项才能走到，
 # 因此大量分支（confidence 分级、系统卸载器跳过）长期未覆盖。

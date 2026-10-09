@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### CI 首跑修复：编码、EAP 语义、管理员环境假设（2026-10-09）
+
+CI 首跑（run 37868204798）双引擎 job 红、UI job 绿，30+ 失败全部是**环境差异**
+而非代码回归（本地双引擎 727/727 基线不变）。三个独立根因，三类修复：
+
+- **编码（PS 5.1 job 解析错误 + 断言乱码）**：qoder 时代写入的 10 个测试文件
+  与 drill5 无 UTF-8 BOM。本地系统代码页可吞下（UTF-8 beta 或恰好不断在
+  引号处截断），runner 的 CP1252 下中文被读乱——轻则 `已选 1 项` 断言变
+  mojibake 不匹配，重则吞掉引号导致 ParseException（main-flow / rollback-journal /
+  rollback-verdicts 三处 Discovery 失败）。已全部补 BOM，并在 ci.yml 加
+  「Encoding guard」步骤：含非 ASCII 的 .ps1 必须带 BOM，防止回归。
+- **EAP 语义（pwsh job 的 20+ error-path 用例）**：GitHub Actions 的
+  powershell/pwsh shell 包装器给每个 run 步骤前置 `$ErrorActionPreference = 'stop'`。
+  测试设计依赖「进程内调用 Main + 2>&1 捕获其非终止 Write-Error」（hermeticity
+  契约），在 Stop 语义下全被升级成终止错误。Pester 步骤显式改回 `Continue`
+  （并设 `$PSNativeCommandUseErrorActionPreference = $false`），与干净本地跑对齐。
+  产品代码零改动——脚本行为本来就对。
+- **管理员环境假设（权限门 3 用例 + 还原点 2 用例）**：windows runner 会话是
+  管理员。「非管理员契约」用例（`Test-AdminPrivilege -Mandatory` 返回 false、
+  guard path 子进程 exit 2、无还原点中止）在管理员下无法观测，加
+  `-Skip:$IsAdmin`（Pester 5 的 `-Skip:` 在发现阶段求值，变量在文件顶层计算，
+  附注释）。其中「无还原点中止」一条是 S3 取代 B-M7 之前的旧契约——管理员下
+  S3 自建回滚保护后正常跑完 exit 0 是正确行为，注释已写明。
+  另修 create-restore-point 的 `restore-status.json` 路径断言：runner TEMP 是
+  8.3 短路径（`RUNNER~1`），两侧经 `Get-Item` 归一化后比较。
+
+本地（非管理员、双引擎）语义不受影响：三条 skip 的用例本地照跑。
+
 ### 工程化收尾：wrc-drill 入库、GitHub Actions CI 上线、旧评估报告下线（2026-10-09）
 
 项目自 Qoder 迁入 WorkBuddy 继续开发的接管收尾。产品 PowerShell 代码零改动，

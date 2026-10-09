@@ -1,4 +1,4 @@
-# create-restore-point.ps1 —— 系统还原检测 + 注册表备份的完整分支覆盖。
+﻿# create-restore-point.ps1 —— 系统还原检测 + 注册表备份的完整分支覆盖。
 #
 # 这些分支此前完全未覆盖：它们都需要管理员权限或真实的还原点状态。
 # ADR-001 之后可在进程内调用 Main，于是用同一作用域的替身驱动各条分支
@@ -35,7 +35,9 @@ Describe 'create-restore-point.ps1 registry backup branch' {
         $statusFile = Join-Path $dirs[0].FullName 'restore-status.json'
         Test-Path $statusFile | Should -Be $true
         $doc = Get-Content $statusFile -Raw | ConvertFrom-Json
-        $doc.backup_dir | Should -Be $dirs[0].FullName
+        # CI runner 的 TEMP 可能是 8.3 短路径（C:\Users\RUNNER~1\...），
+        # 脚本按 $env:TEMP 原样落盘；经文件系统提供者归一化后再比较。
+        (Get-Item -LiteralPath $doc.backup_dir).FullName | Should -Be $dirs[0].FullName
         # 不要断言精确到秒的格式：PS 5.1 的 ConvertFrom-Json 把 timestamp 保持为字符串，
         # 而 PS 7 会把它解析成 [datetime]，再 -join 时带上小数秒（实测
         # "2026-10-02T21:39:42.0000000"）。pre-commit 门禁用的是 pwsh 7，

@@ -1,7 +1,15 @@
-# run-all.ps1 / create-restore-point.ps1 的非管理员与失败传播路径。
+﻿# run-all.ps1 / create-restore-point.ps1 的非管理员与失败传播路径。
 #
 # 这些分支原本完全无法覆盖：Main 内的 exit 会杀死 Pester 宿主（ADR-001 前）。
 # ADR-001 之后可进程内调用 Main，并用 Mock 驱动权限门与子进程失败。
+
+# windows-latest runner 会话是管理员；下面几条断言的「非管理员契约」只能在
+# 非管理员会话中观测，管理员环境下跳过（本地非管理员开发机仍全量执行）。
+# 注意：-Skip: 在 Pester 5 的**发现阶段**求值，所以必须在文件顶层计算，
+# 不能放进 BeforeAll（那要到 Run 阶段才执行，届时变量还是 $null）。
+$script:IsAdmin = [Security.Principal.WindowsPrincipal]::new(
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 BeforeAll {
     $script:RunAllScript = "$PSScriptRoot\..\..\references\scripts\run-all.ps1"
@@ -15,7 +23,7 @@ Describe 'run-all.ps1 Test-AdminPrivilege' {
         Test-AdminPrivilege | Should -BeOfType [bool]
     }
 
-    It 'returns false with -Mandatory in a non-admin session (no exit)' {
+    It 'returns false with -Mandatory in a non-admin session (no exit)' -Skip:$script:IsAdmin {
         # 本会话是非管理员；关键点是它 return $false 而不是 exit 2
         Test-AdminPrivilege -Mandatory | Should -Be $false
     }
@@ -83,7 +91,7 @@ Describe 'run-all.ps1 step failure propagation' {
 Describe 'create-restore-point.ps1 Test-AdminPrivilege' {
     BeforeEach { . $script:RestoreScript }
 
-    It 'returns false with -Mandatory in a non-admin session (no exit)' {
+    It 'returns false with -Mandatory in a non-admin session (no exit)' -Skip:$script:IsAdmin {
         Test-AdminPrivilege -Mandatory | Should -Be $false
     }
 
@@ -265,9 +273,11 @@ Describe 'run-all.ps1 pipeline step-abort propagation' {
         $script:capturedExe | Should -Be "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe"
     }
 
-    It 'exits via the guard with the code Main relayed (guard path)' {
+    It 'exits via the guard with the code Main relayed (guard path)' -Skip:$script:IsAdmin {
         # 覆盖 run-all.ps1 末尾执行守卫的 135-137 行：以子进程 -File 方式真正执行脚本，
         # 非管理员下应 exit 2（权限门），且输出不含 "exit" 之外的异常。
+        # 管理员会话（CI runner）下权限门放行，管道会真实执行到业务步骤，
+        # 「守卫转发权限门退出码」这条契约无法观测，跳过。
         $outFile = Join-Path $env:TEMP ('wrc-ra-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
         try {
             $p = Start-Process -FilePath "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe" `

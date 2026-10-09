@@ -1,4 +1,4 @@
-# Pester Integration Tests - Main flow coverage for all reference scripts (v2)
+﻿# Pester Integration Tests - Main flow coverage for all reference scripts (v2)
 # 目标：每个脚本至少一次真实 Main 执行（fixture 数据驱动可控分支 + 真实只读系统扫描），
 # 使 references/scripts 覆盖率 ≥ 80%（pre-commit 门禁）
 #

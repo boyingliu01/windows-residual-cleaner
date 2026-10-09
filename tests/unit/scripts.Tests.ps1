@@ -864,8 +864,12 @@ Describe 'clean-residuals.ps1 safety guards (fail-closed, static + subprocess)' 
         $combined | Should -Match 'ConfirmFile not found|Administrator privileges required'
     }
 
-    It 'Aborts with exit 2 (privilege) or 1 in a child process when no restore point exists' {
+    It 'Aborts with exit 2 (privilege) or 1 in a child process when no restore point exists' -Skip:([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         # 非 DryRun 且无 backup-* → exit 1；非管理员则先 exit 2。
+        # 注意：这条契约只在**非管理员**会话可观测。管理员会话（如 CI runner）下
+        # 权限门放行，S3「强制精准保护」会自建回滚日志 + 备份目录并正常跑完
+        # （假夹具路径无可清理 → exit 0）——这在 REQ-003/017/025 语义下是正确
+        # 行为，「无还原点必须中止」是 S3 取代 B-M7 之前的旧契约。
         $confirm = Join-Path $global:_guardDir 'ok-confirm.json'
         [System.IO.File]::WriteAllText($confirm, '["fs_g1"]')
         $outFile = Join-Path $global:_guardDir 'out2.txt'

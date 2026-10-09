@@ -1,4 +1,4 @@
-# tests/unit/rollback-recovery.Tests.ps1
+﻿# tests/unit/rollback-recovery.Tests.ps1
 # S2 — T3 崩溃恢复：候选发现、抑制判定、消费与兜底决策（REQ-019 / REQ-031 / REQ-033 / REQ-024）
 # 断言必须在 PS 5.1 与 pwsh 7 下都成立（pre-commit Gate 5 用 pwsh 7）。
 #

@@ -1,4 +1,4 @@
-# Pester Configuration Validation Tests (Pester 3.x Compatible)
+﻿# Pester Configuration Validation Tests (Pester 3.x Compatible)
 
 Describe 'whitelist.json' {
     BeforeAll {

@@ -1,4 +1,4 @@
-# tests/unit/rollback-journal.Tests.ps1
+﻿# tests/unit/rollback-journal.Tests.ps1
 # S1 — journal 核心：schema、原子写、自证（REQ-005 / REQ-027 / REQ-032 / REQ-034 / REQ-035）
 # 断言必须在 PS 5.1 与 pwsh 7 下都成立（pre-commit Gate 5 用 pwsh 7）。
 
