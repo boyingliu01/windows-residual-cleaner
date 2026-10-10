@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.3.0] - 2026-10-10
+
+### 正式发版定版（无代码变更）
+
+- 维护性定版：自 1.4.2.0 以来无代码与文档变更，仓库状态经全面体检后标记为正式版本。
+- 发布前体检确认：工作区 clean、master 与远端同步（4607c13）、open issue 清零、
+  CI 最新 run 全绿（双引擎 727 用例、行覆盖 82.89%、PSSA 0 findings、UI 绿）。
+
 ## [1.4.2.0] - 2026-10-09
 
 ### 开源准备：CI 硬化、过程文档移出跟踪、issue #1 验证关闭（2026-10-09）
