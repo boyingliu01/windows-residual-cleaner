@@ -1,0 +1,797 @@
+{
+  "schemaVersion": 1,
+  "archlintVersion": "0.16.0",
+  "generatedAt": "2026-10-16T16:55:05.680195900+00:00",
+  "commit": "ab43af3",
+  "smells": [
+    {
+      "id": "dead:ui/src/components/ui/tabs.tsx:Tabs:84",
+      "smellType": "DeadSymbol",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ui/tabs.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadSymbol",
+        "name": "Tabs",
+        "kind": "Symbol"
+      },
+      "locations": [
+        {
+          "file": "ui/src/components/ui/tabs.tsx",
+          "line": 84,
+          "column": 10,
+          "range": {
+            "start_line": 84,
+            "start_column": 10,
+            "end_line": 84,
+            "end_column": 14
+          },
+          "description": "Symbol 'Tabs' definition"
+        }
+      ]
+    },
+    {
+      "id": "dead:ui/src/components/ui/tabs.tsx:TabsList:84",
+      "smellType": "DeadSymbol",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ui/tabs.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadSymbol",
+        "name": "TabsList",
+        "kind": "Symbol"
+      },
+      "locations": [
+        {
+          "file": "ui/src/components/ui/tabs.tsx",
+          "line": 84,
+          "column": 16,
+          "range": {
+            "start_line": 84,
+            "start_column": 16,
+            "end_line": 84,
+            "end_column": 24
+          },
+          "description": "Symbol 'TabsList' definition"
+        }
+      ]
+    },
+    {
+      "id": "dead:ui/src/components/ui/tabs.tsx:TabsTrigger:84",
+      "smellType": "DeadSymbol",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ui/tabs.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadSymbol",
+        "name": "TabsTrigger",
+        "kind": "Symbol"
+      },
+      "locations": [
+        {
+          "file": "ui/src/components/ui/tabs.tsx",
+          "line": 84,
+          "column": 26,
+          "range": {
+            "start_line": 84,
+            "start_column": 26,
+            "end_line": 84,
+            "end_column": 37
+          },
+          "description": "Symbol 'TabsTrigger' definition"
+        }
+      ]
+    },
+    {
+      "id": "dead:ui/src/components/ui/tabs.tsx:TabsContent:84",
+      "smellType": "DeadSymbol",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ui/tabs.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadSymbol",
+        "name": "TabsContent",
+        "kind": "Symbol"
+      },
+      "locations": [
+        {
+          "file": "ui/src/components/ui/tabs.tsx",
+          "line": 84,
+          "column": 39,
+          "range": {
+            "start_line": 84,
+            "start_column": 39,
+            "end_line": 84,
+            "end_column": 50
+          },
+          "description": "Symbol 'TabsContent' definition"
+        }
+      ]
+    },
+    {
+      "id": "dead:ui/src/components/ui/progress.tsx:Progress:33",
+      "smellType": "DeadSymbol",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ui/progress.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadSymbol",
+        "name": "Progress",
+        "kind": "Symbol"
+      },
+      "locations": [
+        {
+          "file": "ui/src/components/ui/progress.tsx",
+          "line": 33,
+          "column": 10,
+          "range": {
+            "start_line": 33,
+            "start_column": 10,
+            "end_line": 33,
+            "end_column": 18
+          },
+          "description": "Symbol 'Progress' definition"
+        }
+      ]
+    },
+    {
+      "id": "ccog:ui/src/hooks/useApp.tsx:streamNDJSON:144",
+      "smellType": "HighCognitiveComplexity",
+      "severity": "Medium",
+      "files": [
+        "ui/src/hooks/useApp.tsx"
+      ],
+      "metrics": {
+        "cognitiveComplexity": 27
+      },
+      "details": {
+        "type": "highCognitiveComplexity",
+        "name": "streamNDJSON",
+        "line": 144,
+        "complexity": 27
+      },
+      "locations": [
+        {
+          "file": "ui/src/hooks/useApp.tsx",
+          "line": 144,
+          "column": 16,
+          "range": {
+            "start_line": 144,
+            "start_column": 16,
+            "end_line": 144,
+            "end_column": 28
+          },
+          "description": "Function 'streamNDJSON' (cognitive complexity: 27)"
+        }
+      ]
+    },
+    {
+      "id": "ccog:ui/src/components/CleanupPanel.tsx:CleanupPanel:150",
+      "smellType": "HighCognitiveComplexity",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/CleanupPanel.tsx"
+      ],
+      "metrics": {
+        "cognitiveComplexity": 30
+      },
+      "details": {
+        "type": "highCognitiveComplexity",
+        "name": "CleanupPanel",
+        "line": 150,
+        "complexity": 30
+      },
+      "locations": [
+        {
+          "file": "ui/src/components/CleanupPanel.tsx",
+          "line": 150,
+          "column": 17,
+          "range": {
+            "start_line": 150,
+            "start_column": 17,
+            "end_line": 150,
+            "end_column": 29
+          },
+          "description": "Function 'CleanupPanel' (cognitive complexity: 30)"
+        }
+      ]
+    },
+    {
+      "id": "ccog:ui/src/components/CleanupPanel.tsx:LogSummary:220",
+      "smellType": "HighCognitiveComplexity",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/CleanupPanel.tsx"
+      ],
+      "metrics": {
+        "cognitiveComplexity": 21
+      },
+      "details": {
+        "type": "highCognitiveComplexity",
+        "name": "LogSummary",
+        "line": 220,
+        "complexity": 21
+      },
+      "locations": [
+        {
+          "file": "ui/src/components/CleanupPanel.tsx",
+          "line": 220,
+          "column": 9,
+          "range": {
+            "start_line": 220,
+            "start_column": 9,
+            "end_line": 220,
+            "end_column": 19
+          },
+          "description": "Function 'LogSummary' (cognitive complexity: 21)"
+        }
+      ]
+    },
+    {
+      "id": "ccycl:ui/src/hooks/useApp.tsx:appReducer:41",
+      "smellType": "HighCyclomaticComplexity",
+      "severity": "Medium",
+      "files": [
+        "ui/src/hooks/useApp.tsx"
+      ],
+      "metrics": {
+        "cyclomaticComplexity": 19
+      },
+      "details": {
+        "type": "highCyclomaticComplexity",
+        "name": "appReducer",
+        "line": 41,
+        "complexity": 19
+      },
+      "locations": [
+        {
+          "file": "ui/src/hooks/useApp.tsx",
+          "line": 41,
+          "column": 10,
+          "range": {
+            "start_line": 41,
+            "start_column": 10,
+            "end_line": 41,
+            "end_column": 20
+          },
+          "description": "Function 'appReducer' (cyclomatic complexity: 19)"
+        }
+      ]
+    },
+    {
+      "id": "ccycl:ui/src/hooks/useApp.tsx:streamNDJSON:144",
+      "smellType": "HighCyclomaticComplexity",
+      "severity": "Medium",
+      "files": [
+        "ui/src/hooks/useApp.tsx"
+      ],
+      "metrics": {
+        "cyclomaticComplexity": 17
+      },
+      "details": {
+        "type": "highCyclomaticComplexity",
+        "name": "streamNDJSON",
+        "line": 144,
+        "complexity": 17
+      },
+      "locations": [
+        {
+          "file": "ui/src/hooks/useApp.tsx",
+          "line": 144,
+          "column": 16,
+          "range": {
+            "start_line": 144,
+            "start_column": 16,
+            "end_line": 144,
+            "end_column": 28
+          },
+          "description": "Function 'streamNDJSON' (cyclomatic complexity: 17)"
+        }
+      ]
+    },
+    {
+      "id": "ccycl:ui/src/components/CleanupPanel.tsx:CleanupPanel:150",
+      "smellType": "HighCyclomaticComplexity",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/CleanupPanel.tsx"
+      ],
+      "metrics": {
+        "cyclomaticComplexity": 37
+      },
+      "details": {
+        "type": "highCyclomaticComplexity",
+        "name": "CleanupPanel",
+        "line": 150,
+        "complexity": 37
+      },
+      "locations": [
+        {
+          "file": "ui/src/components/CleanupPanel.tsx",
+          "line": 150,
+          "column": 17,
+          "range": {
+            "start_line": 150,
+            "start_column": 17,
+            "end_line": 150,
+            "end_column": 29
+          },
+          "description": "Function 'CleanupPanel' (cyclomatic complexity: 37)"
+        }
+      ]
+    },
+    {
+      "id": "ccycl:ui/src/components/CleanupPanel.tsx:LogSummary:220",
+      "smellType": "HighCyclomaticComplexity",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/CleanupPanel.tsx"
+      ],
+      "metrics": {
+        "cyclomaticComplexity": 23
+      },
+      "details": {
+        "type": "highCyclomaticComplexity",
+        "name": "LogSummary",
+        "line": 220,
+        "complexity": 23
+      },
+      "locations": [
+        {
+          "file": "ui/src/components/CleanupPanel.tsx",
+          "line": 220,
+          "column": 9,
+          "range": {
+            "start_line": 220,
+            "start_column": 9,
+            "end_line": 220,
+            "end_column": 19
+          },
+          "description": "Function 'LogSummary' (cyclomatic complexity: 23)"
+        }
+      ]
+    },
+    {
+      "id": "ccycl:ui/src/components/ItemTable.tsx:<anonymous>:43",
+      "smellType": "HighCyclomaticComplexity",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ItemTable.tsx"
+      ],
+      "metrics": {
+        "cyclomaticComplexity": 18
+      },
+      "details": {
+        "type": "highCyclomaticComplexity",
+        "name": "<anonymous>",
+        "line": 43,
+        "complexity": 18
+      },
+      "locations": [
+        {
+          "file": "ui/src/components/ItemTable.tsx",
+          "line": 43,
+          "column": 14,
+          "range": {
+            "start_line": 43,
+            "start_column": 14,
+            "end_line": 64,
+            "end_column": 6
+          },
+          "description": "Function '<anonymous>' (cyclomatic complexity: 18)"
+        }
+      ]
+    },
+    {
+      "id": "deadcode:119d7736",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/src/App.test.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:14ac963d",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/server/index.cjs"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:c643c8dc",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/server/security.test.mjs"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:ec62b504",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ScanPanel.test.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:f3f676d2",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/src/main.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:d96cb7a9",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ui/progress.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:8c6f5b42",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/server/index.test.mjs"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:0a9fa7a8",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/src/hooks/useApp.test.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:5c9881a5",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ItemTable.test.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:8c048417",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ReviewPanel.test.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:ced2e806",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/SummaryBar.test.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:36952fc2",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/CleanupPanel.test.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "deadcode:b5581391",
+      "smellType": "DeadCode",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ui/tabs.tsx"
+      ],
+      "metrics": {},
+      "details": {
+        "type": "deadCode"
+      }
+    },
+    {
+      "id": "vendor:react",
+      "smellType": "VendorCoupling",
+      "severity": "Medium",
+      "files": [
+        "ui/src/components/ui/tabs.tsx",
+        "ui/src/components/ui/checkbox.tsx",
+        "ui/src/components/ui/button.tsx",
+        "ui/src/hooks/useApp.tsx",
+        "ui/src/test/index.tsx",
+        "ui/src/components/ui/progress.tsx",
+        "ui/src/components/ui/table.tsx",
+        "ui/src/main.tsx",
+        "ui/src/components/ScanPanel.tsx",
+        "ui/src/components/ItemTable.tsx",
+        "ui/src/components/CleanupPanel.tsx",
+        "ui/src/App.tsx",
+        "ui/src/components/ReviewPanel.tsx",
+        "ui/src/components/ui/card.tsx"
+      ],
+      "metrics": {
+        "dependentCount": 14
+      },
+      "details": {
+        "type": "vendorCoupling",
+        "package": "react"
+      },
+      "locations": [
+        {
+          "file": "ui/src/components/ui/tabs.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/ui/checkbox.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/ui/button.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/hooks/useApp.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/test/index.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/ui/progress.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/ui/table.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/main.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/ScanPanel.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/ItemTable.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/CleanupPanel.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/App.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/ReviewPanel.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/ui/card.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        }
+      ]
+    },
+    {
+      "id": "vendor:vitest",
+      "smellType": "VendorCoupling",
+      "severity": "Medium",
+      "files": [
+        "ui/src/App.test.tsx",
+        "ui/src/components/ReviewPanel.test.tsx",
+        "ui/server/security.test.mjs",
+        "ui/src/components/ScanPanel.test.tsx",
+        "ui/vite.config.ts",
+        "ui/src/hooks/useApp.test.tsx",
+        "ui/src/components/CleanupPanel.test.tsx",
+        "ui/src/lib/utils.test.ts",
+        "ui/server/index.test.mjs",
+        "ui/src/components/ItemTable.test.tsx",
+        "ui/src/components/SummaryBar.test.tsx"
+      ],
+      "metrics": {
+        "dependentCount": 11
+      },
+      "details": {
+        "type": "vendorCoupling",
+        "package": "vitest"
+      },
+      "locations": [
+        {
+          "file": "ui/src/App.test.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/ReviewPanel.test.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/server/security.test.mjs",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/ScanPanel.test.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/vite.config.ts",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/hooks/useApp.test.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/CleanupPanel.test.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/lib/utils.test.ts",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/server/index.test.mjs",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/ItemTable.test.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        },
+        {
+          "file": "ui/src/components/SummaryBar.test.tsx",
+          "line": 0,
+          "column": null,
+          "range": null,
+          "description": null
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "totalSmells": 28,
+    "filesAnalyzed": 35,
+    "cycles": 0,
+    "godModules": 0,
+    "deadCode": 13,
+    "deadSymbols": 5,
+    "layerViolations": 0,
+    "highCyclomaticComplexity": 5,
+    "highCognitiveComplexity": 3,
+    "hubModules": 0
+  },
+  "grade": "ArchitectureGrade { score: 3.8666666, level: Poor, density: 16.0 }"
+}

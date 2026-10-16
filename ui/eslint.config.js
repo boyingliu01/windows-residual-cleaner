@@ -13,7 +13,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['server/**/*.cjs'],
+    files: ['server/**/*.cjs', 'server/**/*.test.mjs'],
     languageOptions: { globals: { ...globals.node } },
     rules: {
       '@typescript-eslint/no-require-imports': 'off',

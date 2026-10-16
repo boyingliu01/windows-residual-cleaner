@@ -86,15 +86,6 @@ export interface FinalReport {
 
 export type ResidualItem = FileResidual | RegistryResidual | GhostService | GhostTask | StartupResidual | ShellResidual | PathResidual
 
-export interface CategoryInfo {
-  key: string
-  label: string
-  icon: string
-  prefix: string
-  items: ResidualItem[]
-  color: string
-}
-
 export interface CleanupLogEntry {
   success: boolean
   id: string
@@ -118,7 +109,9 @@ export interface CleanupLog {
   entries: CleanupLogEntry[]
 }
 
-export type AppPhase = 'idle' | 'scanning' | 'review' | 'selecting' | 'dry-run' | 'cleaning' | 'done'
+// 相位机（2026-10-16 审计）：只保留 UI 实际 dispatch 过的相位；
+// 'selecting' 曾是死值——没有任何 reducer/dispatch 进入过它，徒增状态空间。
+export type AppPhase = 'idle' | 'scanning' | 'review' | 'dry-run' | 'cleaning' | 'done'
 
 export interface ScanOutputLine {
   text: string

@@ -497,6 +497,13 @@ app.post('/api/restore-point', async (req, res) => {
   }
 });
 
+// API 404 必须在静态 SPA 分支之前：带 dist 部署时，未知 /api 路由此前会掉进
+// app.get('*') 且该分支对 /api 路径不回应任何内容（2026-10-16 路由测试抓到：
+// 浏览器端表现为永久挂起，连 404 都没有）。
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
 // Serve static frontend in production
 const DIST_DIR = path.resolve(__dirname, '../dist');
 if (fs.existsSync(DIST_DIR)) {
@@ -509,8 +516,15 @@ if (fs.existsSync(DIST_DIR)) {
 }
 
 // HOST / PORT and the loopback rationale live with the origin guard at the top.
-app.listen(PORT, HOST, () => {
-  console.log(`API server running on http://${HOST}:${PORT}`);
-  console.log(`Project root: ${PROJECT_ROOT}`);
-  console.log(`Scripts dir: ${SCRIPTS_DIR}`);
-});
+// 可测性（2026-10-16 审计 P3）：此前本文件在顶层无条件 app.listen —— require 即起服务、
+// 撞 3456 端口，516 行的服务器壳因此零测试。现在：被 require（vitest）时只导出 app，
+// 直接执行时才监听 —— 生产行为（node server/index.cjs）不变。
+if (require.main === module) {
+  app.listen(PORT, HOST, () => {
+    console.log(`API server running on http://${HOST}:${PORT}`);
+    console.log(`Project root: ${PROJECT_ROOT}`);
+    console.log(`Scripts dir: ${SCRIPTS_DIR}`);
+  });
+}
+
+module.exports = { app, PROJECT_ROOT, getBackupStatus };

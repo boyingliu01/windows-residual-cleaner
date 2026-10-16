@@ -2,7 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.4.4.0] - 2026-10-16
+
+### 门禁加固与平台层原语收敛（2026-10-16 接管审计）
+
+- **xp-gate 门禁体检**：官方 13 道门禁逐一对底层工具实测，产出
+  `docs/audits/2026-10-16-gate-status.md`（官方 9 PASS / 3 SKIP 的名实拆解），
+  向 `boyingliu01/xp-gate` 提交 4 个缺陷 issue（lib source fail-open、Gate 10
+  工具缺席静默 PASS、Gate 3/4/6 对 PowerShell 零覆盖、文件发现不 prune 演练目录）。
+- **`references/scripts/native-invoke.ps1`（新增）**：原生 exe 调用唯一通道——
+  `ConvertTo-NativeArgument`（含空格/引号/尾反斜杠的命令行引号封装，P1-1 根因）+
+  `Invoke-NativeExe`（双流重定向 + `WaitForExit(ms)` 真实超时；旧实现的
+  `TimeoutSeconds` 在 `-Wait` 下从未生效）。`Invoke-ScExe` / `Invoke-RegExe` 收敛为
+  其包装（返回形状不变，调用方零改动）；`Remove-ItemRobust` Tier2 的
+  takeown/icacls 同步改道（含空格路径此前从未真正生效，一直被 Tier3 掩盖）。
+- **PS 5.1 句柄陷阱**：`-PassThru`（无 `-Wait`）的 Process 必须先触碰 `.Handle`
+  再等待，否则进程退出后 `ExitCode` 恒为 `$null`（双引擎行为差异，实测）。
+- **`Remove-ItemRobust` 通配符注入面关闭**：函数体内全部路径操作改 `-LiteralPath`
+  ——含 `[ ]` 的残留目录名此前会被 `-Path` 当通配符解释（误判 absent / 错删匹配项）。
+- **`create-restore-point.ps1` 修复**：裸 `reg export ... 2>$null`（失败零记录）
+  改走 `Invoke-NativeExe`；导出失败补 else 分支落 `valid=$false` 记录；缺库时
+  Main fail-closed 回传 3。
+- **新增 `tests/unit/platform-hygiene.Tests.ps1`（18 用例，双引擎）**：引号封装单测 +
+  真实进程行为（含空格参数、真实超时击杀、sc 1060/1639 判别、HKCU 含空格键导出）+
+  3 条 AST 守卫（Start-Process 白名单、`-ArgumentList` 数组字面量禁裸变量、
+  `Remove-ItemRobust` 禁 `-Path`、禁裸 `reg`/`sc`）+ rollback 库清单一致性。
+  测试数 727 → **745**（双引擎各 745/745）。
+- **UI 服务端可测化 + 缺陷修复**：`ui/server/index.cjs` 顶层无条件 `app.listen` 改为
+  `require.main === module` 守卫并导出 `app`（生产行为不变）；新增
+  `ui/server/index.test.mjs`（11 用例：状态形状、backup-status 诚实两层、confirm
+  校验 400、Origin 守卫 403、无 Origin 放行）。测试抓到**真实缺陷**：带 dist 部署时
+  未知 `/api` 路由掉进 SPA catch-all 且不回应任何内容（浏览器永久挂起）——补
+  `/api/*` 404 分支。vitest 59 → **70**。
+- **Gate 6 架构基线激活**：`.architecture-baseline.json` 落盘（28 smells / grade 3.87
+  如实记录存量），archlint 从 "no baseline found" 弱 PASS 进入 diff 模式（拦新增违规）。
+- **孤儿代码清理**：删除 `ui/src/types/index.ts` 的 `CategoryInfo`（零引用）与
+  AppPhase 死值 `'selecting'`。
+- AGENTS.md 陷阱清单新增第 14 条（Start-Process 引号 / PS 5.1 Handle / -Wait 不可超时）；
+  四层降级示例同步至 `-LiteralPath` + `Invoke-NativeExe` 现状。
 
 ## [1.4.3.0] - 2026-10-10
 
