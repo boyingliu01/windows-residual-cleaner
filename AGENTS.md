@@ -10,7 +10,7 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 745 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 749 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -412,6 +412,28 @@ if ($proc.WaitForExit($ms)) { $proc.ExitCode }   # 才拿得到退出码
 
 ---
 
+### 15. `Split-Path -LiteralPath` 不接受 `-Parent`/`-Leaf`；catch 会把**代码错误**吞成**环境失败**（2026-10-16）
+
+`Split-Path` 的 `-LiteralPath` 参数集只支持 `-Resolve`/`-Credential`——
+带 `-Parent` / `-Leaf` / `-Extension` 时在 **PS 5.1 与 pwsh 7 上都抛**
+「Parameter set cannot be resolved / 无法使用指定的命名参数解析参数集」。
+`-Path` 参数集才支持这些开关，但 `-Path` 有通配符语义（破坏性函数里是注入面）。
+**路径拆解在破坏性函数里一律用 `[System.IO.Path]::GetDirectoryName/GetFileName`**。
+
+**更危险的连带教训**：这个死分支藏在 `Remove-ItemRobust` tier-4 的 `catch` 里，
+而当时的 locked-fixture 用例**预期 tier-4 失败**——「参数集解析错误」和「真实的
+锁拒绝」都表现为 catch 住并落 `failed`，用例照样绿。**预期失败路径上的 catch
+会把代码 bug 伪装成环境失败**；对这类路径必须额外断言失败原因的**类别**
+（本例：警告流必须含锁拒绝措辞、必须不含参数集错误措辞，
+`tests/unit/scripts.Tests.ps1` 的 tier-4 用例）。
+
+> 实证边界（双引擎探测，2026-10-16）：share=0 独占句柄 / 内存映射文件 /
+> 只读目录属性下，「删除被挡 ⇒ 改名同样被拒」——tier-4 的成功窗口在标准
+> 语义下几乎不存在。它是如实的最后尝试（并 `MoveFileEx` 预约重启删除），
+> **不是**可依赖的兜底；文档与测试都不应假定它成功。
+
+---
+
 ## 多条件检测逻辑设计原则
 
 ### 核心规则: 权威信号必须 gate 辅助信号
@@ -479,20 +501,23 @@ function Remove-ItemRobust {
     } catch { Write-Warning "  → cmd delete failed: $($_.Exception.Message)" }
 
     # Tier 4: 重命名 + 延迟删除（下次启动时）—— 走 Warning，不得污染成功流
+    # 注意：路径拆解必须用 [System.IO.Path]，不能用 Split-Path ——
+    #   -Path 有通配符语义（同 Tier 0 注入面），而 -LiteralPath 参数集**不接受**
+    #   -Parent/-Leaf（两个引擎都抛「Parameter set cannot be resolved」，见陷阱 15）。
     try {
         $isDir = (Get-Item -LiteralPath $Path).PSIsContainer
-        $parent = Split-Path -LiteralPath $Path -Parent
-        $leaf = Split-Path -LiteralPath $Path -Leaf
+        $parent = [System.IO.Path]::GetDirectoryName($Path)
+        $leaf = [System.IO.Path]::GetFileName($Path)
         $renamed = Join-Path $parent "~$leaf.deleted"
         $counter = 0
         while (Test-Path -LiteralPath $renamed) {
             $counter++
             $renamed = Join-Path $parent "~$leaf.deleted$counter"
         }
-        Rename-Item -LiteralPath $Path -NewName (Split-Path -LiteralPath $renamed -Leaf) -Force -ErrorAction Stop
-        Write-Warning "  → Renamed to $(Split-Path -LiteralPath $renamed -Leaf) (deferred delete - may be in use)"
+        Rename-Item -LiteralPath $Path -NewName ([System.IO.Path]::GetFileName($renamed)) -Force -ErrorAction Stop
+        Write-Warning "  → Renamed to $([System.IO.Path]::GetFileName($renamed)) (deferred delete - may be in use)"
         # REQ-002: 改名不是删除（内容仍在磁盘上），必须回传 renamed:<新名>
-        & $setOutcome ('renamed:' + (Split-Path -LiteralPath $renamed -Leaf))
+        & $setOutcome ('renamed:' + [System.IO.Path]::GetFileName($renamed))
         return $true
     } catch { Write-Warning "  → Rename fallback also failed: $($_.Exception.Message)" }
 
@@ -942,14 +967,24 @@ if ($MyInvocation.InvocationName -ne '.') {
   - **`Remove-ItemRobust` 全部路径操作改 `-LiteralPath`**（通配符注入面关闭）；
     `create-restore-point.ps1` 裸 `reg export` 改走 Invoke-NativeExe + 失败落
     `valid=$false` 记录 + 缺库 fail-closed 回传 3。
-  - **新增 `tests/unit/platform-hygiene.Tests.ps1`**（18 用例）：引号单测 + 真实进程
-    行为（sc 1060/1639 判别、HKCU 含空格键导出、真实超时击杀）+ 4 条 AST 守卫
-    （Start-Process 白名单、数组字面量禁裸变量、Remove-ItemRobust 禁 -Path、
-    禁裸 reg/sc）+ rollback 库清单一致性。测试数 727 → **745**（双引擎各 745/745）。
+  - **新增 `tests/unit/platform-hygiene.Tests.ps1`**（21 用例）：引号单测 + 真实进程
+    行为（sc 1060/1639 判别、服务名单引号形态、HKCU 含空格/含内嵌引号键导出、
+    含空格+尾反斜杠参数、真实超时击杀）+ 4 条 AST 守卫（Start-Process 白名单、
+    数组字面量禁裸变量、Remove-ItemRobust 禁 -Path 且禁 Split-Path、禁裸 reg/sc）
+    + rollback 库清单一致性。测试数 727 → **749**（双引擎各 749/749）。
   - **UI**：`ui/server/index.cjs` 可测化（`require.main === module` 守卫 + 导出 app），
-    新增 `ui/server/index.test.mjs` 11 用例；测试抓到真实缺陷——带 dist 部署时未知
+    新增 `ui/server/index.test.mjs` 12 用例；测试抓到真实缺陷——带 dist 部署时未知
     `/api` 路由掉进 SPA catch-all 且不回应（浏览器挂起），已补 `/api/*` 404 分支。
-    删除孤儿类型 `CategoryInfo` 与 AppPhase 死值 `'selecting'`；vitest 59 → **70**；
-    `.architecture-baseline.json` 落盘激活 Gate 6 diff 模式（28 smells 存量如实记录）。
-  - 陷阱清单新增第 14 条；四层降级示例同步至 `-LiteralPath` + Invoke-NativeExe 现状；
-    ui/package.json 补 `test`/`lint` 脚本。
+    删除孤儿类型 `CategoryInfo` 与 AppPhase 死值 `'selecting'`；vitest 59 → **71**；
+    `.architecture-baseline.json` + `architecture.yaml` 入库激活 Gate 6 diff 模式
+    （28 smells 存量如实记录）。
+  - **delphi code-walkthrough Round 1（三专家三模型）**：其 Critical（Start-Process
+    再包引号）经双引擎端到端实证驳回并以真实进程测试钉死；证实项已修——超时
+    击杀失败写进 error 字段 + Dispose、clean-residuals 显式加载 native-invoke、
+    /api 畸形 JSON 结构化 400、architecture.yaml 入库。
+  - **自查抓到自己的回归（陷阱 15）**：上一批把 tier-4 的路径拆解写成
+    `Split-Path -LiteralPath X -Parent/-Leaf`（参数集在两个引擎上都无法解析），
+    tier-4 整体变成死分支且被 locked-fixture 的预期失败路径吞掉；已改
+    `[System.IO.Path]` 字面量方法，新增 tier-4 必须到达 Rename-Item 的行为测试。
+    陷阱清单新增第 14/15 条；四层降级示例同步至现状；ui/package.json 补
+    `test`/`lint` 脚本。

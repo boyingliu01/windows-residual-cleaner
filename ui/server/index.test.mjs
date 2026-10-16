@@ -12,6 +12,8 @@
 // =============================================================================
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
+import path from 'node:path';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 
 const requireCjs = createRequire(import.meta.url);
@@ -108,6 +110,19 @@ describe('POST /api/confirm — id 校验（confirmed-ids.json 是删除凭证�
     const res = await postJSON({});
     expect(res.status).toBe(400);
   });
+
+  it('畸形 JSON 请求体 → 结构化 400 JSON，而不是 Express 默认 HTML 错误页', async () => {
+    // delphi 走查 2026-10-16 minor：express.json() 的 SyntaxError 曾直接落到
+    // 默认错误处理器，返回 HTML —— 前端 res.json() 会再抛解析异常掩盖真因。
+    const res = await request('/api/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'not-json',
+    });
+    expect(res.status).toBe(400);
+    expect(res.text).not.toMatch(/<!DOCTYPE/i);
+    expect(JSON.parse(res.text).error).toBe('Malformed JSON body');
+  });
 });
 
 describe('Origin 守卫（DNS rebinding / 跨站可读性）', () => {
@@ -137,7 +152,9 @@ describe('未知 API 路由', () => {
 });
 
 describe('可测化导出契约', () => {
-  it('PROJECT_ROOT 指向仓库根', () => {
-    expect(PROJECT_ROOT.endsWith('windows-residual-cleaner')).toBe(true);
+  it('PROJECT_ROOT 指向仓库根（结构性判据：能同时命中 package.json 与 references/scripts）', () => {
+    // 不用仓库名做断言——仓库目录改名即误红；改用仓库根的锚点文件/目录。
+    expect(fs.existsSync(path.join(PROJECT_ROOT, 'package.json'))).toBe(true);
+    expect(fs.existsSync(path.join(PROJECT_ROOT, 'references', 'scripts'))).toBe(true);
   });
 });

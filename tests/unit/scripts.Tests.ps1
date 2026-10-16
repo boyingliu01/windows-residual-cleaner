@@ -1096,6 +1096,39 @@ public static class WrcRirLock {
             if ($h.ToInt64() -ne -1) { [void][WrcRirLock]::CloseHandle($h) }
         }
     }
+
+    It 'tier-4 的改名尝试必须真正到达 Rename-Item（Split-Path -LiteralPath 死分支回归）' {
+        # 回归背景（2026-10-16 走查期间发现）：tier-4 的路径拆解一度写成
+        # Split-Path -LiteralPath X -Parent/-Leaf —— 该参数组合在两个引擎上都抛
+        # 「Parameter set cannot be resolved」，tier-4 整体变成死分支，而 catch 把
+        # **代码错误**吞成了**环境失败**，locked-fixture 用例照样绿。
+        # 实证边界（双引擎探测）：share=0 句柄 / 内存映射 / 只读目录属性下
+        # 「删除失败 ⇒ 改名同样被拒」，tier-4 的成功窗口在标准语义下不存在——
+        # 它是如实的最后尝试，不是可用兜底。因此本用例断言的不是改名成功，
+        # 而是**改名分支真的被执行**：警告流里必须是 Rename-Item 的锁拒绝
+        # （sharing violation），而不是 Split-Path 的参数集解析错误。
+        . $global:_arbScript
+        $target = Join-Path $global:_arbRoot 'locked'
+        New-Item -Path $target -ItemType Directory -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $target 'inner.dat'), 'x')
+
+        $h = [WrcRirLock]::CreateFileW($target, [uint32]2147483648, [uint32]0, [IntPtr]::Zero, [uint32]3, [uint32]0x02000000, [IntPtr]::Zero)
+        try {
+            $h.ToInt64() | Should -Not -Be -1
+            $outcome = ''
+            $streamed = @(Remove-ItemRobust -Path $target -Outcome ([ref]$outcome) 3>&1)
+            $bools = @($streamed | Where-Object { $_ -is [bool] })
+            $bools.Count | Should -Be 1 -Because '成功流只允许携带最终布尔返回值（陷阱 9）'
+            $bools[0] | Should -Be $false -Because '四层全部失败时不得谎报成功'
+            $outcome | Should -Be 'failed'
+            $renameWarning = @($streamed | Where-Object { $_ -is [System.Management.Automation.WarningRecord] -and "$($_)" -match 'Rename fallback also failed' })
+            $renameWarning.Count | Should -Be 1 -Because 'tier-4 必须实际执行到 Rename-Item'
+            "$($renameWarning[0])" | Should -Not -Match 'Parameter set|参数集' -Because '参数集错误 = 死分支回归（Split-Path -LiteralPath 不接受 -Parent/-Leaf）'
+            "$($renameWarning[0])" | Should -Match 'being used by another process|另一个程序正在使用此文件' -Because '失败原因必须是真实锁拒绝，不是代码错误'
+        } finally {
+            if ($h.ToInt64() -ne -1) { [void][WrcRirLock]::CloseHandle($h) }
+        }
+    }
 }
 
 Describe 'clean-residuals.ps1 ConfirmFile integration' {

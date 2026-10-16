@@ -7,6 +7,17 @@ const { createOriginGuard, validateItemIds } = require('./security.cjs');
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// Structured error for malformed JSON bodies: express.json() throws a
+// SyntaxError that would otherwise reach Express's default error handler and
+// answer HTML - the frontend's res.json() would then fail with its own parse
+// error instead of showing the real cause (delphi walkthrough 2026-10-16).
+app.use((err, req, res, next) => {
+  if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    return res.status(400).json({ error: 'Malformed JSON body' });
+  }
+  next(err);
+});
+
 // Server start
 // Bind loopback ONLY: this server spawns admin-privileged, destructive
 // clean-residuals.ps1. Default app.listen() binds 0.0.0.0 (all interfaces),

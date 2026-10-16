@@ -23,23 +23,42 @@ All notable changes to this project will be documented in this file.
 - **`create-restore-point.ps1` 修复**：裸 `reg export ... 2>$null`（失败零记录）
   改走 `Invoke-NativeExe`；导出失败补 else 分支落 `valid=$false` 记录；缺库时
   Main fail-closed 回传 3。
-- **新增 `tests/unit/platform-hygiene.Tests.ps1`（18 用例，双引擎）**：引号封装单测 +
-  真实进程行为（含空格参数、真实超时击杀、sc 1060/1639 判别、HKCU 含空格键导出）+
-  3 条 AST 守卫（Start-Process 白名单、`-ArgumentList` 数组字面量禁裸变量、
-  `Remove-ItemRobust` 禁 `-Path`、禁裸 `reg`/`sc`）+ rollback 库清单一致性。
-  测试数 727 → **745**（双引擎各 745/745）。
+- **新增 `tests/unit/platform-hygiene.Tests.ps1`（21 用例，双引擎）**：引号封装单测 +
+  真实进程行为（含空格参数、含空格+尾反斜杠参数、真实超时击杀、sc 1060/1639 判别、
+  服务名单引号形态、HKCU 含空格/含内嵌引号键导出）+ 4 条 AST 守卫（Start-Process
+  白名单、`-ArgumentList` 数组字面量禁裸变量、`Remove-ItemRobust` 禁 `-Path`、
+  禁裸 `reg`/`sc`）+ rollback 库清单一致性。测试数 727 → **749**（双引擎各 749/749）。
 - **UI 服务端可测化 + 缺陷修复**：`ui/server/index.cjs` 顶层无条件 `app.listen` 改为
   `require.main === module` 守卫并导出 `app`（生产行为不变）；新增
-  `ui/server/index.test.mjs`（11 用例：状态形状、backup-status 诚实两层、confirm
-  校验 400、Origin 守卫 403、无 Origin 放行）。测试抓到**真实缺陷**：带 dist 部署时
-  未知 `/api` 路由掉进 SPA catch-all 且不回应任何内容（浏览器永久挂起）——补
-  `/api/*` 404 分支。vitest 59 → **70**。
+  `ui/server/index.test.mjs`（12 用例：状态形状、backup-status 诚实两层、confirm
+  校验 400、畸形 JSON 结构化 400、Origin 守卫 403、无 Origin 放行）。测试抓到**真实缺陷**：
+  带 dist 部署时未知 `/api` 路由掉进 SPA catch-all 且不回应任何内容（浏览器永久挂起）——补
+  `/api/*` 404 分支。vitest 59 → **71**。
 - **Gate 6 架构基线激活**：`.architecture-baseline.json` 落盘（28 smells / grade 3.87
-  如实记录存量），archlint 从 "no baseline found" 弱 PASS 进入 diff 模式（拦新增违规）。
+  如实记录存量），archlint 从 "no baseline found" 弱 PASS 进入 diff 模式（拦新增违规）；
+  `architecture.yaml`（archlint 前提配置）同步纳入跟踪——此前它只在本机存在，
+  新克隆 / CI 上 Gate 6 会退回 "no architecture config" 弱 PASS（走查发现）。
+- **delphi code-walkthrough Round 1 收口**：三位本地专家（架构 / 实现 / 可行性，
+  三不同模型）独立走查。其 Critical（称 Start-Process 会再包一层引号导致含引号
+  注册表键导出静默失败）经双引擎端到端实证**驳回**——Start-Process 原样拼接、
+  `reg.exe` 对含内嵌引号键名导出成功，现以真实进程测试钉死该裁决；被证实的
+  发现已全部修复：超时击杀失败写进 `error` 字段 + `Dispose()`、`clean-residuals.ps1`
+  显式加载 `native-invoke.ps1`（消除传递依赖）、`/api` 畸形 JSON 结构化 400、
+  `architecture.yaml` 入库。vitest 12 服务端用例 + Pester 21 平台用例均为可观测行为断言。
+- **自查抓到并修复回归（tier-4 死分支）**：上一批把 `Remove-ItemRobust` tier-4 的路径拆解写成
+  `Split-Path -LiteralPath X -Parent/-Leaf` —— 该参数组合在 PS 5.1 与 pwsh 7 上都抛
+  「Parameter set cannot be resolved」，tier-4 整体成为死分支，且被 locked-fixture
+  用例的预期失败路径吞掉（catch 把代码错误伪装成环境失败，测试照样绿）。修复为
+  `[System.IO.Path]::GetDirectoryName/GetFileName` 字面量方法；AST 守卫升级为
+  Remove-ItemRobust 内**禁用** Split-Path；新增行为测试钉死「tier-4 必须实际到达
+  Rename-Item，失败原因必须是真实锁拒绝而非参数集错误」。双引擎探测实证：
+  share=0 句柄 / 内存映射 / 只读属性下删除被挡 ⇒ 改名同样被拒，tier-4 是如实的
+  最后尝试而非可用兜底（AGENTS.md 陷阱 15）。
 - **孤儿代码清理**：删除 `ui/src/types/index.ts` 的 `CategoryInfo`（零引用）与
   AppPhase 死值 `'selecting'`。
-- AGENTS.md 陷阱清单新增第 14 条（Start-Process 引号 / PS 5.1 Handle / -Wait 不可超时）；
-  四层降级示例同步至 `-LiteralPath` + `Invoke-NativeExe` 现状。
+- AGENTS.md 陷阱清单新增第 14 条（Start-Process 引号 / PS 5.1 Handle / -Wait 不可超时）
+  与第 15 条（Split-Path -LiteralPath 参数集陷阱 + 预期失败路径吞代码错误）；
+  四层降级示例同步至 `-LiteralPath` + `Invoke-NativeExe` + `[System.IO.Path]` 现状。
 
 ## [1.4.3.0] - 2026-10-10
 

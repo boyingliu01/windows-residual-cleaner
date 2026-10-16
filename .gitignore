@@ -22,6 +22,7 @@ coverage.xml
 testResults.xml
 cov-*.xml
 coverage-*.xml
+coverage/
 tests-run.log
 *.bak
 

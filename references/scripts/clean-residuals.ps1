@@ -23,7 +23,7 @@ param(
 # 注意（AGENTS.md 陷阱 8a）：这些库文件**没有**顶层 param()，因此 dot-source 不会
 # 把同名参数默认值冲进本作用域；若将来给它们加顶层 param，必须重新检查此处。
 # ─────────────────────────────────────────────────────────────────────────────
-$rollbackLibOrder = @('rollback-journal.ps1', 'rollback-backup.ps1', 'rollback-verdicts.ps1',
+$rollbackLibOrder = @('native-invoke.ps1', 'rollback-journal.ps1', 'rollback-backup.ps1', 'rollback-verdicts.ps1',
                       'rollback-recovery.ps1', 'rollback-exec.ps1', 'rollback-producer.ps1')
 $script:RollbackLibsMissing = @()
 foreach ($libName in $rollbackLibOrder) {
@@ -165,21 +165,26 @@ function Remove-ItemRobust {
     # Strategy 4: Rename the file/directory (if deletion is blocked by handle)
     try {
         $isDir = (Get-Item -LiteralPath $Path).PSIsContainer
-        $parent = Split-Path -LiteralPath $Path -Parent
-        $leaf = Split-Path -LiteralPath $Path -Leaf
+        # 注意：这里不能用 Split-Path —— -Path 带通配符语义（同 Tier0 的注入面），
+        # 而 -LiteralPath 参数集**不接受** -Parent/-Leaf（两个引擎都抛
+        # "Parameter set cannot be resolved"，见 rollback-recovery.ps1 同款注释；
+        # 2026-10-16 走查期间实测：此前一度写成 Split-Path -LiteralPath，
+        # 被本用例的预期失败路径吞掉，tier-4 变成永久死分支）。改用 .NET 字面量方法。
+        $parent = [System.IO.Path]::GetDirectoryName($Path)
+        $leaf = [System.IO.Path]::GetFileName($Path)
         $renamed = Join-Path $parent "~$leaf.deleted"
         $counter = 0
         while (Test-Path -LiteralPath $renamed) {
             $counter++
             $renamed = Join-Path $parent "~$leaf.deleted$counter"
         }
-        Rename-Item -LiteralPath $Path -NewName (Split-Path -LiteralPath $renamed -Leaf) -Force -ErrorAction Stop
+        Rename-Item -LiteralPath $Path -NewName ([System.IO.Path]::GetFileName($renamed)) -Force -ErrorAction Stop
         # 走 Warning 而非 Write-Output：改名 = 内容没删（延迟删除），既是用户必须看到的
         # 警示，也避免污染本函数的成功流（成功流只允许携带最终布尔返回值）。
-        Write-Warning "  → Renamed to $(Split-Path -LiteralPath $renamed -Leaf) (deferred delete - may be in use)"
+        Write-Warning "  → Renamed to $([System.IO.Path]::GetFileName($renamed)) (deferred delete - may be in use)"
         # REQ-002：改名不是删除。内容仍在磁盘上（只是换了名字），必须回传 renamed:<新名>，
         # 由调用方如实记录并供人工定位；DD-006 规定这类条目不参与自动恢复。
-        & $setOutcome ('renamed:' + (Split-Path -LiteralPath $renamed -Leaf))
+        & $setOutcome ('renamed:' + [System.IO.Path]::GetFileName($renamed))
 
         # If it's a file, try to schedule it for deletion on next reboot using MoveFileEx
         if (-not $isDir) {

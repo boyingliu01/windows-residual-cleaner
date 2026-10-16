@@ -68,8 +68,14 @@ CI（run #6，`ac970b2`）：双引擎 727 用例全绿、行覆盖 82.89%、PSS
 | `references/scripts/native-invoke.ps1`：统一原生调用（`ConvertTo-NativeArgument` 引号封装 + `Invoke-NativeExe` 真实超时），`Invoke-ScExe`/`Invoke-RegExe`/Tier2 收敛到它 | ✅ |
 | `Remove-ItemRobust` 函数体全部 `-Path` → `-LiteralPath`（通配符注入面关闭） | ✅ |
 | `create-restore-point.ps1`：裸 `reg export` 改走 `Invoke-NativeExe`，导出失败补 else 分支记 `valid=$false` | ✅ |
-| 新增 `tests/unit/platform-hygiene.Tests.ps1`：引号封装单测 + 含空格参数行为测试 + 三条 AST 守卫（禁裸变量数组字面量进 `-ArgumentList`、破坏性函数禁 `-Path`、禁裸 `reg`/`sc`）+ lib 清单一致性测试 | ✅ |
+| 新增 `tests/unit/platform-hygiene.Tests.ps1`：引号封装单测 + 含空格参数行为测试 + 4 条 AST 守卫（Start-Process 白名单、禁裸变量数组字面量进 `-ArgumentList`、破坏性函数禁 `-Path`、禁裸 `reg`/`sc`）+ lib 清单一致性测试 | ✅ |
 | UI：`.architecture-baseline.json` 落盘（Gate 6 启用 diff 模式，新违规才拦）、孤儿类型 `CategoryInfo` 清理、`ui/server/index.cjs` 可测化 + 路由测试 | ✅ |
+| `architecture.yaml`（archlint 激活前提）纳入跟踪——此前仅本机存在，新克隆/CI 上 Gate 6 会退回 "no architecture config" 弱 PASS（delphi 走查发现） | ✅ |
+| delphi code-walkthrough Round 1（三专家三模型）：其 Critical（Start-Process 再包引号）经双引擎端到端实证驳回并以真实进程测试钉死；证实项已修——超时击杀失败写进 error 字段、clean-residuals 显式加载 native-invoke、/api 畸形 JSON 结构化 400 | ✅ |
+
+> 注：第三节表格中的测试数（727/59）是**审计时刻**的实测快照；走查收口（含
+> tier-4 死分支回归修复 + 行为测试）后为 Pester **749**（双引擎）+ vitest **71**
+> （服务端 12）。
 
 ## 五、xp-gate 缺陷 issue
 

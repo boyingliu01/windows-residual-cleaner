@@ -70,13 +70,20 @@ function Invoke-NativeExe {
         $null = $proc.Handle
 
         if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
-            # 击杀失败的唯一常见原因是进程已自行退出——此时超时结论仍然成立，
-            # 用 Write-Verbose 留痕即可（Verbose 流不污染成功流契约）。
-            try { $proc.Kill() } catch { Write-Verbose "Kill after timeout failed (process may have exited): $($_.Exception.Message)" }
-            $proc.WaitForExit()
+            # 超时 → 击杀。Kill 可能失败（进程恰已自行退出 / 权限不足 / 被安全软件拦截）——
+            # 失败事实必须写进返回的 error 字段，调用方不能拿到一条「未经验证的副作用断言」
+            #（delphi 走查 2026-10-16 Major：旧实现 Kill 失败只落 Write-Verbose）。
+            $killFailed = $false
+            $killError = ''
+            try { $proc.Kill() } catch { $killFailed = $true; $killError = $_.Exception.Message }
+            try { $proc.WaitForExit() } catch { Write-Verbose "WaitForExit after kill failed: $($_.Exception.Message)" }
+            $errorText = "native process timed out after ${TimeoutSeconds}s and was killed: $FilePath"
+            if ($killFailed) {
+                $errorText = "native process timed out after ${TimeoutSeconds}s and kill FAILED (may still be running): $FilePath ($killError)"
+            }
             return @{
                 ok = $false; exit_code = $null; stdout = ''; stderr = ''
-                error = "native process timed out after ${TimeoutSeconds}s and was killed: $FilePath"
+                error = $errorText
             }
         }
 
@@ -100,5 +107,7 @@ function Invoke-NativeExe {
         return @{ ok = $false; exit_code = $null; stdout = ''; stderr = ''; error = $_.Exception.Message }
     } finally {
         Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+        # 释放进程句柄；Kill/超时路径的子进程对象同样需要（走查 2026-10-16 Major）。
+        if ($null -ne $proc) { $proc.Dispose() }
     }
 }
