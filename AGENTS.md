@@ -10,7 +10,7 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 751 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 752 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -700,6 +700,13 @@ It 'Works against real registry data' {
   **判断口径**：若某脚本看起来「结构性不可插桩」，先怀疑它违反了 ADR-001（`Main` 内 `exit`），
   而不是往列表里加一行——`setup.ps1` 正是这样一条被写成豁免的代码缺陷，2026-10-08 已重构消除，
   该文件现为空列表。
+- **coverage.xml 的口径与污染（2026-10-16 走查实测）**：引用覆盖率数字前先核对产物：
+  (1) 本地包装脚本的 `CoveragePercent`（如 80.40%）是 **Pester 命令口径**；
+  (2) JaCoCo `coverage.xml` 的 LINE counter 是**行口径**，两者不可互引；Gate 5 读的是后者。
+  权威口径 = `references/scripts` 16 脚本 + `setup.ps1` 共 **17 个 sourcefile**。
+  (3) 产物会被**任何**用默认 CodeCoverage 配置跑 Pester 的会话覆写污染——实测评审期间
+  一次运行把 `.workbuddy/`（3 文件）与根目录本地脚本混进 23 个 sourcefile，顶层 counter
+  随之失真。引用前先数 `sourcefile` 数量是否为 17，混入即用 17 文件清单重跑覆盖率管线。
 
 ---
 
@@ -1001,11 +1008,25 @@ if ($MyInvocation.InvocationName -ne '.') {
     `test`/`lint` 脚本。
   - **delphi code-walkthrough Round 2（三专家三模型）**：1 APPROVED / 2
     PASS_WITH_CAVEATS，无 Critical/Major 阻塞，证实项（全部 Minor 级）当场落实：
-    `ConvertTo-NativeArgument` 尾反斜杠一律进引号分支（关闭 PS 5.1 takeown 引擎
-    分歧面）；tier-4 拆解收敛为纯函数 `Get-RenameTarget`（尾反斜杠归一化 + 盘根/
+    `ConvertTo-NativeArgument` 尾反斜杠一律进引号分支（因果口径经 Round 3 复核更正，
+    见下）；tier-4 拆解收敛为纯函数 `Get-RenameTarget`（尾反斜杠归一化 + 盘根/
     空白如实拒绝）；备份文件名净化补 `/`；rollback 缺库记录幂等去重；run-all
     逃生舱形态补真实进程回归；AST 守卫升级为 `Remove-*` 名字模式穷举；移除与
     AST 守卫强弱不一致的弱文本守卫；vitest 根配置显式 `reportsDirectory`；
-    PROJECT_ROOT 声明为不可环境覆盖的模块契约。记录在案、留待后续的重构项：
-    rollback-backup 不写宿主作用域状态（改为只读探测）、AST 守卫进一步按目录
-    白名单收敛、/api/confirm 落点断言。
+    PROJECT_ROOT 声明为不可环境覆盖的模块契约。
+  - **delphi code-walkthrough Round 3（三专家三模型）**：严码关 APPROVED（0.95，
+    零发现）；构远图/稳落地 PASS_WITH_CAVEATS，证实项（全部 Minor）当场落实——
+    (a) **陷阱 7 纪律的自我适用**：`ConvertTo-NativeArgument` 的注释与 CHANGELOG
+    曾把「裸尾反斜杠让 takeown 报 Invalid argument/option」写成 PS 5.1 引擎特有
+    缺陷，实测复核为**两引擎共有**失败形态（两引擎裸形态均 exit=1，经
+    Invoke-NativeExe 引号+翻倍后两引擎均成功），已按「写下必然/100% 必须附可复现
+    命令」的纪律改为诚实口径；(b) `create-restore-point.ps1` 的 '/' 净化被指出为
+    **不可达预留**（当前 regPaths 三条键名均无 '/'），注释改为如实标注「预留，
+    当前不可达，落地 HKCR CLSID 形态时须同步补测」；(c) `Get-RenameTarget` 对无
+    目录成分的相对路径先 `GetFullPath` 解析（否则 Join-Path 抛错被 catch 伪装成
+    环境失败，陷阱 15 同型）并补测试钉住；(4) coverage.xml 口径与污染实测记录进
+    「已知限制」（命令口径 vs 行口径；评审会话用默认 CodeCoverage 跑 Pester 会把
+    `.workbuddy/` 等混进 sourcefile，引用前先数 17）。留待后续：rollback-backup
+    不写宿主作用域状态、AST 守卫按破坏性语义而非名字模式判定、/api/confirm 落点
+    断言、reg 备份文件名两套命名方案的碰撞面。测试数 751 → **752**（双引擎各
+    752/752，新增相对路径 Get-RenameTarget 用例）；PSScriptAnalyzer 维持 0。

@@ -74,12 +74,19 @@ function Invoke-ScExe {
 # 边界：[System.IO.Path]::GetFileName 对**尾反斜杠**路径返回空串（'C:\dir\' → ''，
 # 旧 Split-Path -Path -Leaf 曾返回 'dir'）；破坏性入口必须先归一化。盘根
 # （'C:'/'C:\'）与空串没有可改名的 leaf，如实拒绝（调用方落入 failed，不伪装）。
+# 无目录成分的相对路径（'x.txt' → GetDirectoryName 返回空串）先 GetFullPath
+# 解析（Round-3 走查 稳落地 Minor）：否则 tier-4 的 Join-Path 会抛「无法将
+# 自变量绑定到参数 Path」并被 catch 伪装成环境失败——陷阱 15 同型残留。
+# 产品链只喂扫描器产出的绝对路径；此守卫为可复用纯函数的调用方兜底。
 function Get-RenameTarget {
     param([string]$Path)
     $normalized = $Path.TrimEnd('\', '/')
     if ([string]::IsNullOrWhiteSpace($normalized) -or $normalized -match '^[A-Za-z]:$') {
         return @{ ok = $false; normalized = $null; parent = $null; leaf = $null;
                   reason = "cannot decompose root-like or empty path '$Path'" }
+    }
+    if ([string]::IsNullOrEmpty([System.IO.Path]::GetDirectoryName($normalized))) {
+        $normalized = [System.IO.Path]::GetFullPath($normalized)
     }
     return @{
         ok = $true

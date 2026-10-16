@@ -1,4 +1,4 @@
-﻿# Pester Unit Tests for Windows Residual Cleaner Scripts (Pester 3.x Compatible)
+# Pester Unit Tests for Windows Residual Cleaner Scripts (Pester 3.x Compatible)
 # Tests pure functions that don't require admin privileges
 #
 # 管理员会话（如 windows runner）下「非管理员契约」用例不可观测，跳过。
@@ -1146,6 +1146,20 @@ Describe 'Get-RenameTarget（tier-4 拆解纯函数：尾反斜杠与盘根边�
             $p.parent | Should -Be 'D:\a b' -Because "输入: $shape"
             $p.leaf | Should -Be 'locked' -Because "输入: $shape"
             $p.normalized | Should -Be 'D:\a b\locked' -Because "输入: $shape"
+        }
+    }
+
+    It '无目录成分的相对路径先解析为绝对路径（Join-Path 空参数陷阱，Round-3 稳落地）' {
+        # 'x.txt' 的 GetDirectoryName 返回空串——不解析会让 tier-4 的
+        # Join-Path '' 抛「无法将自变量绑定到参数 Path」并被 catch 伪装成
+        # 环境失败（陷阱 15 同型）。产品链只喂绝对路径；此处钉住纯函数语义。
+        foreach ($shape in @('x.txt', 'a b', 'x.txt\')) {
+            $expectedParent = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($shape.TrimEnd('\', '/')))
+            $p = Get-RenameTarget -Path $shape
+            $p.ok | Should -Be $true -Because "输入: '$shape'"
+            $p.parent | Should -Be $expectedParent -Because "输入: '$shape'"
+            $p.parent | Should -Not -BeNullOrEmpty -Because "输入: '$shape'"
+            $p.leaf | Should -Be ($shape.TrimEnd('\', '/')) -Because "输入: '$shape'"
         }
     }
 

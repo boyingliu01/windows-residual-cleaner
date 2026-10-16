@@ -166,10 +166,10 @@ function Main {
     )
     $backupFiles = [System.Collections.Generic.List[PSObject]]::new()
     foreach ($p in $regPaths) {
-        # 文件名净化含 '/'（Round-2 走查 2026-10-16）：HKCR clsid 子键形如
-        # {..}/InprocServer32，'/' 残留进文件名会让 reg export 在两个引擎上都
-        # 返回 ERROR: Unable to write to the file——valid=$false 会如实落账，
-        # 但备份整条作废；净化后这类键可正常导出。
+        # 文件名净化含 '/'：**预留**（Round-3 走查 2026-10-16 诚实口径）——当前
+        # $regPaths 三条键名均不含 '/'，此分支现无测试覆盖；若将来加入 HKCR
+        # clsid 子键（{..}/InprocServer32 形态）导出，不带此净化会让 reg export
+        # 在两个引擎上都报 Unable to write to the file。落地该形态时须同步补测。
         $fname = $p -replace '[\\:/]', '_'
         $outFile = "$backupDir\reg-$fname.reg"
         # P2-7（2026-10-16 审计）：此前裸 `reg export ... 2>$null`，失败零记录——

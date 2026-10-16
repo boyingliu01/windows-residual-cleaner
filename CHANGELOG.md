@@ -56,15 +56,28 @@ All notable changes to this project will be documented in this file.
   最后尝试而非可用兜底（AGENTS.md 陷阱 15）。
 - **delphi Round 2 证实项落实**（三专家三模型：1 APPROVED / 2 PASS_WITH_CAVEATS，
   全部发现 Minor 级）：`ConvertTo-NativeArgument` 早退条件收紧——尾反斜杠值一律进入
-  引号+翻倍分支（裸透传在 PS 5.1 下令 takeown 报 Invalid argument/option，引擎分歧面
-  关闭）；tier-4 拆解收敛为可单测纯函数 `Get-RenameTarget`（尾反斜杠归一化 + 盘根/空白
-  如实拒绝）；`create-restore-point.ps1` 备份文件名净化补 `/`（HKCR clsid 子键
-  {..}/InprocServer32 形态此前必败）；`rollback-backup.ps1` 缺库记录幂等去重；
-  run-all `Invoke-Step` 逃生舱形态（陷阱 14a 白名单豁免点）补真实进程回归；
-  platform-hygiene AST 守卫从单函数升级为**名字模式穷举**（凡 `Remove-*` 函数体一律
-  禁 Split-Path 且强制 -LiteralPath）；移除与 AST 守卫强弱不一致的弱文本守卫；
-  `vitest.config.ts` 显式 `coverage.reportsDirectory`；index.cjs 把 PROJECT_ROOT
+  引号+翻倍分支（实测口径经 Round 3 复核更正：含空格+尾反斜杠裸透传时 takeown 在
+  **两个**引擎都报 Invalid argument/option，引号+翻倍在两个引擎都正确——统一到唯一
+  正确形态的防御性加固，非引擎特有缺陷修复）；tier-4 拆解收敛为可单测纯函数
+  `Get-RenameTarget`（尾反斜杠归一化 + 盘根/空白如实拒绝 + 相对路径 GetFullPath
+  解析）；`create-restore-point.ps1` 备份文件名净化补 `/`（按 Round 3 口径如实标注为
+  HKCR CLSID 形态的**预留**，当前 regPaths 三条键名不可达）；`rollback-backup.ps1`
+  缺库记录幂等去重；run-all `Invoke-Step` 逃生舱形态（陷阱 14a 白名单豁免点）补真实
+  进程回归；platform-hygiene AST 守卫从单函数升级为**名字模式穷举**（凡 `Remove-*`
+  函数体一律禁 Split-Path 且强制 -LiteralPath）；移除与 AST 守卫强弱不一致的弱文本
+  守卫；`vitest.config.ts` 显式 `coverage.reportsDirectory`；index.cjs 把 PROJECT_ROOT
   声明为不可环境覆盖的模块契约。
+- **delphi Round 3 证实项落实**（三专家三模型：严码关 APPROVED 0.95 零发现，
+  构远图/稳落地 PASS_WITH_CAVEATS，全部发现 Minor 级）：`ConvertTo-NativeArgument`
+  的注释与变更记录按陷阱 7 纪律更正因果口径——含空格+尾反斜杠裸透传时 takeown 在
+  **两个**引擎都报 Invalid argument/option（非 PS 5.1 特有），引号+翻倍在两个引擎都
+  正确，改动定性为「统一到唯一正确形态」的防御性加固；`create-restore-point.ps1`
+  的 '/' 净化如实标注为**不可达预留**（当前 regPaths 三条键名均无 '/'，落地 HKCR
+  CLSID 形态时须同步补测）；`Get-RenameTarget` 对无目录成分的相对路径先
+  `[System.IO.Path]::GetFullPath` 解析（否则 Join-Path 空参数抛错被 catch 伪装成
+  环境失败，陷阱 15 同型）并新增测试钉住（751 → **752**，双引擎各 752/752）；
+  coverage.xml 口径（命令口径 vs JaCoCo 行口径）与「评审会话默认 CodeCoverage 覆写
+  会污染 sourcefile 清单」的实测教训记入 AGENTS.md 已知限制。
 - **孤儿代码清理**：删除 `ui/src/types/index.ts` 的 `CategoryInfo`（零引用）与
   AppPhase 死值 `'selecting'`。
 - AGENTS.md 陷阱清单新增第 14 条（Start-Process 引号 / PS 5.1 Handle / -Wait 不可超时）
