@@ -10,7 +10,7 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 727 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 745 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -378,6 +378,40 @@ It '每个 Main 内都没有 return 数字常量' {
 
 ---
 
+### 14. Start-Process 三连坑：引号不封装 / PS 5.1 句柄 / `-Wait` 不可超时（2026-10-16）
+
+**14a. `-ArgumentList <数组>` 把元素按空格拼接且不加引号**。含空格的注册表键名、
+文件路径、服务名在拼接处碎裂——`sc query "a b"` 碎成三个 token 后返回
+1639（Invalid Option），而引号正确时返回 1060（服务不存在，幂等成功语义）；
+`takeown` / `icacls` / `reg export` 同理。**行覆盖率 100% 也拦不住**——
+用例从不喂含空格的真实形态。修复收敛在 `references/scripts/native-invoke.ps1`：
+
+```powershell
+# ✅ 唯一通道：Invoke-NativeExe（元素经 ConvertTo-NativeArgument 显式引号封装）
+# ❌ Start-Process -FilePath x -ArgumentList @('a', $spacedPath)   ← 拼接必碎
+# 逃生修法（不宜扩展新调用点）：('"{0}"' -f $path) 逐元素包引号（drill4/drill5 现场方案）
+```
+
+AST 守卫（`tests/unit/platform-hygiene.Tests.ps1`）钉死：`Start-Process` 只允许出现在
+`native-invoke.ps1` 与 `run-all.ps1`；白名单内 `-ArgumentList` 数组字面量禁含裸变量；
+产品脚本禁裸 `reg` / `sc` 命令。
+
+**14b. PS 5.1 下 `-PassThru`（无 `-Wait`）必须先触碰 `.Handle`**，否则进程退出后
+`$proc.ExitCode` 恒为 `$null`（pwsh 7 无此问题，双引擎行为差异）：
+
+```powershell
+$proc = Start-Process ... -PassThru   # 无 -Wait
+$null = $proc.Handle                   # 强制取得句柄（5.1 必须；7 无害）
+if ($proc.WaitForExit($ms)) { $proc.ExitCode }   # 才拿得到退出码
+```
+
+**14c. `Start-Process -Wait` 无法超时**——挂在 `-Wait` 上，`TimeoutSeconds` 只是
+写在报错文案里的装饰（本项目旧 `Invoke-ScExe` 的真实形态）。真超时必须
+`WaitForExit($ms)` 返回 `$false` 后 `Kill()`。`sc query` 含空格服务名的
+1060/1639 判别（14a）即回归断言：`tests/unit/platform-hygiene.Tests.ps1`。
+
+---
+
 ## 多条件检测逻辑设计原则
 
 ### 核心规则: 权威信号必须 gate 辅助信号
@@ -414,39 +448,51 @@ function Remove-ItemRobust {
     $setOutcome = { param($v) if ($null -ne $Outcome) { $Outcome.Value = $v } }
 
     if ($WhatIf) { & $setOutcome 'dry_run'; return $true }
-    if (-not (Test-Path $Path)) { & $setOutcome 'absent'; return $true }
+    # 2026-10-16：破坏性函数内一律 -LiteralPath（见陷阱 14 前的 P2 修复）——
+    # -Path 的通配符语义会把含 [ ] 的目录名误判 absent，甚至错删匹配项。
+    if (-not (Test-Path -LiteralPath $Path)) { & $setOutcome 'absent'; return $true }
 
     # Tier 1: 标准 PowerShell 删除
     try {
-        Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
         & $setOutcome 'deleted'; return $true
     } catch { Write-Warning "  → Standard delete failed: $($_.Exception.Message)" }
 
-    # Tier 2: 夺取所有权 + 修改 ACL（takeown/icacls 走 Start-Process 拿真实退出码）
+    # Tier 2: 夺取所有权 + 修改 ACL（走 Invoke-NativeExe：引号封装 + 真实超时，见陷阱 14）
     try {
-        $isDir = (Get-Item $Path).PSIsContainer
+        $isDir = (Get-Item -LiteralPath $Path).PSIsContainer
         $takeownArgs = if ($isDir) { '/r', '/d', 'Y', '/f', $Path } else { '/f', $Path }
-        Start-Process takeown.exe -ArgumentList $takeownArgs -Wait -PassThru -WindowStyle Hidden
+        $takeown = Invoke-NativeExe -FilePath 'takeown.exe' -Arguments $takeownArgs -TimeoutSeconds 600
+        if (-not $takeown.ok) { Write-Warning "  → takeown.exe failed with exit code $($takeown.exit_code)" }
         $icaclsArgs = if ($isDir) { $Path, '/grant', 'Administrators:F', '/T', '/C' }
                       else { $Path, '/grant', 'Administrators:F', '/C' }
-        Start-Process icacls.exe -ArgumentList $icaclsArgs -Wait -PassThru -WindowStyle Hidden
-        Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
+        $icacls = Invoke-NativeExe -FilePath 'icacls.exe' -Arguments $icaclsArgs -TimeoutSeconds 600
+        if (-not $icacls.ok) { Write-Warning "  → icacls.exe failed with exit code $($icacls.exit_code)" }
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
         & $setOutcome 'deleted'; return $true
     } catch { Write-Warning "  → Takeown+ACL delete failed: $($_.Exception.Message)" }
 
     # Tier 3: CMD 强制删除 —— 原生命令输出必须显式 $null = 吞掉（见陷阱 9）
     try {
         $null = cmd /c "rd /s /q `"$Path`"" 2>&1
-        if ($LASTEXITCODE -eq 0 -and -not (Test-Path $Path)) { & $setOutcome 'deleted'; return $true }
+        if ($LASTEXITCODE -eq 0 -and -not (Test-Path -LiteralPath $Path)) { & $setOutcome 'deleted'; return $true }
     } catch { Write-Warning "  → cmd delete failed: $($_.Exception.Message)" }
 
     # Tier 4: 重命名 + 延迟删除（下次启动时）—— 走 Warning，不得污染成功流
     try {
-        $renamed = Join-Path (Split-Path $Path -Parent) "~$(Split-Path $Path -Leaf).deleted"
-        Rename-Item -Path $Path -NewName (Split-Path $renamed -Leaf) -Force -ErrorAction Stop
-        Write-Warning "  → Renamed (deferred delete - may be in use)"
+        $isDir = (Get-Item -LiteralPath $Path).PSIsContainer
+        $parent = Split-Path -LiteralPath $Path -Parent
+        $leaf = Split-Path -LiteralPath $Path -Leaf
+        $renamed = Join-Path $parent "~$leaf.deleted"
+        $counter = 0
+        while (Test-Path -LiteralPath $renamed) {
+            $counter++
+            $renamed = Join-Path $parent "~$leaf.deleted$counter"
+        }
+        Rename-Item -LiteralPath $Path -NewName (Split-Path -LiteralPath $renamed -Leaf) -Force -ErrorAction Stop
+        Write-Warning "  → Renamed to $(Split-Path -LiteralPath $renamed -Leaf) (deferred delete - may be in use)"
         # REQ-002: 改名不是删除（内容仍在磁盘上），必须回传 renamed:<新名>
-        & $setOutcome ('renamed:' + (Split-Path $renamed -Leaf))
+        & $setOutcome ('renamed:' + (Split-Path -LiteralPath $renamed -Leaf))
         return $true
     } catch { Write-Warning "  → Rename fallback also failed: $($_.Exception.Message)" }
 
@@ -880,3 +926,30 @@ if ($MyInvocation.InvocationName -ne '.') {
     83.94%（2765/3294，16 脚本）→ **84.08%（2804/3335，17 文件）**；PSScriptAnalyzer 维持 0。
   - 未复现抖动如实记录：pwsh 7 一次全量运行报 720/1，随后两次同样运行 721/0、定向 5 轮各 243/0，
     本次收尾双引擎复跑 727/727；未能定位到具体用例，判为环境级争用。
+- 2026-10-16: 门禁加固与平台层原语收敛（接管审计第二批）
+  - **xp-gate 门禁体检**：官方 13 道门禁逐一对底层工具实测（官方 9 PASS/3 SKIP 多为
+    「单文件提交」下的空转），产出 `docs/audits/2026-10-16-gate-status.md`；向
+    `boyingliu01/xp-gate` 提交 4 个缺陷 issue（lib source fail-open #535、Gate 10
+    工具缺席静默 PASS #536、Gate 3/4/6 对 PowerShell 零覆盖 #537、文件发现不 prune
+    演练目录 #538）；semgrep 1.171.0 就位，Gate 10 下次代码提交起为真扫描。
+  - **新增 `references/scripts/native-invoke.ps1`**：原生 exe 调用唯一通道
+    （ConvertTo-NativeArgument 引号封装 + Invoke-NativeExe 真实超时）。
+    `Invoke-ScExe` / `Invoke-RegExe` 收敛为其包装（返回形状不变）；
+    `Remove-ItemRobust` Tier2 的 takeown/icacls 改道（含空格路径此前从未真正生效）。
+  - **PS 5.1 句柄陷阱（陷阱 14b）**：`-PassThru` 无 `-Wait` 时必须先触碰
+    `$proc.Handle`，否则进程退出后 `ExitCode` 恒为 `$null`——双引擎实测差异，
+    pwsh 7 无此问题。
+  - **`Remove-ItemRobust` 全部路径操作改 `-LiteralPath`**（通配符注入面关闭）；
+    `create-restore-point.ps1` 裸 `reg export` 改走 Invoke-NativeExe + 失败落
+    `valid=$false` 记录 + 缺库 fail-closed 回传 3。
+  - **新增 `tests/unit/platform-hygiene.Tests.ps1`**（18 用例）：引号单测 + 真实进程
+    行为（sc 1060/1639 判别、HKCU 含空格键导出、真实超时击杀）+ 4 条 AST 守卫
+    （Start-Process 白名单、数组字面量禁裸变量、Remove-ItemRobust 禁 -Path、
+    禁裸 reg/sc）+ rollback 库清单一致性。测试数 727 → **745**（双引擎各 745/745）。
+  - **UI**：`ui/server/index.cjs` 可测化（`require.main === module` 守卫 + 导出 app），
+    新增 `ui/server/index.test.mjs` 11 用例；测试抓到真实缺陷——带 dist 部署时未知
+    `/api` 路由掉进 SPA catch-all 且不回应（浏览器挂起），已补 `/api/*` 404 分支。
+    删除孤儿类型 `CategoryInfo` 与 AppPhase 死值 `'selecting'`；vitest 59 → **70**；
+    `.architecture-baseline.json` 落盘激活 Gate 6 diff 模式（28 smells 存量如实记录）。
+  - 陷阱清单新增第 14 条；四层降级示例同步至 `-LiteralPath` + Invoke-NativeExe 现状；
+    ui/package.json 补 `test`/`lint` 脚本。
