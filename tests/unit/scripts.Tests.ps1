@@ -1,4 +1,4 @@
-# Pester Unit Tests for Windows Residual Cleaner Scripts (Pester 3.x Compatible)
+﻿# Pester Unit Tests for Windows Residual Cleaner Scripts (Pester 3.x Compatible)
 # Tests pure functions that don't require admin privileges
 #
 # 管理员会话（如 windows runner）下「非管理员契约」用例不可观测，跳过。
