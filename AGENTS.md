@@ -628,7 +628,9 @@ It 'Works against real registry data' {
   可在 Pester 进程内插桩；`.xp-gate-powershell-coverage-ignore` 现为**空列表**。
   子进程端到端用例仍保留（验证真实 `exit` 码与输出）。
 - `references/scripts` + `setup.ps1` 行覆盖率 **84.08%**（2804/3335，**17 个文件**，
-  2026-10-08 JaCoCo 实测），已超过 pre-commit 门禁的 80% 阈值（ADR-001 前为 70.4%；
+  2026-10-08 JaCoCo 实测；**历史值**——native-invoke.ps1 入列后清单变为 **18 个
+  sourcefile**、2026-10-16 实测 **84.17%**（2844/3379），权威口径见下方
+  「coverage.xml 的口径与污染」条目），已超过 pre-commit 门禁的 80% 阈值（ADR-001 前为 70.4%；
   随后补真实测试到 80.0%；自动回滚 Sprint 落地后为 83.94%（2765/3294，16 个文件）；
   `setup.ps1` 摘掉豁免后为 84.08%）。剩余缺口已定位且是**结构性**的，不是「懒得写测试」：
   - `confirm-cleanup.ps1` —— 未覆盖行中绝大多数是 `Read-Host` 交互式 TUI 循环

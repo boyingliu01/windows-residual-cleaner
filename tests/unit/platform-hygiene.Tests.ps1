@@ -34,8 +34,9 @@ Describe 'Platform hygiene: ConvertTo-NativeArgument（引号封装契约）' {
     }
 
     It '结尾反斜杠在包裹前翻倍（防止吞掉闭合引号）' {
-        # Round-2 走查（2026-10-16）：裸尾反斜杠不得透传——PS 5.1 下 takeown 等程序
-        # 对裸尾反斜杠实参报 Invalid argument/option（引擎分歧面），引号+翻倍双引擎
+        # Round-2/3 走查（2026-10-16）：裸尾反斜杠不得透传——含空格+尾反斜杠实参
+        # 裸透传时 takeown 在 **两个**引擎都报 Invalid argument/option（两引擎共有
+        # 失败形态，非引擎特有，见 native-invoke.ps1 同款注释），引号+翻倍双引擎
         # 都正确，故尾反斜杠值一律进入包裹分支。
         ConvertTo-NativeArgument 'C:\dir\' | Should -Be '"C:\dir\\"'
         # 被包裹的值（含空格）结尾反斜杠必须翻倍，否则吞掉闭合引号

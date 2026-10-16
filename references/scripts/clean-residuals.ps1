@@ -78,6 +78,8 @@ function Invoke-ScExe {
 # 解析（Round-3 走查 稳落地 Minor）：否则 tier-4 的 Join-Path 会抛「无法将
 # 自变量绑定到参数 Path」并被 catch 伪装成环境失败——陷阱 15 同型残留。
 # 产品链只喂扫描器产出的绝对路径；此守卫为可复用纯函数的调用方兜底。
+# 输出基准契约：绝对路径输入原样拆解；无目录成分的相对路径解析为 CWD 绝对；
+# 其余相对路径保持相对——调用方应先自行绝对化，不要依赖 CWD（Round-4 走查）。
 function Get-RenameTarget {
     param([string]$Path)
     $normalized = $Path.TrimEnd('\', '/')

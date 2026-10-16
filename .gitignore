@@ -69,3 +69,6 @@ desktop.ini
 
 # PowerShell
 *.pdb
+
+# local verification/walkthrough scaffolding (never commit)
+.wrc-*
