@@ -572,6 +572,15 @@ It 'Works against real registry data' {
   powershell.exe -NoProfile -Command "Invoke-Pester tests"   # 5.1
   pwsh -NoProfile -Command "Invoke-Pester tests"             # 7（门禁用的引擎）
   ```
+- **双引擎 Pester 必须「串行」运行，不可并发（2026-10-16 实测）**：部分测试 fixture 用
+  **仓库根固定路径**（`rollback-auto.Tests.ps1` 的 `wrc-auto-projroot`、`scripts.Tests.ps1`
+  的 `wrc-robust-fixture`），两个引擎的全量运行同时启动会互相污染：journal 互串把
+  `dry_run_ambiguous(2)` 跑成 `(4)`、锁文件互掐报「being used by another process」、
+  fixture 被对端 `Remove-Item` 后报「Cannot find a part of the path」。实测一次并发双跑
+  两个引擎各出 10 个失败且全部集中在 `rollback-auto.Tests.ps1`；串行复跑该文件
+  pwsh 7 与 PS 5.1 均 59/59。上条「提交前两引擎各跑一次」指**先跑完一个再跑另一个**，
+  不是并行。UI 侧附带一条：vitest `ItemTable` 用例的 5s 默认超时在高负载下会抖动超时
+  （单跑 2.6s 通过），全量偶红时先单文件复测再判回归。
 - **本机工具链路径与门禁降级链（2026-10-07 实测）**：`pwsh` 7 位于
   `C:\Users\think\AppData\Local\Microsoft\WindowsApps\pwsh.exe`，`node.exe` 位于
   `C:\Program Files\nodejs\node.exe`——**git-bash 的 PATH 里都没有裸命令名**，`jq` 未安装。
