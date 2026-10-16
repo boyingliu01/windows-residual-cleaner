@@ -11,7 +11,11 @@
 # 由消费方 Main 的前置门禁 fail-closed 返回 3（REQ-026）。
 $script:nativeInvokeLib = Join-Path $PSScriptRoot 'native-invoke.ps1'
 if (-not (Test-Path -LiteralPath $script:nativeInvokeLib)) {
-    $script:RollbackLibsMissing = @($script:RollbackLibsMissing) + 'native-invoke.ps1'
+    # 幂等去重（Round-2 走查 2026-10-16）：宿主脚本可能已因自己的清单缺失记录过
+    # 同名条目；重复追加只会污染 fail-closed 的错误文案。
+    if ('native-invoke.ps1' -notin @($script:RollbackLibsMissing)) {
+        $script:RollbackLibsMissing = @($script:RollbackLibsMissing) + 'native-invoke.ps1'
+    }
 } else {
     . $script:nativeInvokeLib
 }

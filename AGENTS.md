@@ -10,7 +10,7 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 749 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 751 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -495,6 +495,8 @@ function Remove-ItemRobust {
     } catch { Write-Warning "  → Takeown+ACL delete failed: $($_.Exception.Message)" }
 
     # Tier 3: CMD 强制删除 —— 原生命令输出必须显式 $null = 吞掉（见陷阱 9）
+    #   cmd 内建命令（rd/del）只能经 `cmd /c <单串>` 传递，无法按元素加引号，
+    #   故**有意**不经 Invoke-NativeExe（AST 守卫只约束 Start-Process 与裸 reg/sc）。
     try {
         $null = cmd /c "rd /s /q `"$Path`"" 2>&1
         if ($LASTEXITCODE -eq 0 -and -not (Test-Path -LiteralPath $Path)) { & $setOutcome 'deleted'; return $true }
@@ -504,17 +506,20 @@ function Remove-ItemRobust {
     # 注意：路径拆解必须用 [System.IO.Path]，不能用 Split-Path ——
     #   -Path 有通配符语义（同 Tier 0 注入面），而 -LiteralPath 参数集**不接受**
     #   -Parent/-Leaf（两个引擎都抛「Parameter set cannot be resolved」，见陷阱 15）。
+    #   拆解已收敛为可单测纯函数 Get-RenameTarget（尾反斜杠归一化 + 盘根拒绝）：
+    #   [System.IO.Path]::GetFileName('C:\dir\') 返回**空串**，不归一化会把改名
+    #   目标落到 'C:\dir\~.deleted'（Round-2 走查 2026-10-16 严码关 Minor）。
     try {
         $isDir = (Get-Item -LiteralPath $Path).PSIsContainer
-        $parent = [System.IO.Path]::GetDirectoryName($Path)
-        $leaf = [System.IO.Path]::GetFileName($Path)
-        $renamed = Join-Path $parent "~$leaf.deleted"
+        $parts = Get-RenameTarget -Path $Path
+        if (-not $parts.ok) { throw $parts.reason }
+        $renamed = Join-Path $parts.parent "~$($parts.leaf).deleted"
         $counter = 0
         while (Test-Path -LiteralPath $renamed) {
             $counter++
-            $renamed = Join-Path $parent "~$leaf.deleted$counter"
+            $renamed = Join-Path $parts.parent "~$($parts.leaf).deleted$counter"
         }
-        Rename-Item -LiteralPath $Path -NewName ([System.IO.Path]::GetFileName($renamed)) -Force -ErrorAction Stop
+        Rename-Item -LiteralPath $parts.normalized -NewName ([System.IO.Path]::GetFileName($renamed)) -Force -ErrorAction Stop
         Write-Warning "  → Renamed to $([System.IO.Path]::GetFileName($renamed)) (deferred delete - may be in use)"
         # REQ-002: 改名不是删除（内容仍在磁盘上），必须回传 renamed:<新名>
         & $setOutcome ('renamed:' + [System.IO.Path]::GetFileName($renamed))
@@ -598,6 +603,10 @@ It 'Works against real registry data' {
 
 ## 已知限制
 
+- **根目录 `package.json` 是有意 local-only**（2026-10-16 走查确认）：它只服务本机
+  `npx vitest`（Gate 5 根跑）的 devDeps，**已 gitignore、不进仓**；`ui/package.json`
+  才是 UI 工具链的权威依赖清单。不要把根 package.json 「补」进 git——那会引入两份
+  依赖源，且 Gate 5 读的是它而非仓库状态。
 - MSI 安装软件的 `UninstallString` 为 `MsiExec.exe /X{GUID}` 格式，当前逻辑已跳过此类条目
 - 系统 PATH 损坏（如 `C:\Program Fi;es\Memurai\`）会被如实报告，但不会被自动修复
 - 计划任务中的 bare exe 名（如 `sc.exe`）需要 PATH 解析，当前策略是跳过而非解析
@@ -967,11 +976,13 @@ if ($MyInvocation.InvocationName -ne '.') {
   - **`Remove-ItemRobust` 全部路径操作改 `-LiteralPath`**（通配符注入面关闭）；
     `create-restore-point.ps1` 裸 `reg export` 改走 Invoke-NativeExe + 失败落
     `valid=$false` 记录 + 缺库 fail-closed 回传 3。
-  - **新增 `tests/unit/platform-hygiene.Tests.ps1`**（21 用例）：引号单测 + 真实进程
+  - **新增 `tests/unit/platform-hygiene.Tests.ps1`**（22 用例，Round 2 起守卫升级为
+    `Remove-*` 名字模式穷举）：引号单测 + 真实进程
     行为（sc 1060/1639 判别、服务名单引号形态、HKCU 含空格/含内嵌引号键导出、
-    含空格+尾反斜杠参数、真实超时击杀）+ 4 条 AST 守卫（Start-Process 白名单、
-    数组字面量禁裸变量、Remove-ItemRobust 禁 -Path 且禁 Split-Path、禁裸 reg/sc）
-    + rollback 库清单一致性。测试数 727 → **749**（双引擎各 749/749）。
+    含空格+尾反斜杠参数、真实超时击杀、run-all 逃生舱形态）+ AST 守卫
+    （Start-Process 白名单、数组字面量禁裸变量、`Remove-*` 函数体一律
+    -LiteralPath 且禁 Split-Path、禁裸 reg/sc）+ rollback 库清单一致性。
+    测试数 727 → **751**（双引擎各 751/751）。
   - **UI**：`ui/server/index.cjs` 可测化（`require.main === module` 守卫 + 导出 app），
     新增 `ui/server/index.test.mjs` 12 用例；测试抓到真实缺陷——带 dist 部署时未知
     `/api` 路由掉进 SPA catch-all 且不回应（浏览器挂起），已补 `/api/*` 404 分支。
@@ -988,3 +999,13 @@ if ($MyInvocation.InvocationName -ne '.') {
     `[System.IO.Path]` 字面量方法，新增 tier-4 必须到达 Rename-Item 的行为测试。
     陷阱清单新增第 14/15 条；四层降级示例同步至现状；ui/package.json 补
     `test`/`lint` 脚本。
+  - **delphi code-walkthrough Round 2（三专家三模型）**：1 APPROVED / 2
+    PASS_WITH_CAVEATS，无 Critical/Major 阻塞，证实项（全部 Minor 级）当场落实：
+    `ConvertTo-NativeArgument` 尾反斜杠一律进引号分支（关闭 PS 5.1 takeown 引擎
+    分歧面）；tier-4 拆解收敛为纯函数 `Get-RenameTarget`（尾反斜杠归一化 + 盘根/
+    空白如实拒绝）；备份文件名净化补 `/`；rollback 缺库记录幂等去重；run-all
+    逃生舱形态补真实进程回归；AST 守卫升级为 `Remove-*` 名字模式穷举；移除与
+    AST 守卫强弱不一致的弱文本守卫；vitest 根配置显式 `reportsDirectory`；
+    PROJECT_ROOT 声明为不可环境覆盖的模块契约。记录在案、留待后续的重构项：
+    rollback-backup 不写宿主作用域状态（改为只读探测）、AST 守卫进一步按目录
+    白名单收敛、/api/confirm 落点断言。

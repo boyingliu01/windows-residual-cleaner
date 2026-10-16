@@ -37,19 +37,13 @@ foreach ($libName in $rollbackLibOrder) {
 # 库缺失时**不**在此中止（dot-source 发生在顶层，中止会让宿主退出）：
 # 由 Main 的前置门禁 fail-closed 返回 3（REQ-026 依赖缺失）。
 
-# 可靠地调用 sc.exe，替代裸 `sc.exe ... 2>$null` 写法。
+# 可靠地调用 sc.exe（实现收敛到 Invoke-NativeExe，见函数内注释）。
 #
-# 背景（PS 5.1 陷阱 #7）: `powershell.exe` 宿主在同时满足「stdout 未重定向」与
-# 「stderr 被重定向」时，会抛出
-#   StandardOutputEncoding/StandardErrorEncoding is only supported when ... redirected
-# 因此 `sc.exe stop X 2>$null` 与 `sc.exe delete X 2>&1` 在本项目基线上**必然抛异常**：
-#   - Phase 1 的 stop 永远失败 → 幽灵服务根本不会被停止
-#   - Phase 2 的 delete 异常被 catch → 记为 cleanup_failed，且 $LASTEXITCODE 为空
-# 干净的 sc.exe 输出不带引号，无法用 `cmd /c "... 2>&1"` 包裹（会在引号处截断参数），
-# 故改用 Start-Process 显式重定向两个流：任何流重定向都能规避该 bug。
-#
-# 注意: Start-Process -Wait 对带 UI 的进程会提前返回，sc.exe 是控制台程序，
-# 退出时其子进程已全部结束，因此不需要额外的 Handle 排空逻辑。
+# 历史（陷阱 #7 的根因背景）：旧实现为规避 PS 5.1 宿主的
+# StandardOutputEncoding/StandardErrorEncoding 重定向异常曾直接 Start-Process；
+# 2026-10-16 起原生 exe 调用统一收敛到 native-invoke.ps1 的 Invoke-NativeExe
+# （双流重定向 + 真实超时 + 元素引号封装），该宿主异常与引号碎裂一并消除。
+# （ traps 14b：PS 5.1 下 -PassThru 需先触碰 .Handle —— Invoke-NativeExe 已内置。）
 function Invoke-ScExe {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
@@ -73,6 +67,26 @@ function Invoke-ScExe {
         output    = ([string]$result.stdout).Trim()
         exit_code = $result.exit_code
         error     = $result.error
+    }
+}
+
+# tier-4 改名目标的路径拆解（纯函数，可单测；Round-2 走查 2026-10-16 严码关 Minor）。
+# 边界：[System.IO.Path]::GetFileName 对**尾反斜杠**路径返回空串（'C:\dir\' → ''，
+# 旧 Split-Path -Path -Leaf 曾返回 'dir'）；破坏性入口必须先归一化。盘根
+# （'C:'/'C:\'）与空串没有可改名的 leaf，如实拒绝（调用方落入 failed，不伪装）。
+function Get-RenameTarget {
+    param([string]$Path)
+    $normalized = $Path.TrimEnd('\', '/')
+    if ([string]::IsNullOrWhiteSpace($normalized) -or $normalized -match '^[A-Za-z]:$') {
+        return @{ ok = $false; normalized = $null; parent = $null; leaf = $null;
+                  reason = "cannot decompose root-like or empty path '$Path'" }
+    }
+    return @{
+        ok = $true
+        normalized = $normalized
+        parent = [System.IO.Path]::GetDirectoryName($normalized)
+        leaf = [System.IO.Path]::GetFileName($normalized)
+        reason = $null
     }
 }
 
@@ -167,18 +181,21 @@ function Remove-ItemRobust {
         $isDir = (Get-Item -LiteralPath $Path).PSIsContainer
         # 注意：这里不能用 Split-Path —— -Path 带通配符语义（同 Tier0 的注入面），
         # 而 -LiteralPath 参数集**不接受** -Parent/-Leaf（两个引擎都抛
-        # "Parameter set cannot be resolved"，见 rollback-recovery.ps1 同款注释；
-        # 2026-10-16 走查期间实测：此前一度写成 Split-Path -LiteralPath，
-        # 被本用例的预期失败路径吞掉，tier-4 变成永久死分支）。改用 .NET 字面量方法。
-        $parent = [System.IO.Path]::GetDirectoryName($Path)
-        $leaf = [System.IO.Path]::GetFileName($Path)
+        # "Parameter set cannot be resolved"，见 rollback-recovery.ps1 同款注释与
+        # AGENTS.md 陷阱 15；2026-10-16 走查期间实测：此前一度写成
+        # Split-Path -LiteralPath，被本用例的预期失败路径吞掉，tier-4 变成永久死
+        # 分支）。路径拆解收敛到可单测的纯函数（含尾反斜杠归一化）。
+        $parts = Get-RenameTarget -Path $Path
+        if (-not $parts.ok) { throw $parts.reason }
+        $parent = $parts.parent
+        $leaf = $parts.leaf
         $renamed = Join-Path $parent "~$leaf.deleted"
         $counter = 0
         while (Test-Path -LiteralPath $renamed) {
             $counter++
             $renamed = Join-Path $parent "~$leaf.deleted$counter"
         }
-        Rename-Item -LiteralPath $Path -NewName ([System.IO.Path]::GetFileName($renamed)) -Force -ErrorAction Stop
+        Rename-Item -LiteralPath $parts.normalized -NewName ([System.IO.Path]::GetFileName($renamed)) -Force -ErrorAction Stop
         # 走 Warning 而非 Write-Output：改名 = 内容没删（延迟删除），既是用户必须看到的
         # 警示，也避免污染本函数的成功流（成功流只允许携带最终布尔返回值）。
         Write-Warning "  → Renamed to $([System.IO.Path]::GetFileName($renamed)) (deferred delete - may be in use)"

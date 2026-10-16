@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # platform-hygiene.Tests.ps1 — 平台层细节的静态与行为契约
 # =============================================================================
 # 背景（2026-10-16 接管审计）：P1-1（Start-Process -ArgumentList 不加引号）、
@@ -34,8 +34,10 @@ Describe 'Platform hygiene: ConvertTo-NativeArgument（引号封装契约）' {
     }
 
     It '结尾反斜杠在包裹前翻倍（防止吞掉闭合引号）' {
-        # 仅尾反斜杠、无空白 → 不需要包裹，原样返回（引号规则只作用于被包裹的值）
-        ConvertTo-NativeArgument 'C:\dir\' | Should -Be 'C:\dir\'
+        # Round-2 走查（2026-10-16）：裸尾反斜杠不得透传——PS 5.1 下 takeown 等程序
+        # 对裸尾反斜杠实参报 Invalid argument/option（引擎分歧面），引号+翻倍双引擎
+        # 都正确，故尾反斜杠值一律进入包裹分支。
+        ConvertTo-NativeArgument 'C:\dir\' | Should -Be '"C:\dir\\"'
         # 被包裹的值（含空格）结尾反斜杠必须翻倍，否则吞掉闭合引号
         ConvertTo-NativeArgument 'C:\Program Files\dir \' | Should -Be '"C:\Program Files\dir \\"'
     }
@@ -85,7 +87,7 @@ Describe 'Platform hygiene: Invoke-NativeExe（真实进程行为）' {
             $r = Invoke-NativeExe -FilePath $script:Cmd -Arguments @('/c', 'md', ($spaced + '\')) -TimeoutSeconds 15
             $r.ok | Should -Be $true -Because "md 失败说明尾反斜杠形态被引号规则破坏: $($r.error)"
             (Test-Path -LiteralPath $spaced) | Should -Be $true
-            (Test-Path -LiteralPath ($spaced + '"')) | Should -Be $false -Because '闭合引号被吞掉时 cmd 会把引号字面量并进目录名'
+            (Test-Path -LiteralPath ($spaced + '"') -ErrorAction SilentlyContinue) | Should -Be $false -Because '闭合引号被吞掉时 cmd 会把引号字面量并进目录名'
         } finally {
             if (Test-Path -LiteralPath $base) { Remove-Item -LiteralPath $base -Recurse -Force }
         }
@@ -105,6 +107,27 @@ Describe 'Platform hygiene: Invoke-NativeExe（真实进程行为）' {
         $r.ok | Should -Be $false
         $r.exit_code | Should -Be $null
         $r.error | Should -Not -BeNullOrEmpty
+    }
+
+    It 'run-all Invoke-Step 的逃生舱形态（元素显式包引号）对含空格脚本路径真实可用' {
+        # 陷阱 14a 的白名单豁免点：run-all.ps1 的 Invoke-Step 用
+        # -ArgumentList @('-ExecutionPolicy','Bypass','-File', "`"$ScriptPath`"")
+        # 单变量逃生舱（AGENTS.md 注明「不宜扩展新调用点」）。Round-2 走查
+        # （构远图 Major）要求该形态至少有一条可执行回归——脚本路径永不含尾
+        # 反斜杠（是文件不是目录），显式引号在拼接后保持完整，-File 拿到整路径。
+        $base = Join-Path ([System.IO.Path]::GetTempPath()) "wrc-runall-$(New-Guid)"
+        New-Item -ItemType Directory -Path $base -Force | Out-Null
+        $spacedScript = Join-Path $base 'a b.ps1'
+        [System.IO.File]::WriteAllText($spacedScript, "`$host.SetShouldExit(7)`nexit 7`n")
+        try {
+            $psExe = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+            if (-not $psExe) { $psExe = "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe" }
+            $argList = @('-ExecutionPolicy', 'Bypass', '-File', "`"$spacedScript`"")
+            $proc = Start-Process -FilePath $psExe -ArgumentList $argList -Wait -PassThru -NoNewWindow
+            $proc.ExitCode | Should -Be 7 -Because '引号碎裂时 -File 收不到完整路径，退出码不会是脚本写的 7'
+        } finally {
+            if (Test-Path -LiteralPath $base) { Remove-Item -LiteralPath $base -Recurse -Force }
+        }
     }
 }
 
@@ -225,33 +248,45 @@ Describe 'Platform hygiene: AST 静态守卫（新增违规即在门禁变红）
         $violations | Should -BeNullOrEmpty
     }
 
-    It 'Remove-ItemRobust 函数体内路径类 cmdlet 一律 -LiteralPath，且禁用 Split-Path' {
+    It 'Remove-* 破坏性函数体内路径类 cmdlet 一律 -LiteralPath，且禁用 Split-Path' {
+        # Round-2 走查（构远图 Minor）：守卫从「单文件单函数」升级为**名字模式穷举**——
+        # 上一轮真实死分支（tier-4 Split-Path）结构上属于任何破坏性函数；凡名为
+        # Remove-* 的函数体一律适用本契约，新增破坏性函数自动进守卫。
         # Split-Path 的两个坑都不可在此使用：-Path 带通配符语义（同 Tier0 注入面）；
         # -LiteralPath 参数集不接受 -Parent/-Leaf（两个引擎都抛 Parameter set cannot
         # be resolved —— 2026-10-16 走查实测，tier-4 曾因此整体变成死分支且被
         # locked-fixture 的预期失败路径吞掉）。路径拆解用 [System.IO.Path] 字面量方法。
-        $fn = @($script:AstCache[(Join-Path $script:Root 'references\scripts\clean-residuals.ps1')].FindAll({ param($n)
-            $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Remove-ItemRobust'
-        }, $true)) | Select-Object -First 1
-        $fn | Should -Not -BeNullOrEmpty
+        $destructiveFns = @()
+        foreach ($file in $script:ScriptFiles) {
+            $fns = @($script:AstCache[$file].FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $n.Name -match '^Remove-'
+            }, $true))
+            foreach ($fnAst in $fns) { $destructiveFns += @{ File = $file; Ast = $fnAst } }
+        }
+        $destructiveFns.Count | Should -BeGreaterThan 0 -Because '守卫必须实际覆盖到至少一个破坏性函数，否则是空跑'
         $pathCmdlets = @('Remove-Item', 'Rename-Item', 'Get-Item', 'Test-Path')
         $violations = @()
-        $splitSites = @($fn.FindAll({ param($n)
-            $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Split-Path'
-        }, $true))
-        foreach ($s in $splitSites) {
-            $violations += "clean-residuals.ps1:$($s.Extent.StartLineNumber) Split-Path 在 Remove-ItemRobust 内禁用（-Path 有通配符语义、-LiteralPath 不接受 -Parent/-Leaf；用 [System.IO.Path]）"
-        }
-        $sites = @($fn.FindAll({ param($n)
-            $n -is [System.Management.Automation.Language.CommandAst] -and
-            $pathCmdlets -contains $n.GetCommandName()
-        }, $true))
-        foreach ($s in $sites) {
-            $hasLiteral = @($s.FindAll({ param($n)
-                $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -eq 'LiteralPath'
-            }, $true)).Count -gt 0
-            if (-not $hasLiteral) {
-                $violations += "clean-residuals.ps1:$($s.Extent.StartLineNumber) $($s.GetCommandName()) 未用 -LiteralPath"
+        foreach ($entry in $destructiveFns) {
+            $fn = $entry.Ast
+            $fileLeaf = Split-Path $entry.File -Leaf
+            $splitSites = @($fn.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Split-Path'
+            }, $true))
+            foreach ($s in $splitSites) {
+                $violations += "${fileLeaf}:$($s.Extent.StartLineNumber) Split-Path 在破坏性函数 $($fn.Name) 内禁用（-Path 有通配符语义、-LiteralPath 不接受 -Parent/-Leaf；用 [System.IO.Path]）"
+            }
+            $sites = @($fn.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.CommandAst] -and
+                $pathCmdlets -contains $n.GetCommandName()
+            }, $true))
+            foreach ($s in $sites) {
+                $hasLiteral = @($s.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.CommandParameterAst] -and $n.ParameterName -eq 'LiteralPath'
+                }, $true)).Count -gt 0
+                if (-not $hasLiteral) {
+                    $violations += "${fileLeaf}:$($s.Extent.StartLineNumber) $($s.GetCommandName()) 未用 -LiteralPath"
+                }
             }
         }
         $violations | Should -BeNullOrEmpty

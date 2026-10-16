@@ -27,7 +27,7 @@ All notable changes to this project will be documented in this file.
   真实进程行为（含空格参数、含空格+尾反斜杠参数、真实超时击杀、sc 1060/1639 判别、
   服务名单引号形态、HKCU 含空格/含内嵌引号键导出）+ 4 条 AST 守卫（Start-Process
   白名单、`-ArgumentList` 数组字面量禁裸变量、`Remove-ItemRobust` 禁 `-Path`、
-  禁裸 `reg`/`sc`）+ rollback 库清单一致性。测试数 727 → **749**（双引擎各 749/749）。
+  禁裸 `reg`/`sc`）+ rollback 库清单一致性。测试数 727 → **751**（双引擎各 751/751）。
 - **UI 服务端可测化 + 缺陷修复**：`ui/server/index.cjs` 顶层无条件 `app.listen` 改为
   `require.main === module` 守卫并导出 `app`（生产行为不变）；新增
   `ui/server/index.test.mjs`（12 用例：状态形状、backup-status 诚实两层、confirm
@@ -54,6 +54,17 @@ All notable changes to this project will be documented in this file.
   Rename-Item，失败原因必须是真实锁拒绝而非参数集错误」。双引擎探测实证：
   share=0 句柄 / 内存映射 / 只读属性下删除被挡 ⇒ 改名同样被拒，tier-4 是如实的
   最后尝试而非可用兜底（AGENTS.md 陷阱 15）。
+- **delphi Round 2 证实项落实**（三专家三模型：1 APPROVED / 2 PASS_WITH_CAVEATS，
+  全部发现 Minor 级）：`ConvertTo-NativeArgument` 早退条件收紧——尾反斜杠值一律进入
+  引号+翻倍分支（裸透传在 PS 5.1 下令 takeown 报 Invalid argument/option，引擎分歧面
+  关闭）；tier-4 拆解收敛为可单测纯函数 `Get-RenameTarget`（尾反斜杠归一化 + 盘根/空白
+  如实拒绝）；`create-restore-point.ps1` 备份文件名净化补 `/`（HKCR clsid 子键
+  {..}/InprocServer32 形态此前必败）；`rollback-backup.ps1` 缺库记录幂等去重；
+  run-all `Invoke-Step` 逃生舱形态（陷阱 14a 白名单豁免点）补真实进程回归；
+  platform-hygiene AST 守卫从单函数升级为**名字模式穷举**（凡 `Remove-*` 函数体一律
+  禁 Split-Path 且强制 -LiteralPath）；移除与 AST 守卫强弱不一致的弱文本守卫；
+  `vitest.config.ts` 显式 `coverage.reportsDirectory`；index.cjs 把 PROJECT_ROOT
+  声明为不可环境覆盖的模块契约。
 - **孤儿代码清理**：删除 `ui/src/types/index.ts` 的 `CategoryInfo`（零引用）与
   AppPhase 死值 `'selecting'`。
 - AGENTS.md 陷阱清单新增第 14 条（Start-Process 引号 / PS 5.1 Handle / -Wait 不可超时）

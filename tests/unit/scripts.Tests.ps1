@@ -1131,6 +1131,33 @@ public static class WrcRirLock {
     }
 }
 
+Describe 'Get-RenameTarget（tier-4 拆解纯函数：尾反斜杠与盘根边界）' {
+    BeforeAll {
+        . "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
+    }
+
+    It '普通路径与尾反斜杠路径拆出同一对 parent/leaf（GetFileName 空串陷阱）' {
+        # Round-2 走查（严码关 Minor）：[System.IO.Path]::GetFileName('C:\dir\')
+        # 返回空串——旧 Split-Path -Path -Leaf 曾返回 'dir'。破坏性入口必须先
+        # 归一化，否则 $renamed 会落到 'C:\dir\~.deleted'（改名目标错位）。
+        foreach ($shape in @('D:\a b\locked', 'D:\a b\locked\', 'D:\a b\locked/')) {
+            $p = Get-RenameTarget -Path $shape
+            $p.ok | Should -Be $true -Because "输入: $shape"
+            $p.parent | Should -Be 'D:\a b' -Because "输入: $shape"
+            $p.leaf | Should -Be 'locked' -Because "输入: $shape"
+            $p.normalized | Should -Be 'D:\a b\locked' -Because "输入: $shape"
+        }
+    }
+
+    It '盘根与空串如实拒绝（没有可改名的 leaf，不得伪装成可改名）' {
+        foreach ($shape in @('C:\', 'C:/', 'C:', 'D:\', '', '  ')) {
+            $p = Get-RenameTarget -Path $shape
+            $p.ok | Should -Be $false -Because "输入: '$shape'"
+            $p.reason | Should -Not -BeNullOrEmpty -Because "输入: '$shape'"
+        }
+    }
+}
+
 Describe 'clean-residuals.ps1 ConfirmFile integration' {
     It 'Filters items by confirmed IDs from JSON file' {
         $scriptPath = "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
@@ -1523,10 +1550,9 @@ Describe 'clean-residuals.ps1 service cleanup (sc.exe regression)' {
             $entry[0].success | Should -Be $false
         }
 
-        It 'Has no bare sc.exe invocation with stream redirection left in the script' {
-            # 静态守卫：禁止重新引入 `sc.exe ... 2>$null` / `sc.exe ... 2>&1`。
-            $content = Get-Content $global:_svcScript -Raw
-            $content | Should -Not -Match '(?m)^\s*sc\.exe\s'
-        }
+        # 静态守卫已由 platform-hygiene.Tests.ps1 的 AST 版本承担（命令名
+        # ^(reg|sc)(\.exe)?$ + 白名单封装文件），它覆盖 & sc.exe / cmd /c sc /
+        # Start-Process 等全部形态；此处曾有一条只匹配「行首 sc.exe」的弱文本
+        # 守卫，与 AST 守卫强弱不一致且给人已覆盖的错觉，Round-2 走查后移除。
     }
 }

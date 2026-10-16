@@ -73,9 +73,9 @@ CI（run #6，`ac970b2`）：双引擎 727 用例全绿、行覆盖 82.89%、PSS
 | `architecture.yaml`（archlint 激活前提）纳入跟踪——此前仅本机存在，新克隆/CI 上 Gate 6 会退回 "no architecture config" 弱 PASS（delphi 走查发现） | ✅ |
 | delphi code-walkthrough Round 1（三专家三模型）：其 Critical（Start-Process 再包引号）经双引擎端到端实证驳回并以真实进程测试钉死；证实项已修——超时击杀失败写进 error 字段、clean-residuals 显式加载 native-invoke、/api 畸形 JSON 结构化 400 | ✅ |
 
-> 注：第三节表格中的测试数（727/59）是**审计时刻**的实测快照；走查收口（含
-> tier-4 死分支回归修复 + 行为测试）后为 Pester **749**（双引擎）+ vitest **71**
-> （服务端 12）。
+> 注：第三节表格中的测试数（727/59）是**审计时刻**的实测快照；走查收口（Round 1
+> Critical 驳回 + Round 2 证实项落实，含 tier-4 死分支回归修复 + 行为测试）后为
+> Pester **751**（双引擎）+ vitest **71**（服务端 12）。
 
 ## 五、xp-gate 缺陷 issue
 

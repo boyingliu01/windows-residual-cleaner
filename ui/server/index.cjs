@@ -39,6 +39,12 @@ const originGuard = createOriginGuard({
 app.use('/api', originGuard);
 
 // Paths
+// PROJECT_ROOT is a module contract (round-2 walkthrough 2026-10-16): it is the
+// single authority for where /api/confirm writes confirmed-ids.json and where
+// the PowerShell pipeline is spawned. It is intentionally NOT environment
+// overridable - an env-driven root would let a caller redirect where deletion
+// credentials land. ui/server/index.test.mjs pins exports.PROJECT_ROOT to the
+// repo root structurally.
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 const SCRIPTS_DIR = path.join(PROJECT_ROOT, 'references', 'scripts');
 

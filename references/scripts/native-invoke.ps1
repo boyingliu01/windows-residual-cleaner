@@ -25,11 +25,14 @@ function ConvertTo-NativeArgument {
         引号规则（MSVCRT 惯例）：值内嵌的 " 转义为 \"，且其前面的反斜杠要成对
         翻倍；结尾的反斜杠也要翻倍，避免吞掉包裹引号。
         不含空白与引号的值原样返回（不画蛇添足）。
+        **例外（Round-2 走查 2026-10-16）**：以反斜杠结尾的值**必须**进入包裹
+        分支——裸透传的尾反斜杠在 PS 5.1 下会让 takeown 等程序报
+        Invalid argument/option（引擎间分歧面）；引号+翻倍在两个引擎都正确。
     #>
     param([AllowNull()][string]$Value)
 
     if ([string]::IsNullOrEmpty($Value)) { return '""' }
-    if ($Value -notmatch '[\s"]') { return $Value }
+    if ($Value -notmatch '[\s"]' -and -not $Value.EndsWith('\')) { return $Value }
     $escaped = $Value -replace '(\\*)"', '$1$1\"'
     $escaped = $escaped -replace '(\\+)$', '$1$1'
     return '"' + $escaped + '"'

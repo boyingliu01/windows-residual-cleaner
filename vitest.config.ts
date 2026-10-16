@@ -16,6 +16,11 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['ui/server/**'],
+      // Explicit boundary (round-2 walkthrough 2026-10-16): the root pipeline is
+      // server-only; its artifacts must not be confused with the UI suite's
+      // ui/coverage/ output. Gate reads coverage.xml (PowerShell) only - JS
+      // coverage is a local diagnostic, gitignored via coverage/.
+      reportsDirectory: 'coverage/server',
     },
   },
 })
