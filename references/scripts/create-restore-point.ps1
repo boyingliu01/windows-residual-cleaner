@@ -7,6 +7,18 @@ param(
 # 固化顶层 param 默认值，供 Main 在调用方未提供时回落
 $script:DefaultBackupRoot = $BackupRoot
 
+# 依赖：native-invoke.ps1（ConvertTo-NativeArgument / Invoke-NativeExe）。
+# reg.exe 的调用必须经引号封装（AGENTS.md 陷阱 14 / 2026-10-16 审计 P1-1），
+# 且导出失败必须留痕（P2-7）。本文件顶层 param 与库无同名冲突；库没有顶层
+# param()，dot-source 不会把默认值冲进本作用域（AGENTS.md 陷阱 8a）。
+$script:nativeInvokeLib = Join-Path $PSScriptRoot 'native-invoke.ps1'
+$script:RollbackLibsMissing = @()
+if (Test-Path -LiteralPath $script:nativeInvokeLib) {
+    . $script:nativeInvokeLib
+} else {
+    $script:RollbackLibsMissing += 'native-invoke.ps1'
+}
+
 # Admin privilege check (mandatory for write operations)
 function Test-AdminPrivilege {
     [CmdletBinding()]
@@ -76,6 +88,14 @@ function Main {
         [switch]$SkipRestorePoint
     )
     $setRc = { param([int]$v) if ($null -ne $ExitCode) { $ExitCode.Value = $v } }
+
+    # 依赖缺失 fail-closed（REQ-026 同款语义）：native-invoke.ps1 不在场时，
+    # 注册表备份会静默降级为「无备份清理」——宁可停机也不裸奔。
+    if (@($script:RollbackLibsMissing).Count -gt 0) {
+        Write-Error "Missing required libraries: $($script:RollbackLibsMissing -join ', ')"
+        & $setRc 3
+        return
+    }
 
     if (-not [string]::IsNullOrWhiteSpace($BackupRootOverride)) {
         $BackupRoot = $BackupRootOverride
@@ -148,16 +168,24 @@ function Main {
     foreach ($p in $regPaths) {
         $fname = $p -replace '[\\:]', '_'
         $outFile = "$backupDir\reg-$fname.reg"
-        reg export "$p" "$outFile" /y 2>$null
-        # 验证导出完整性
-        if (Test-Path $outFile) {
-            $regContent = Get-Content $outFile -Raw -Encoding Unicode -ErrorAction SilentlyContinue
+        # P2-7（2026-10-16 审计）：此前裸 `reg export ... 2>$null`，失败零记录——
+        # if (Test-Path $outFile) 没有 else，reg.exe 失败（键名含空格、权限、被拦）
+        # 时备份静默缺失。现统一走 Invoke-NativeExe（引号 + 真实退出码），
+        # 失败也必须落一条 valid=$false 记录：「备份清单少了这一条」和
+        # 「这一条失败了」是两种不同的病，后者才可诊断。
+        $regExePath = Join-Path $env:SystemRoot 'System32\reg.exe'
+        $exp = Invoke-NativeExe -FilePath $regExePath -Arguments @('export', $p, $outFile, '/y') -TimeoutSeconds 60
+        if (Test-Path -LiteralPath $outFile) {
+            $regContent = Get-Content -LiteralPath $outFile -Raw -Encoding Unicode -ErrorAction SilentlyContinue
             if ($regContent -match 'Windows Registry Editor') {
-                $backupFiles.Add([PSCustomObject]@{ key=$p; file=$outFile; size=(Get-Item $outFile).Length; valid=$true })
+                $backupFiles.Add([PSCustomObject]@{ key=$p; file=$outFile; size=(Get-Item -LiteralPath $outFile).Length; valid=$true })
             } else {
                 $backupFiles.Add([PSCustomObject]@{ key=$p; file=$outFile; size=0; valid=$false })
                 Write-Warning "Registry export may be corrupted: $p"
             }
+        } else {
+            $backupFiles.Add([PSCustomObject]@{ key=$p; file=$outFile; size=0; valid=$false })
+            Write-Warning ("Registry export FAILED (exit_code={0}): {1} - no .reg produced. error: {2}" -f $exp.exit_code, $p, $exp.error)
         }
     }
 

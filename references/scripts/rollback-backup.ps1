@@ -4,6 +4,17 @@
 # 逐项 fail-closed：备份不可用 = 删除不发生。导出的 .reg 是 REQ-024 恢复的
 # 唯一物料，也是自证（REQ-027 备份哈希）的校验对象。
 # 本文件不含 Main、不含 exit（ADR-001）。
+#
+# 依赖：native-invoke.ps1（ConvertTo-NativeArgument / Invoke-NativeExe）。
+# 库文件没有顶层 param()，dot-source 不会把同名默认值冲进调用方作用域
+# （AGENTS.md 陷阱 8a）。加载失败记入调用方作用域的 $script:RollbackLibsMissing，
+# 由消费方 Main 的前置门禁 fail-closed 返回 3（REQ-026）。
+$script:nativeInvokeLib = Join-Path $PSScriptRoot 'native-invoke.ps1'
+if (-not (Test-Path -LiteralPath $script:nativeInvokeLib)) {
+    $script:RollbackLibsMissing = @($script:RollbackLibsMissing) + 'native-invoke.ps1'
+} else {
+    . $script:nativeInvokeLib
+}
 
 function Get-RegistryParentPath {
     <#
@@ -224,8 +235,13 @@ function Write-RegUnicodeFile {
 function Invoke-RegExe {
     <#
     .SYNOPSIS
-        可靠地调用 reg.exe：双流重定向拿真实退出码（同 Invoke-ScExe 的教训）。
+        可靠地调用 reg.exe：元素显式加引号 + 双流重定向拿真实退出码。
         返回 @{ ok; exit_code; stdout; stderr; error }；不抛。
+    .DESCRIPTION
+        实现收敛到 Invoke-NativeExe（native-invoke.ps1）：此前 -ArgumentList
+        数组直接透传，Start-Process 不给含空格元素加引号——注册表键名
+        （如 ...\Uninstall\Google Chrome）与 .reg 输出路径（项目根含空格时）
+        必碎，drill 现场修过但产品链未回流（2026-10-16 审计 P1-1）。
     #>
     param(
         [Parameter(Mandatory)][string[]]$Arguments,
@@ -233,28 +249,11 @@ function Invoke-RegExe {
     )
 
     $regPath = Join-Path $env:SystemRoot 'System32\reg.exe'
-    if (-not (Test-Path $regPath)) {
+    if (-not (Test-Path -LiteralPath $regPath)) {
         return @{ ok = $false; exit_code = $null; stdout = ''; stderr = ''; error = "reg.exe not found at $regPath" }
     }
 
-    $outFile = [System.IO.Path]::GetTempFileName()
-    $errFile = [System.IO.Path]::GetTempFileName()
-    try {
-        $proc = Start-Process -FilePath $regPath -ArgumentList $Arguments `
-            -NoNewWindow -Wait -PassThru `
-            -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
-        $stdout = [string](Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)
-        $stderr = [string](Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
-        $exitCode = $proc.ExitCode
-        if ($null -eq $exitCode) {
-            return @{ ok = $false; exit_code = $null; stdout = $stdout; stderr = $stderr; error = "reg.exe returned no exit code" }
-        }
-        return @{ ok = ($exitCode -eq 0); exit_code = $exitCode; stdout = $stdout; stderr = $stderr; error = if ($exitCode -eq 0) { '' } else { "$stdout $stderr" } }
-    } catch {
-        return @{ ok = $false; exit_code = $null; stdout = ''; stderr = ''; error = $_.Exception.Message }
-    } finally {
-        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
-    }
+    return Invoke-NativeExe -FilePath $regPath -Arguments $Arguments -TimeoutSeconds $TimeoutSeconds
 }
 
 function Export-RegistryKeyBackup {

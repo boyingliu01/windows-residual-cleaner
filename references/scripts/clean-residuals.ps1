@@ -57,45 +57,22 @@ function Invoke-ScExe {
     )
 
     $scPath = Join-Path $env:SystemRoot 'System32\sc.exe'
-    if (-not (Test-Path $scPath)) {
+    if (-not (Test-Path -LiteralPath $scPath)) {
         return @{ ok = $false; output = ''; exit_code = $null; error = "sc.exe not found at $scPath" }
     }
 
-    $outFile = [System.IO.Path]::GetTempFileName()
-    $errFile = [System.IO.Path]::GetTempFileName()
-    try {
-        $proc = Start-Process -FilePath $scPath `
-            -ArgumentList $Arguments `
-            -NoNewWindow -Wait -PassThru `
-            -RedirectStandardOutput $outFile `
-            -RedirectStandardError $errFile `
-            -ErrorAction Stop
-
-        # 文件总是存在（GetTempFileName 已创建），读取仅用于获取进程输出。
-        # 用 -ErrorAction SilentlyContinue 而非空 catch 块（PSAvoidUsingEmptyCatchBlock）。
-        $stdout = Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue
-        $stderr = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
-        if ($null -eq $stdout) { $stdout = '' }
-        if ($null -eq $stderr) { $stderr = '' }
-
-        $exitCode = $proc.ExitCode
-        if ($null -eq $exitCode) {
-            return @{ ok = $false; output = $stdout.Trim(); exit_code = $null; error = "sc.exe returned no exit code (timeout ${TimeoutSeconds}s?)" }
-        }
-
-        return @{
-            ok        = ($exitCode -eq 0)
-            output    = $stdout.Trim()
-            exit_code = $exitCode
-            error     = if ($exitCode -eq 0) { '' } else { (($stdout + "`n" + $stderr).Trim()) }
-        }
-    } catch {
-        # Start-Process 自身失败（如权限不足 / sc.exe 被安全软件拦截）：
-        # exit_code 保持 $null 以区别于"sc.exe 正常运行并返回了退出码"，
-        # 调用方必须把 $null 视为失败，不能当成 1060（服务不存在）而静默放过。
-        return @{ ok = $false; output = ''; exit_code = $null; error = $_.Exception.Message }
-    } finally {
-        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    # 实现收敛到 Invoke-NativeExe（native-invoke.ps1）：
+    #   - 元素显式加引号：服务名可含空格，旧实现 -ArgumentList 直接透传必碎
+    #     （2026-10-16 审计 P1-1；实测含空格名碎裂后 sc 返回 1639 Invalid Option，
+    #     引号正确时返回 1060 —— 该判别即回归测试断言）。
+    #   - TimeoutSeconds 从「报错文案里的装饰」变成真实超时（WaitForExit + Kill）。
+    # 返回形状保持不变（ok / output / exit_code / error），调用方与测试零改动。
+    $result = Invoke-NativeExe -FilePath $scPath -Arguments $Arguments -TimeoutSeconds $TimeoutSeconds
+    return @{
+        ok        = $result.ok
+        output    = ([string]$result.stdout).Trim()
+        exit_code = $result.exit_code
+        error     = $result.error
     }
 }
 
@@ -116,11 +93,14 @@ function Remove-ItemRobust {
     $setOutcome = { param($v) if ($null -ne $Outcome) { $Outcome.Value = $v } }
 
     if ($WhatIf) { & $setOutcome 'dry_run'; return $true }
-    if (-not (Test-Path $Path)) { & $setOutcome 'absent'; return $true }
+    # -LiteralPath（2026-10-16 审计 P2）：本函数处理的是「确切路径」，-Path 的
+    # 通配符语义会让含 [ ] 的残留目录名（如 App [old]）误判 absent，甚至匹配并
+    # 删除另一个恰好符合通配符的目录。破坏性函数内一律 LiteralPath。
+    if (-not (Test-Path -LiteralPath $Path)) { & $setOutcome 'absent'; return $true }
 
     # Strategy 1: Standard PowerShell Remove-Item
     try {
-        Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
         & $setOutcome 'deleted'
         return $true
     } catch {
@@ -129,17 +109,20 @@ function Remove-ItemRobust {
     }
 
     # Strategy 2: Take ownership + grant full access, then retry
+    # 走 Invoke-NativeExe（元素显式加引号 + 真实超时）：旧实现 -ArgumentList
+    # 数组直接透传，含空格路径（C:\Program Files\...）从未真正生效，
+    # 一直被 Tier3 引号安全的 rd /s /q 掩盖（2026-10-16 审计 P1-1）。
     try {
         # takeown /f for files, /r for recursive on directories
-        $isDir = (Get-Item $Path).PSIsContainer
+        $isDir = (Get-Item -LiteralPath $Path).PSIsContainer
         if ($isDir) {
             $takeownArgs = '/r', '/d', 'Y', '/f', $Path
         } else {
             $takeownArgs = '/f', $Path
         }
-        $takeown = Start-Process -FilePath 'takeown.exe' -ArgumentList $takeownArgs -Wait -PassThru -WindowStyle Hidden
-        if ($takeown.ExitCode -ne 0) {
-            Write-Warning "  → takeown.exe failed with exit code $($takeown.ExitCode)"
+        $takeown = Invoke-NativeExe -FilePath 'takeown.exe' -Arguments $takeownArgs -TimeoutSeconds 600
+        if (-not $takeown.ok) {
+            Write-Warning "  → takeown.exe failed with exit code $($takeown.exit_code)"
         }
 
         # icacls grant Administrators full control
@@ -148,12 +131,12 @@ function Remove-ItemRobust {
         } else {
             $icaclsArgs = $Path, '/grant', 'Administrators:F', '/C'
         }
-        $icacls = Start-Process -FilePath 'icacls.exe' -ArgumentList $icaclsArgs -Wait -PassThru -WindowStyle Hidden
-        if ($icacls.ExitCode -ne 0) {
-            Write-Warning "  → icacls.exe failed with exit code $($icacls.ExitCode)"
+        $icacls = Invoke-NativeExe -FilePath 'icacls.exe' -Arguments $icaclsArgs -TimeoutSeconds 600
+        if (-not $icacls.ok) {
+            Write-Warning "  → icacls.exe failed with exit code $($icacls.exit_code)"
         }
 
-        Remove-Item -Path $Path -Recurse -Force -ErrorAction Stop
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
         & $setOutcome 'deleted'
         return $true
     } catch {
@@ -167,13 +150,13 @@ function Remove-ItemRobust {
     # 非空数组，真值恒为 $true —— 四层全失败却被记成删除成功、failedCount 保持 0、
     # 自动回滚不触发（drill5 实测，REQ-002 / AC-016）。
     try {
-        $isDir = (Get-Item $Path).PSIsContainer
+        $isDir = (Get-Item -LiteralPath $Path).PSIsContainer
         if ($isDir) {
             $null = cmd /c "rd /s /q `"$Path`"" 2>&1
-            if ($LASTEXITCODE -eq 0 -and -not (Test-Path $Path)) { & $setOutcome 'deleted'; return $true }
+            if ($LASTEXITCODE -eq 0 -and -not (Test-Path -LiteralPath $Path)) { & $setOutcome 'deleted'; return $true }
         } else {
             $null = cmd /c "del /f /q `"$Path`"" 2>&1
-            if ($LASTEXITCODE -eq 0 -and -not (Test-Path $Path)) { & $setOutcome 'deleted'; return $true }
+            if ($LASTEXITCODE -eq 0 -and -not (Test-Path -LiteralPath $Path)) { & $setOutcome 'deleted'; return $true }
         }
     } catch {
         Write-Warning "  → cmd delete failed: $($_.Exception.Message)"
@@ -181,22 +164,22 @@ function Remove-ItemRobust {
 
     # Strategy 4: Rename the file/directory (if deletion is blocked by handle)
     try {
-        $isDir = (Get-Item $Path).PSIsContainer
-        $parent = Split-Path $Path -Parent
-        $leaf = Split-Path $Path -Leaf
+        $isDir = (Get-Item -LiteralPath $Path).PSIsContainer
+        $parent = Split-Path -LiteralPath $Path -Parent
+        $leaf = Split-Path -LiteralPath $Path -Leaf
         $renamed = Join-Path $parent "~$leaf.deleted"
         $counter = 0
-        while (Test-Path $renamed) {
+        while (Test-Path -LiteralPath $renamed) {
             $counter++
             $renamed = Join-Path $parent "~$leaf.deleted$counter"
         }
-        Rename-Item -Path $Path -NewName (Split-Path $renamed -Leaf) -Force -ErrorAction Stop
+        Rename-Item -LiteralPath $Path -NewName (Split-Path -LiteralPath $renamed -Leaf) -Force -ErrorAction Stop
         # 走 Warning 而非 Write-Output：改名 = 内容没删（延迟删除），既是用户必须看到的
         # 警示，也避免污染本函数的成功流（成功流只允许携带最终布尔返回值）。
-        Write-Warning "  → Renamed to $(Split-Path $renamed -Leaf) (deferred delete - may be in use)"
+        Write-Warning "  → Renamed to $(Split-Path -LiteralPath $renamed -Leaf) (deferred delete - may be in use)"
         # REQ-002：改名不是删除。内容仍在磁盘上（只是换了名字），必须回传 renamed:<新名>，
         # 由调用方如实记录并供人工定位；DD-006 规定这类条目不参与自动恢复。
-        & $setOutcome ('renamed:' + (Split-Path $renamed -Leaf))
+        & $setOutcome ('renamed:' + (Split-Path -LiteralPath $renamed -Leaf))
 
         # If it's a file, try to schedule it for deletion on next reboot using MoveFileEx
         if (-not $isDir) {
