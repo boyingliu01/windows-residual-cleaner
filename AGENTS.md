@@ -703,10 +703,12 @@ It 'Works against real registry data' {
 - **coverage.xml 的口径与污染（2026-10-16 走查实测）**：引用覆盖率数字前先核对产物：
   (1) 本地包装脚本的 `CoveragePercent`（如 80.40%）是 **Pester 命令口径**；
   (2) JaCoCo `coverage.xml` 的 LINE counter 是**行口径**，两者不可互引；Gate 5 读的是后者。
-  权威口径 = `references/scripts` 16 脚本 + `setup.ps1` 共 **17 个 sourcefile**。
+  权威口径 = `references/scripts` **17 脚本**（native-invoke 入列后）+ `setup.ps1` 共
+  **18 个 sourcefile**（2026-10-16 JaCoCo 实测 84.17%，2844/3379）；脚本数再变时以
+  17 文件清单命令的实数为准。
   (3) 产物会被**任何**用默认 CodeCoverage 配置跑 Pester 的会话覆写污染——实测评审期间
   一次运行把 `.workbuddy/`（3 文件）与根目录本地脚本混进 23 个 sourcefile，顶层 counter
-  随之失真。引用前先数 `sourcefile` 数量是否为 17，混入即用 17 文件清单重跑覆盖率管线。
+  随之失真。引用前先数 `sourcefile` 数量是否与脚本清单一致，混入即重跑覆盖率管线。
 
 ---
 
@@ -1026,7 +1028,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     目录成分的相对路径先 `GetFullPath` 解析（否则 Join-Path 抛错被 catch 伪装成
     环境失败，陷阱 15 同型）并补测试钉住；(4) coverage.xml 口径与污染实测记录进
     「已知限制」（命令口径 vs 行口径；评审会话用默认 CodeCoverage 跑 Pester 会把
-    `.workbuddy/` 等混进 sourcefile，引用前先数 17）。留待后续：rollback-backup
+    `.workbuddy/` 等混进 sourcefile，引用前先数 18）。留待后续：rollback-backup
     不写宿主作用域状态、AST 守卫按破坏性语义而非名字模式判定、/api/confirm 落点
     断言、reg 备份文件名两套命名方案的碰撞面。测试数 751 → **752**（双引擎各
     752/752，新增相对路径 Get-RenameTarget 用例）；PSScriptAnalyzer 维持 0。
