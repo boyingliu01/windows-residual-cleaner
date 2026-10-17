@@ -1108,14 +1108,17 @@ if ($MyInvocation.InvocationName -ne '.') {
     扫的是 2 个无扩展名配置文件而非 .ps1。教训：**引用门禁证据必须读该门禁
     段的输出行，不能只读报告汇总**——汇总把 SKIP/SKIP-as-PASS 与真 PASS 记成
     同一个 PASS。
-  - **钩子回退事故（R6 Round-2 发现，本会话实测确认）**：一个外部 xp-gate
-    维护进程把 batch-3 硬化的三个用户级文件**全部还原为 legacy 且保留旧
+  - **钩子回退事故（R6 Round-2 发现，本会话实测确认，共三种形态）**：一个外部
+    xp-gate 维护进程把 batch-3 硬化的三个用户级文件**全部还原为 legacy 且保留旧
     mtime**（`adapters/powershell.sh` 272 行 2026-10-13、`gate-10.sh`
     2026-10-13、`pre-commit` 谓词无 ps1），`.bak-gate-harden-20261016` 备份
     除 pre-commit 一份（后被证实与 live 同为 legacy）外全部消失。本会话早前
     的 missing-path 探针（12:33 仍能发 `XP_G1_REASON`）证明回退发生在探针与
-    专家检查之间。**这是继 .delphi-config.json 两次改写事故后第三次实证的
-    「用户级钩子目录会被外部进程改写」**。
+    专家检查之间。**同一窗口（12:53:28）`.git/config` 被写入空的 repo 级
+    `core.hooksPath`**（空值覆盖全局 → 钩子目录回落到无钩子的 `.git/hooks`，
+    提交零门禁零输出）——第三种形态，靠「提交必须看到门禁段输出」的核对才
+    抓到。这是继 .delphi-config.json 两次改写事故后**第三次实证**的「用户级
+    钩子基础设施会被外部进程改写」。
   - **重建 + 防回退（本轮收口提交）**：(1) 三个钩子文件按原设计重打全部补丁
     （`_detect_pwsh` 回退、发现 prune + prune-dirs 注入、范围 PSSA + Stop 纪律、
     fail-closed XP_G1_REASON 族、pre-commit Gate 1 谓词 + `powershell)` 分支 +

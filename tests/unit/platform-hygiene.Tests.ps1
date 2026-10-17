@@ -476,5 +476,17 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
             $pc.Contains('powershell)') | Should -BeTrue -Because 'pre-commit 无 powershell 分支——Gate 1 fail-closed 补丁被回退，ps1 提交将落进通用非阻塞分支'
             $pc.Contains('\.ps1$') | Should -BeTrue -Because 'pre-commit Gate 1/Gate 10 谓词不含 .ps1——ps1 提交会被 skip-as-pass（实测发生过）'
         }
+
+        # 第 5 判据（2026-10-17 事故第三次实证）：内容完好还不够——git 必须真的
+        # 走 xp-gate 链。实测 .git/config 被外部进程写入空 core.hooksPath（空值
+        # 覆盖全局配置 → 钩子目录回落到无钩子的 .git/hooks），提交完全不跑门禁
+        # 且报告零输出。本用例断言解析后的 core.hooksPath 指向用户级 xp-gate。
+        $expectedHooks = (Join-Path $hookDir 'hooks').Replace('\', '/')
+        $resolved = (git config core.hooksPath)
+        if ([string]::IsNullOrWhiteSpace($resolved)) {
+            $resolved | Should -Be $expectedHooks -Because 'core.hooksPath 为空——xp-gate 链被断开（实测 .git/config 被写入空值覆盖全局配置，提交零门禁）；恢复：git config core.hooksPath <用户级>/hooks'
+        } else {
+            ($resolved.Replace('\', '/').TrimEnd('/')) | Should -Be ($expectedHooks.TrimEnd('/')) -Because "core.hooksPath 解析为 '$resolved'——未指向用户级 xp-gate 链，提交将静默零门禁"
+        }
     }
 }

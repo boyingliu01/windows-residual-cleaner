@@ -201,11 +201,19 @@ SHA256 比对证实与回退后的 live 同为 legacy）外全部消失。直接
    整体入库，改为标记断言），`githooks/README.md` 写明安装/同步/恢复步骤。
 3. **一致性测试**：「门禁边界一致性」新增第 4 用例——本机钩子存在时，
    live 适配器与 vendored 副本 SHA256 必须一致、live pre-commit 必须含
-   `powershell)` 分支与 `\.ps1$` 谓词标记；**回退即套件变红**（本机钩子缺席
-   时 Inconclusive，新克隆/CI 不受影响）。同组用例补自有 BeforeAll、prune
-   前缀改从 prune-dirs 文件派生。
+   `powershell)` 分支与 `\.ps1$` 谓词标记、**解析后的 `core.hooksPath` 必须指向
+   用户级 xp-gate**（本机钩子缺席时 Inconclusive，新克隆/CI 不受影响）。
+   同组用例补自有 BeforeAll、prune 前缀改从 prune-dirs 文件派生。
 4. **诚实口径**：7.4 结论更正如上；AGENTS.md 2026-10-17 条目重写。教训入册：
    引用门禁证据必须读该门禁段的输出行（skip/skip-as-pass/真 PASS 在汇总里
    长得一样）；mtime/尺寸不能证明文件内容未被动过（外部进程会保留旧 mtime）。
+
+**事故的第三种形态（同日 13:57 提交前实测发现）**：`.git/config` 被写入**空的
+repo 级 `core.hooksPath`**（12:53:28，与适配器回退同一窗口）——空值覆盖全局
+配置后钩子目录回落到无钩子的 `.git/hooks`，**提交完全不跑门禁且零输出**。
+若不做「提交时必须看到门禁段输出」的核对，这比文件回退更隐蔽。已恢复为
+显式指向 xp-gate（repo 级 + 全局双保险），并由第 4 用例的 hooksPath 判据钉住。
+防回退判据至此覆盖三层：**链路接通（hooksPath）→ 文件内容（哈希/标记）→
+行为语义（探针）**。
 
 
