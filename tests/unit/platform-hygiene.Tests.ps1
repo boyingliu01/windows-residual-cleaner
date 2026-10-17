@@ -446,47 +446,52 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
         $prune | Should -Contain 'wrc-drill' -Because 'wrc-drill 是 tracked 演练脚手架（会创建真实系统对象），必须留在三处分母之外'
     }
 
-    It '钩子安装与 vendored 副本一致（被回退时变红，杜绝静默降级）' {
+    It '钩子安装与 vendored 副本一致（被回退/删除时变红，杜绝静默降级）' {
         # R6 Round-2 稳落地 BLOCKING CANDIDATE 的落实：2026-10-17 实测一个外部
         # xp-gate 维护进程把 batch-3 硬化文件整体回退为 legacy（保留旧 mtime，
         # ls -l 无异常），两次实弹提交的 Gate 1/Gate 10 实为 skip-as-pass。
         # 本用例把「live 钩子 == 仓库 vendored 权威副本」变成套件判据：回退即红。
+        # R6 Round-3 修正：live 文件被**删除**（而非回退内容）时哈希断言曾静默
+        # 跳过（目录存在 ⇒ 文件必须存在，缺席即红）；vendored 存在性断言移到
+        # Inconclusive 早退之前，使 CI/新克隆也守得住仓库侧副本。
         $hookDir = Join-Path $HOME '.config\xp-gate'
-        if (-not (Test-Path -LiteralPath $hookDir)) {
-            Set-ItResult -Inconclusive -Because '用户级 xp-gate 未安装（新克隆/CI）：钩子一致性只在本机安装存在时校验'
-            return
-        }
         $pairs = @(
             @{ live = 'adapters\powershell.sh'; vendored = 'githooks\adapters\powershell.sh' },
-            @{ live = 'adapters\gate-10.sh'; vendored = 'githooks\adapters\gate-10.sh' }
+            @{ live = 'adapters\gate-10.sh'; vendored = 'githooks\adapters\gate-10.sh' },
+            @{ live = 'hooks\pre-commit'; vendored = 'githooks\hooks\pre-commit' }
         )
+        foreach ($pair in $pairs) {
+            $vendoredPath = Join-Path $script:Root $pair.vendored
+            (Test-Path -LiteralPath $vendoredPath) | Should -Be $true -Because "vendored 副本 $($pair.vendored) 缺失——防回退机制被拆掉"
+        }
+        if (-not (Test-Path -LiteralPath $hookDir)) {
+            Set-ItResult -Inconclusive -Because '用户级 xp-gate 未安装（新克隆/CI）：live 一致性只在本机安装存在时校验'
+            return
+        }
         foreach ($pair in $pairs) {
             $livePath = Join-Path $hookDir $pair.live
             $vendoredPath = Join-Path $script:Root $pair.vendored
-            (Test-Path -LiteralPath $vendoredPath) | Should -Be $true -Because "vendored 副本 $($pair.vendored) 缺失——防回退机制被拆掉"
-            if (Test-Path -LiteralPath $livePath) {
-                $liveHash = (Get-FileHash -LiteralPath $livePath -Algorithm SHA256).Hash
-                $vendoredHash = (Get-FileHash -LiteralPath $vendoredPath -Algorithm SHA256).Hash
-                $liveHash | Should -Be $vendoredHash -Because "live $($pair.live) 与 vendored 副本不一致——硬化补丁被外部进程回退（实测发生过）；恢复：cp githooks/adapters/$(Split-Path $pair.live -Leaf) 对应用户级 adapters 目录"
-            }
+            (Test-Path -LiteralPath $livePath) | Should -Be $true -Because "live $($pair.live) 缺失——文件被删除与被回退同级（R6 R3 修正：原实现静默跳过假绿）；恢复：cp $($pair.vendored) ~/.config/xp-gate/$($pair.live -replace '\\','/')"
+            $liveHash = (Get-FileHash -LiteralPath $livePath -Algorithm SHA256).Hash
+            $vendoredHash = (Get-FileHash -LiteralPath $vendoredPath -Algorithm SHA256).Hash
+            $liveHash | Should -Be $vendoredHash -Because "live $($pair.live) 与 vendored 副本不一致——硬化补丁被外部进程回退（实测发生过）；恢复：cp $($pair.vendored) ~/.config/xp-gate/$($pair.live -replace '\\','/')"
         }
+        # 标记断言用 Gate-1 powershell 分支**专属**符号（R6 R3：'powershell)' 在
+        # 上游文件出现 2 处、'\.ps1$' 2 处，弱子串在「只回退其中一处」时失效）。
         $livePreCommit = Join-Path $hookDir 'hooks\pre-commit'
-        if (Test-Path -LiteralPath $livePreCommit) {
-            $pc = Get-Content -LiteralPath $livePreCommit -Raw
-            $pc.Contains('powershell)') | Should -BeTrue -Because 'pre-commit 无 powershell 分支——Gate 1 fail-closed 补丁被回退，ps1 提交将落进通用非阻塞分支'
-            $pc.Contains('\.ps1$') | Should -BeTrue -Because 'pre-commit Gate 1/Gate 10 谓词不含 .ps1——ps1 提交会被 skip-as-pass（实测发生过）'
-        }
+        $pc = Get-Content -LiteralPath $livePreCommit -Raw
+        $pc.Contains('PS_G1_REASON') | Should -BeTrue -Because 'pre-commit 缺 PS_G1_REASON 协议——Gate 1 powershell fail-closed 分支被回退'
+        $pc.Contains('GATE_1_DETAIL="powershell:') | Should -BeTrue -Because 'pre-commit 缺 GATE_1_DETAIL powershell 前缀——WARN 详情映射被回退'
+        $pc.Contains('\.psm1$') | Should -BeTrue -Because 'pre-commit Gate 1/Gate 10 谓词不含 .psm1——psm1 变更会绕过静态分析与 SAST'
 
         # 第 5 判据（2026-10-17 事故第三次实证）：内容完好还不够——git 必须真的
         # 走 xp-gate 链。实测 .git/config 被外部进程写入空 core.hooksPath（空值
         # 覆盖全局配置 → 钩子目录回落到无钩子的 .git/hooks），提交完全不跑门禁
         # 且报告零输出。本用例断言解析后的 core.hooksPath 指向用户级 xp-gate。
+        # （-C 钉定仓库，R6 R3：过滤单跑/换 cwd 时不得读到别的仓库的配置。）
         $expectedHooks = (Join-Path $hookDir 'hooks').Replace('\', '/')
-        $resolved = (git config core.hooksPath)
-        if ([string]::IsNullOrWhiteSpace($resolved)) {
-            $resolved | Should -Be $expectedHooks -Because 'core.hooksPath 为空——xp-gate 链被断开（实测 .git/config 被写入空值覆盖全局配置，提交零门禁）；恢复：git config core.hooksPath <用户级>/hooks'
-        } else {
-            ($resolved.Replace('\', '/').TrimEnd('/')) | Should -Be ($expectedHooks.TrimEnd('/')) -Because "core.hooksPath 解析为 '$resolved'——未指向用户级 xp-gate 链，提交将静默零门禁"
-        }
+        $resolved = (git -C $script:Root config core.hooksPath)
+        $resolvedNorm = if ([string]::IsNullOrWhiteSpace($resolved)) { '' } else { $resolved.Replace('\', '/').TrimEnd('/') }
+        $resolvedNorm | Should -Be ($expectedHooks.TrimEnd('/')) -Because "core.hooksPath 解析为 '$resolved'——xp-gate 链被断开或指向别处（实测 .git/config 被写入空值覆盖全局配置，提交零门禁）；恢复：git config core.hooksPath $expectedHooks"
     }
 }

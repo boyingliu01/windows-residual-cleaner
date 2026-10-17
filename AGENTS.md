@@ -1140,10 +1140,18 @@ if ($MyInvocation.InvocationName -ne '.') {
     「7.2+ 标准实参传递」被实测否定（三种 PSNativeCommandArgumentPassing 模式均
     成功，非 7.2 特性门控）。drill3 的 `Test-AdminPrivilege` 桩 `return $true`
     让演练在非管理员会话静默驱动真实清理。
-  - **R6 Round 2（证实项复核）**：构远图/严码关 APPROVED；稳落地以「钩子文件
-    mtime/尺寸/内容与补丁不符」提出 BLOCKING CANDIDATE——即上文回退事故的
-    发现点，经本会话亲自复核成立并成为本轮收口的中心工作。其余 Major
-    （一致性测试/CI 清单/README/wrc-drill 指针/权限桩/因果归属）均已落实。
+  - **R6 Round 3/4（重建复核 + 修复闭环）**：Round 3 三专家独立复测证实重建
+    成立（哈希一致/发现 20+18/三态映射正确/WARN 真降 verdict），但以探针抓出
+    两处 Critical 并全部落地：(1) **PSSA settings 的 Severity 过滤把 ParseError
+    整条丢弃**——语法损坏脚本静默过 Gate 1（实测裸跑 2 条/Error-Warning settings
+    0 条），修法 `Severity += 'ParseError'`（IncludeRules 变体实测无效）；
+    (2) **防回退闭环缺口**——pre-commit 无恢复源 + live 文件被删除时哈希断言
+    静默跳过；修法 pre-commit 完整 vendored + 「目录存在 ⇒ 文件必须存在」 +
+    vendored 存在性断言前移。Major 全处理：CRLF 行尾静默降级（适配器剥 CR +
+    `.gitattributes` eol=lf 双层）、prune `-name` 任意深度语义对齐注释、
+    XP_G1_REASON 多条聚合 + `grep -v || true`、标记断言升级为分支专属符号
+    （PS_G1_REASON / GATE_1_DETAIL="powershell:）、`git -C` 钉定、两层防御
+    口径澄清。详见审计 7.7。
   - **证实项当场落实**：(1) 钩子适配器缺失条目改为发 `XP_G1_REASON:
     analysis-path-missing:<路径>`（fail-closed WARN，同 analysis-paths-empty 语义）+
     超时文案 300 字面量改用真值；(2) 新增「门禁边界一致性」测试组（tracked 产品源

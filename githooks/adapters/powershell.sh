@@ -78,9 +78,10 @@ _find_powershell_files() {
   if [ -f "$prune_file" ]; then
     while IFS= read -r dir; do
       case "$dir" in ''|'#'*) continue ;; esac
+      dir="${dir%$'\r'}"
       dir="${dir#./}"
       dir="${dir%/}"
-      args+=(-o -path "./$dir")
+      args+=(-o -name "$dir")
     done < "$prune_file"
   fi
   args+=(")" -prune ")" -o "(" -type f -name "$name_pattern" -print ")")
@@ -138,6 +139,7 @@ run_static_analysis() {
   local target_line
   if [ -f "$scope_file" ]; then
     while IFS= read -r target_line; do
+      target_line="${target_line%$'\r'}"
       case "$target_line" in ''|'#'*) continue ;; esac
       if [ -e "$target_line" ]; then
         analysis_targets[${#analysis_targets[@]}]="$target_line"

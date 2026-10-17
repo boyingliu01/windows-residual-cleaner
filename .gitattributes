@@ -1,0 +1,11 @@
+# R6 Round-3 (2026-10-17): line endings are gate semantics for the xp-gate
+# boundary files. A CRLF line in the analysis-paths/prune-dirs lists used to
+# hand the hook an entry like "references/scripts\r"; the path test failed and
+# Gate 1 degraded from a real product-scope analysis to a WARN without any
+# error signal. Pin LF explicitly (verified: the adapter now also strips CR,
+# this is the belt-and-suspenders second layer).
+.xp-gate-powershell-analysis-paths text eol=lf
+.xp-gate-powershell-prune-dirs   text eol=lf
+.xp-gate-powershell-coverage-ignore text eol=lf
+githooks/**                      text eol=lf
+*.sh                             text eol=lf

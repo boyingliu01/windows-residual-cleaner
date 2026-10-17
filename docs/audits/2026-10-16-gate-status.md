@@ -157,7 +157,7 @@ analysis-paths 的「硬边界」此前只有散文承诺——scope 条目缺�
 
 | 发现（专家实测） | 落实 |
 |---|---|
-| scope 条目缺失 → 静默跳过 + PASS（fail-open） | 钩子适配器改为发 `XP_G1_REASON: analysis-path-missing:<路径>`（fail-closed WARN，同 analysis-paths-empty 语义）；超时文案 300 字面量同步改真值 |
+| scope 条目缺失 → 静默跳过 + PASS（fail-open） | 钩子适配器改为发 `XP_G1_REASON: analysis-path-missing:<路径>`（fail-closed WARN，同 analysis-paths-empty 语义）；超时文案 300 字面量同步改真值。**两层防御**（R6 R3 澄清）：一致性测试先行变红是第一层，钩子 WARN 是纵深第二层 |
 | analysis-paths 与覆盖率分母两条边界无交叉校验，可各自腐烂 | 新增「门禁边界一致性」测试组（platform-hygiene.Tests.ps1）：tracked 产品源 ⊆ scope、scope 条目必须存在、coverage-ignore 必须空、prune-dirs 必须含 wrc-drill、**live 钩子与 vendored 副本哈希一致**（第 4 用例，回退即红） |
 | 发现是 `*.ps1` 端到端，`.psm1` 模块不在三处分母内 | analysis-paths 文件头 R6 note（产品代码保持 .ps1 或扩展机制时三处一起改） |
 | ci.yml 硬编码产品清单、引用已清空的 coverage-ignore、标注 727 历史计数 | ci.yml 改读 `.xp-gate-powershell-analysis-paths`（scope 空即 fail），陈旧引用清除 |
@@ -215,5 +215,28 @@ repo 级 `core.hooksPath`**（12:53:28，与适配器回退同一窗口）——
 显式指向 xp-gate（repo 级 + 全局双保险），并由第 4 用例的 hooksPath 判据钉住。
 防回退判据至此覆盖三层：**链路接通（hooksPath）→ 文件内容（哈希/标记）→
 行为语义（探针）**。
+
+### 7.7 R6 Round-3 评审修复（2026-10-17）
+
+Round 3（三专家独立复测，1 APPROVED / 2 PASS_WITH_CAVEATS，共识 0.67 未达阈值）
+以实测探针证实两处 Critical 并提出一批 Major/Minor，Round-4 前全部落地：
+
+| 发现（专家实测） | 修复 |
+|---|---|
+| **ParseError 被 settings 的 `Severity` 过滤整条丢弃**（裸跑 2 条 MissingEndCurlyBrace；带 Error/Warning settings count=0）——语法损坏的脚本静默过 Gate 1，真实 fail-open | `PSScriptAnalyzerSettings.psd1` 的 `Severity` 加 `'ParseError'`（实测 count=2 拦截；`IncludeRules` 变体实测无效，已在 settings 注释记录）；探针复测：scope 内语法损坏文件 rc=1 + 2 findings |
+| pre-commit 无恢复源（未 vendored），回退后套件能红但不能从仓库恢复 | `githooks/hooks/pre-commit` **完整 vendored**；README 恢复步骤补第三条 cp；一致性用例升级为三对 live↔vendored 哈希 |
+| live 文件被**删除**（而非回退）时哈希断言静默跳过假绿（专家实测 Passed=27 零 Inconclusive） | 目录存在 ⇒ live 文件必须存在（缺席即红）；vendored 存在性断言移到 Inconclusive 早退之前（CI 也守住） |
+| scope/prune 文件 CRLF 行尾 → 条目带 `\r` 路径测试失败 → Gate 1 从真分析静默降级为 WARN | 适配器读循环剥 CR（`${line%$'\r'}`）+ 新增 `.gitattributes` 对三份边界文件与 `githooks/**`、`*.sh` 钉 `eol=lf`（双层）；探针复测：CRLF scope 文件下仍真跑、零 reason |
+| prune-dirs 注释称「任意深度」但实现是根锚定 `-path "./$dir"`（文实不符，嵌套条目不生效） | 实现改为 `-name "$dir"`（目录名任意深度，与注释、dot 目录语义一致） |
+| XP_G1_REASON 只取首条（`head -1`），多条缺失时诊断不全 | 聚合全部 reason（`paste -sd ';'`）进 GATE_1_DETAIL；`grep -v` 补 `\|\| true`（grep 全匹配时退出码 1，set -e 消费者会中止——AGENTS 陷阱 12 同类） |
+| pre-commit 标记断言判别力弱（`powershell)`、`\.ps1$` 在上游文件各 2 处，部分回退可绕过） | 改用分支**专属**标记：`PS_G1_REASON`、`GATE_1_DETAIL="powershell:`、`\.psm1$` |
+| `git config core.hooksPath` 未用 `-C` 钉定仓库；`*)` 分支 rc=3 时详情误导 | `git -C $script:Root`；`*)` 分支详情优先用 `$PS_G1_REASON` |
+| WARN 语义误读面：WARN 使 verdict 降级但 score 仍 10.0（汇总口径陷阱的同类） | 文档写明「读门禁证据看 verdict 与门禁段输出行，不看 score」；探针复现前置条件（scope/prune 文件 LF + 条目存在）入册 |
+| analysis-path-missing 被文档表述为主控制（实为纵深第二层：一致性测试先行红） | 7.5/AGENTS 措辞修正为「两层防御」：一致性测试（第一层，前置）+ 钩子 WARN（第二层，纵深） |
+
+Round-3 评审同时确认的成立项（不再改）：live/vendored 哈希一致、发现 20+18
+且 wrc-drill 零泄漏、fail-closed 三态映射正确且 WARN 确实使 verdict 降级、
+`_powershell_path_array` 对空格/单引号正确转义、防回退机制存放于不同信任域
+（tracked 仓库）设计合理。
 
 
