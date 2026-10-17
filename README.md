@@ -148,6 +148,15 @@ tests in `tests/unit/platform-hygiene.Tests.ps1` (门禁边界一致性):
 - `.xp-gate-powershell-coverage-ignore` — intentionally **empty**: per-artifact
   subtraction from the coverage denominator is not allowed.
 
+The hardened hook files themselves are **vendored in-repo** under
+[`githooks/`](githooks/README.md) (adapters + a consistency test): on 2026-10-17
+an external xp-gate maintenance process was observed silently reverting the
+user-level hook files to legacy versions (preserving old mtimes), which turned
+Gate 1 / Gate 10 into skip-as-pass for PowerShell commits. The
+platform-hygiene suite hash-compares the live install against the vendored
+copies and fails (turns red) if they drift — see `githooks/README.md` for the
+restore procedure (`cp githooks/adapters/*.sh ~/.config/xp-gate/adapters/`).
+
 ## License
 
 MIT License — see [LICENSE](LICENSE).

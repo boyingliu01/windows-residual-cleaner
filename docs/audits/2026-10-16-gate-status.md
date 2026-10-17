@@ -138,11 +138,15 @@ CI（run #6，`ac970b2`）：双引擎 727 用例全绿、行覆盖 82.89%、PSS
   PSUseApprovedVerbs 3 / PSUseSingularNouns 1），属 Pester 执行模型误报面；
   门禁按「收产品范围」处理而非放宽规则，测试文件不进判据。
 
-### 7.4 试金石提交
+### 7.4 试金石提交（**结论已更正，见 7.6**）
 
-第三批的全部修复以一次真实 `git commit` 验收：钩子在提交内真跑 PSSA（Gate 1
-powershell 分支）+ 全量 Pester + 覆盖率生成与解析（Gate 5）+ semgrep 对暂存 .ps1
-扫描（Gate 10）。结果见该提交的质量报告（`.xp-gate/quality-status`）。
+第三批的全部修复原计划以一次真实 `git commit` 验收。`a78ac47` 提交时报告为
+全绿 PASS、Gate 5 覆盖率为 commit 时新鲜产物（18 sourcefile，84.17%），当时据此
+写下「Gate 1 PSSA 真扫 / Gate 10 首次真扫描」。**R6 Round-2 复查推翻**：Gate 1
+实际输出为 `No code files changed, skipping lint`（skip 谓词不含 .ps1，skip-as-pass
+也记 PASS），Gate 10 的 `files scanned: 2` 扫的是无扩展名配置文件——**外部维护
+进程在提交前已把钩子侧硬化整体回退**（见 7.6）。教训入册：引用门禁证据必须读
+该门禁段的输出行，不能只读报告汇总。
 
 ### 7.5 R6 走查证实项（2026-10-17，收口补丁）
 
@@ -154,7 +158,7 @@ analysis-paths 的「硬边界」此前只有散文承诺——scope 条目缺�
 | 发现（专家实测） | 落实 |
 |---|---|
 | scope 条目缺失 → 静默跳过 + PASS（fail-open） | 钩子适配器改为发 `XP_G1_REASON: analysis-path-missing:<路径>`（fail-closed WARN，同 analysis-paths-empty 语义）；超时文案 300 字面量同步改真值 |
-| analysis-paths 与覆盖率分母两条边界无交叉校验，可各自腐烂 | 新增「门禁边界一致性」测试组（platform-hygiene.Tests.ps1）：tracked 产品源 ⊆ scope、scope 条目必须存在、coverage-ignore 必须空、prune-dirs 必须含 wrc-drill |
+| analysis-paths 与覆盖率分母两条边界无交叉校验，可各自腐烂 | 新增「门禁边界一致性」测试组（platform-hygiene.Tests.ps1）：tracked 产品源 ⊆ scope、scope 条目必须存在、coverage-ignore 必须空、prune-dirs 必须含 wrc-drill、**live 钩子与 vendored 副本哈希一致**（第 4 用例，回退即红） |
 | 发现是 `*.ps1` 端到端，`.psm1` 模块不在三处分母内 | analysis-paths 文件头 R6 note（产品代码保持 .ps1 或扩展机制时三处一起改） |
 | ci.yml 硬编码产品清单、引用已清空的 coverage-ignore、标注 727 历史计数 | ci.yml 改读 `.xp-gate-powershell-analysis-paths`（scope 空即 fail），陈旧引用清除 |
 | 钩子链在仓库外，新克隆静默降级且 README 未提 | README 新增「Pre-commit quality gates」节（三份 tracked 边界文件 + 一致性测试守卫） |
@@ -164,5 +168,44 @@ analysis-paths 的「硬边界」此前只有散文承诺——scope 条目缺�
 
 R5 钉子中「pwsh 7 期望 exit 0」的引擎行为断言在 R6 复核中保持成立（且与
 passing-mode 无关），按原样保留为回归钉。
+
+### 7.6 钩子回退事故与防回退机制（2026-10-17，R6 Round-2 发现）
+
+**事故**：R6 Round-2 走查中稳落地专家以分歧证据（钩子文件行号/尺寸与补丁描述
+不符）提出 BLOCKING CANDIDATE；本会话逐项复核**确认成立**——一个外部 xp-gate
+维护进程把 batch-3 硬化的三个用户级钩子文件（`adapters/powershell.sh`、
+`adapters/gate-10.sh`、`hooks/pre-commit`）**全部还原为 legacy 且保留旧 mtime**
+（适配器回退到 2026-10-13 版本，pre-commit 的 Gate 1 skip 谓词不含 `.ps1`），
+`.bak-gate-harden-20261016` 备份除一份被移入 `backup/cleanup-20261017/`（后经
+SHA256 比对证实与回退后的 live 同为 legacy）外全部消失。直接后果：
+**`a78ac47` 与 `067ae75` 两次实弹提交的 Gate 1 是 skip-as-pass（谓词无 .ps1，
+输出 `No code files changed, skipping lint.`），Gate 10 扫的是无扩展名配置文件**
+——7.4 的「试金石」结论被推翻。这是继 `.delphi-config.json` 两次改写事故之后
+第三次实证「用户级钩子目录会被外部进程改写且 mtime 不可信」。
+
+**根因**：XP 门禁的全部状态都放在仓库外的用户级目录（`~/.config/xp-gate`），
+`core.hooksPath` 指向该处；该目录由外部维护进程管理（备份/清理/回退），仓库对
+「钩子被改回旧版」没有任何检测手段——静默降级直到下次有人读钩子文件本身。
+
+**防回退机制（本轮收口提交落地）**：
+1. **重建**：三个钩子文件按 batch-3 设计全部重打（`_detect_pwsh` 标准安装位
+   回退探测、发现 prune + `.xp-gate-powershell-prune-dirs` 注入、范围 PSSA +
+   `$ErrorActionPreference='Stop'` 纪律、fail-closed `XP_G1_REASON` 族、
+   pre-commit Gate 1 谓词 + `powershell)` fail-closed 分支 + Gate 10 谓词、
+   gate-10 semgrep `%APPDATA%` 回退 + `ps1|psm1`）。五探针复测：发现 20 测试
+   + 18 产品源且 wrc-drill 零泄漏；干净 scope → exit 0 无 reason；scope 内脏
+   文件 → exit 1 + 发现表；缺失 scope 条目 → `XP_G1_REASON:
+   analysis-path-missing:<路径>`；引擎探测命中。
+2. **vendored 入库**：`githooks/adapters/powershell.sh` +
+   `githooks/adapters/gate-10.sh` 成为仓库内权威副本（170KB 的 pre-commit 不
+   整体入库，改为标记断言），`githooks/README.md` 写明安装/同步/恢复步骤。
+3. **一致性测试**：「门禁边界一致性」新增第 4 用例——本机钩子存在时，
+   live 适配器与 vendored 副本 SHA256 必须一致、live pre-commit 必须含
+   `powershell)` 分支与 `\.ps1$` 谓词标记；**回退即套件变红**（本机钩子缺席
+   时 Inconclusive，新克隆/CI 不受影响）。同组用例补自有 BeforeAll、prune
+   前缀改从 prune-dirs 文件派生。
+4. **诚实口径**：7.4 结论更正如上；AGENTS.md 2026-10-17 条目重写。教训入册：
+   引用门禁证据必须读该门禁段的输出行（skip/skip-as-pass/真 PASS 在汇总里
+   长得一样）；mtime/尺寸不能证明文件内容未被动过（外部进程会保留旧 mtime）。
 
 

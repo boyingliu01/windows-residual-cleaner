@@ -10,7 +10,7 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 756 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 757 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -1097,11 +1097,37 @@ if ($MyInvocation.InvocationName -ne '.') {
     门禁按「产品范围」收敛而非放宽规则，测试文件不进 PSSA 判据。
   - 测试数 752 → **753**（三形态真值钉子，双引擎各 753/753）；PSScriptAnalyzer
     产品范围维持 0。
-- 2026-10-17: 门禁真生效收口 + R6 走查证实项（接管审计第三批续）
-  - **试金石提交实测**：第三批加固以真实 `git commit`（`a78ac47`）验收——Gate 1
-    PSSA 真扫（产品范围 0）、Gate 5 真跑（commit 时新鲜 coverage.xml，18 sourcefile，
-    2844/3379 = 84.17%）、Gate 10 首次真扫描（files scanned: 2，semgrep on .ps1），
-    verdict PASS 10.0/10。
+- 2026-10-17: 门禁真生效收口 + R6 走查证实项 + **钩子回退事故**（接管审计第三批续）
+  - **试金石提交——结论先错后正（陷阱 7 纪律再次自适用）**：第三批加固以真实
+    `git commit`（`a78ac47`）验收时，仅凭报告末尾的 PASS 汇总与 Gate 5 新鲜
+    coverage.xml（18 sourcefile，2844/3379 = 84.17%，这一项为真）就写下
+    「Gate 1 PSSA 真扫 / Gate 10 首次真扫描」。**R6 Round-2 严码关+稳落地用
+    分歧证据（pre-commit 行号 + 文件 mtime）逼出复查，实测推翻**：Gate 1 段
+    的实际输出是 `✅ PASSED - No code files changed, skipping lint.`（skip
+    谓词不含 .ps1，skip-as-pass 也记 PASS）；Gate 10 的 `files scanned: 2`
+    扫的是 2 个无扩展名配置文件而非 .ps1。教训：**引用门禁证据必须读该门禁
+    段的输出行，不能只读报告汇总**——汇总把 SKIP/SKIP-as-PASS 与真 PASS 记成
+    同一个 PASS。
+  - **钩子回退事故（R6 Round-2 发现，本会话实测确认）**：一个外部 xp-gate
+    维护进程把 batch-3 硬化的三个用户级文件**全部还原为 legacy 且保留旧
+    mtime**（`adapters/powershell.sh` 272 行 2026-10-13、`gate-10.sh`
+    2026-10-13、`pre-commit` 谓词无 ps1），`.bak-gate-harden-20261016` 备份
+    除 pre-commit 一份（后被证实与 live 同为 legacy）外全部消失。本会话早前
+    的 missing-path 探针（12:33 仍能发 `XP_G1_REASON`）证明回退发生在探针与
+    专家检查之间。**这是继 .delphi-config.json 两次改写事故后第三次实证的
+    「用户级钩子目录会被外部进程改写」**。
+  - **重建 + 防回退（本轮收口提交）**：(1) 三个钩子文件按原设计重打全部补丁
+    （`_detect_pwsh` 回退、发现 prune + prune-dirs 注入、范围 PSSA + Stop 纪律、
+    fail-closed XP_G1_REASON 族、pre-commit Gate 1 谓词 + `powershell)` 分支 +
+    Gate 10 谓词、gate-10 semgrep APPDATA 回退 + ps1|psm1），五探针复测通过
+    （发现 20+18 / 干净 PASS / 缺失条目 WARN / scope 内脏文件 BLOCK / 引擎探测）；
+    (2) **vendored 进仓库**：`githooks/adapters/powershell.sh` +
+    `githooks/adapters/gate-10.sh`（权威副本）+ `githooks/README.md`（安装/同步
+    指引），pre-commit 以标记断言覆盖；(3) 一致性测试新增第 4 用例「钩子安装与
+    vendored 副本一致」——live 适配器与 vendored 哈希比对 + pre-commit 标记
+    断言（本机钩子缺席时 Inconclusive，CI/新克隆不受影响）；(4) 本组用例补
+    自有 BeforeAll（过滤单跑不再依赖首个 Describe）、prune 前缀从
+    prune-dirs 文件推导（消掉第四份硬编码清单）。
   - **R6 code-walkthrough Round 1（三专家三模型）**：1 APPROVED / 2 PASS_WITH_CAVEATS，
     零 Critical；三位专家各自实测复现了同类根因——**analysis-paths 的「硬边界」此前
     只有散文承诺**：列表条目缺失时钩子静默跳过（fail-open），根级产品脚本带真告警也
@@ -1111,17 +1137,23 @@ if ($MyInvocation.InvocationName -ne '.') {
     「7.2+ 标准实参传递」被实测否定（三种 PSNativeCommandArgumentPassing 模式均
     成功，非 7.2 特性门控）。drill3 的 `Test-AdminPrivilege` 桩 `return $true`
     让演练在非管理员会话静默驱动真实清理。
+  - **R6 Round 2（证实项复核）**：构远图/严码关 APPROVED；稳落地以「钩子文件
+    mtime/尺寸/内容与补丁不符」提出 BLOCKING CANDIDATE——即上文回退事故的
+    发现点，经本会话亲自复核成立并成为本轮收口的中心工作。其余 Major
+    （一致性测试/CI 清单/README/wrc-drill 指针/权限桩/因果归属）均已落实。
   - **证实项当场落实**：(1) 钩子适配器缺失条目改为发 `XP_G1_REASON:
     analysis-path-missing:<路径>`（fail-closed WARN，同 analysis-paths-empty 语义）+
     超时文案 300 字面量改用真值；(2) 新增「门禁边界一致性」测试组（tracked 产品源
     必须全被 analysis-paths 覆盖 + scope 条目必须存在 + coverage-ignore 必须空 +
-    prune-dirs 必须含 wrc-drill）——散文边界变成门禁守卫；(3) ci.yml 产品清单改读
-    `.xp-gate-powershell-analysis-paths`（scope 空即 fail），移除陈旧 coverage-ignore
-    引用与 727 历史计数；(4) README 新增「Pre-commit quality gates」节（钩子链在
-    仓库外 + 新克隆静默降级的事实 + 三份 tracked 边界文件）；(5) wrc-drill/README
-    同步 prune 机制口径；(6) drill3 权限桩改真实管理员检测（非管理员中止）；
-    (7) 三形态因果归属全文更正为「原生实参绑定正确转义（三种 passing 模式实测）」；
-    (8) analysis-paths 文件头补 `.psm1` 盲区 note；AGENTS.md 补新产品脚本 checklist。
-  - 测试数 753 → **756**（+3 边界一致性用例）；产品范围 PSSA 维持 0。
+    prune-dirs 必须含 wrc-drill + 钩子与 vendored 一致）——散文边界变成门禁守卫；
+    (3) ci.yml 产品清单改读 `.xp-gate-powershell-analysis-paths`（scope 空即 fail），
+    移除陈旧 coverage-ignore 引用与 727 历史计数；(4) README 新增
+    「Pre-commit quality gates」节（钩子链在仓库外 + 新克隆静默降级的事实 +
+    三份 tracked 边界文件）；(5) wrc-drill/README 同步 prune 机制口径；
+    (6) drill3 权限桩改真实管理员检测（非管理员中止）；(7) 三形态因果归属全文
+    更正为「原生实参绑定正确转义（三种 passing 模式实测）」；(8) analysis-paths
+    文件头补 `.psm1` 盲区 note；AGENTS.md 补新产品脚本 checklist。
+  - 测试数 753 → **757**（+3 边界一致性 + 1 钩子一致性；双引擎各 757/757）；
+    产品范围 PSSA 维持 0。
 
 

@@ -392,6 +392,14 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
     # 背景：R6 三专家走查实测证明——analysis-paths 的「硬边界」此前只由散文承诺，
     # 钩子对「列表条目缺失」是静默跳过（fail-open），产品源若放错了位置 Gate 1
     # 对它失明且无人报警。本组用例把散文边界变成可执行守卫（fail-closed）。
+    # 自带 BeforeAll（R6 Round-2 稳落地 minor）：过滤单跑本组时不再依赖首个
+    # Describe 设置的 $script:Root。
+    BeforeAll {
+        if (-not $script:Root) {
+            $script:Root = (Resolve-Path "$PSScriptRoot\..\..").Path
+        }
+    }
+
     It 'analysis-paths 覆盖全部 tracked 产品源；列表条目必须真实存在' {
         $scope = @(Get-Content -LiteralPath (Join-Path $script:Root '.xp-gate-powershell-analysis-paths') |
             ForEach-Object { $_.Trim() } |
@@ -401,8 +409,14 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
             (Test-Path -LiteralPath (Join-Path $script:Root $t)) | Should -Be $true -Because "analysis-paths 条目 $t 不存在——钩子会以 analysis-path-missing 发 WARN，产品代码失明"
         }
         # 产品源 = git tracked *.ps1，排除测试与已 prune 的脚手架/演练目录。
+        # prune 前缀从 .xp-gate-powershell-prune-dirs 推导（R6 Round-2 稳落地：
+        # 不再硬编码第四份副本）；dot 目录是适配器内置清单，按文档保留。
+        $pruneDirs = @(Get-Content -LiteralPath (Join-Path $script:Root '.xp-gate-powershell-prune-dirs') |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') })
+        $prunedPrefixes = @('tests/') + @($pruneDirs | ForEach-Object { ($_ -replace '\\', '/').TrimEnd('/') + '/' }) +
+            @('.sprint-state/', '.delphi-work/', '.worktrees/', '.workbuddy/', '.qoder/', '.vscode/', '.idea/', '.xp-gate/')
         $tracked = @(& git -C $script:Root ls-files '*.ps1' | ForEach-Object { $_ -replace '\\', '/' })
-        $prunedPrefixes = @('tests/', 'wrc-drill/', '.sprint-state/', '.delphi-work/', '.worktrees/', '.workbuddy/', '.qoder/', '.vscode/', '.idea/', '.xp-gate/')
         $product = @($tracked | Where-Object {
             $p = $_
             -not ($prunedPrefixes | Where-Object { $p.StartsWith($_) })
@@ -430,5 +444,37 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
             ForEach-Object { $_.Trim() } |
             Where-Object { $_ -and -not $_.StartsWith('#') })
         $prune | Should -Contain 'wrc-drill' -Because 'wrc-drill 是 tracked 演练脚手架（会创建真实系统对象），必须留在三处分母之外'
+    }
+
+    It '钩子安装与 vendored 副本一致（被回退时变红，杜绝静默降级）' {
+        # R6 Round-2 稳落地 BLOCKING CANDIDATE 的落实：2026-10-17 实测一个外部
+        # xp-gate 维护进程把 batch-3 硬化文件整体回退为 legacy（保留旧 mtime，
+        # ls -l 无异常），两次实弹提交的 Gate 1/Gate 10 实为 skip-as-pass。
+        # 本用例把「live 钩子 == 仓库 vendored 权威副本」变成套件判据：回退即红。
+        $hookDir = Join-Path $HOME '.config\xp-gate'
+        if (-not (Test-Path -LiteralPath $hookDir)) {
+            Set-ItResult -Inconclusive -Because '用户级 xp-gate 未安装（新克隆/CI）：钩子一致性只在本机安装存在时校验'
+            return
+        }
+        $pairs = @(
+            @{ live = 'adapters\powershell.sh'; vendored = 'githooks\adapters\powershell.sh' },
+            @{ live = 'adapters\gate-10.sh'; vendored = 'githooks\adapters\gate-10.sh' }
+        )
+        foreach ($pair in $pairs) {
+            $livePath = Join-Path $hookDir $pair.live
+            $vendoredPath = Join-Path $script:Root $pair.vendored
+            (Test-Path -LiteralPath $vendoredPath) | Should -Be $true -Because "vendored 副本 $($pair.vendored) 缺失——防回退机制被拆掉"
+            if (Test-Path -LiteralPath $livePath) {
+                $liveHash = (Get-FileHash -LiteralPath $livePath -Algorithm SHA256).Hash
+                $vendoredHash = (Get-FileHash -LiteralPath $vendoredPath -Algorithm SHA256).Hash
+                $liveHash | Should -Be $vendoredHash -Because "live $($pair.live) 与 vendored 副本不一致——硬化补丁被外部进程回退（实测发生过）；恢复：cp githooks/adapters/$(Split-Path $pair.live -Leaf) 对应用户级 adapters 目录"
+            }
+        }
+        $livePreCommit = Join-Path $hookDir 'hooks\pre-commit'
+        if (Test-Path -LiteralPath $livePreCommit) {
+            $pc = Get-Content -LiteralPath $livePreCommit -Raw
+            $pc.Contains('powershell)') | Should -BeTrue -Because 'pre-commit 无 powershell 分支——Gate 1 fail-closed 补丁被回退，ps1 提交将落进通用非阻塞分支'
+            $pc.Contains('\.ps1$') | Should -BeTrue -Because 'pre-commit Gate 1/Gate 10 谓词不含 .ps1——ps1 提交会被 skip-as-pass（实测发生过）'
+        }
     }
 }
