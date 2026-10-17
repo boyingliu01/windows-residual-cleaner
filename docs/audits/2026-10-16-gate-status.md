@@ -90,3 +90,57 @@ CI（run #6，`ac970b2`）：双引擎 727 用例全绿、行覆盖 82.89%、PSS
 
 - 走查 P1-2（ghost service 误判）及其余 P2 产品修复按既定顺序推进。
 - Gate 3/4 对 PowerShell 的深度测量依赖 xp-gate 侧（#537）。
+
+---
+
+## 七、附录（第三批，2026-10-16）：门禁真生效加固
+
+> 背景：本报告第一～六节诊断出的「空转 / SKIP / 静默降级」已在第三批落地修复。
+> 目标是把本仓库 XP 门禁从「官方 9 PASS/3 SKIP 的名义状态」变成「对 PowerShell
+> 代码真跑、缺席即 WARN、告警即 BLOCK 的 fail-closed 状态」。
+
+### 7.1 前后矩阵（本仓 PowerShell 侧）
+
+| 门禁 | 加固前（本报告实测） | 加固后（实测） |
+|---|---|---|
+| Gate 1 静态分析 | 无 powershell 分支；若 pwsh 上 PATH 则整仓 827 条告警全拦 → 事实上被迫空转 | fail-closed `powershell` 分支：PSSA 范围模式（`.xp-gate-powershell-analysis-paths` = references/scripts + setup.ps1）逐路径跑 + `ErrorActionPreference='Stop'`；0 告警→PASS、工具缺席→WARN（进分母）、有告警→BLOCK；干净实跑 exit 0，告警探针 exit 1 + 发现表（3 轮无抖动） |
+| Gate 3/4 圈复杂度/原则 | PowerShell 零测量（#537，xp-gate 上游） | 本批未扩（上游 issue 仍开放）；仓库侧把范围文件机制建好，上游支持时零改动接入 |
+| Gate 5 测试+覆盖率 | 找不到 pwsh → SKIP，Stage-2 解析陈旧 coverage.xml | `_detect_pwsh` 回退探测（WindowsApps pwsh / System32 powershell.exe）+ `_pester_timeout` 900s → PS-only 提交也真跑 753 用例并重新生成 coverage.xml |
+| Gate 10 SAST | semgrep 未装→SKIP；SEMGREP_FILES 不含 .ps1 → 本仓恒空 | semgrep 1.171.0 已装 + `%APPDATA%\Python\*\Scripts` 回退探测 + `.ps1/.psm1` 入扫描清单；实测 setup.ps1/native-invoke.ps1 扫描 0 结果 0 错误；semgrep 缺席 → FAIL(exit 1)+WARN，不再静默 PASS |
+| 文件发现 | 不 prune `.worktrees`/`wrc-drill`（#538） | prune 列表 = xp-gate 脚手架 dot 目录 + `.xp-gate-powershell-prune-dirs`（本仓：wrc-drill）；实测发现 = 20 测试 + 18 产品源，与基线完全一致 |
+| 覆盖率豁免 | `.xp-gate-powershell-coverage-ignore` 带 3 条历史条目 | **清空**（prune 已让分母即真实产品清单，不再按产物减扣）；硬边界规则保留 |
+
+### 7.2 钩子侧补丁清单（`~/.config/xp-gate`，仓库外，已备份 `.bak-gate-harden-20261016`）
+
+1. `adapters/powershell.sh`：`_detect_pwsh` 回退链；`_find_powershell_files` prune 重建
+   （base + dot 目录 + 项目注入）；`run_static_analysis` 重写（模块按退出码探测、范围
+   文件模式、逐路径 PSSA、`XP_G1_REASON: powershell-engine-unavailable` /
+   `psscriptanalyzer-unavailable` / `analysis-paths-empty` fail-closed 语义）。
+2. `hooks/pre-commit`：Gate 1 入口正则 + `ps1|psm1`；新增 `powershell)` fail-closed
+   分支（PASS / WARN / BLOCK 三态映射）；Gate 10 包装正则 + `ps1|psm1`。
+3. `adapters/gate-10.sh`：semgrep 路径回退；SEMGREP_FILES + `ps1|psm1`。
+4. `bash -n` 三文件全过；单元级探测/发现/拦截全部实测（见 7.1 矩阵证据）。
+
+### 7.3 仓库侧配套（随本批提交入库）
+
+- `.xp-gate-powershell-prune-dirs`（wrc-drill，回应 #538 的项目侧落地）。
+- `.xp-gate-powershell-analysis-paths`（产品分析范围 + 硬边界：新产品脚本必须同提交
+  加路径，否则 Gate 1 以 `analysis-paths-empty`/缺席路径如实降级）。
+- `.xp-gate-powershell-coverage-ignore` 清空（见 7.1）。
+- `tests/unit/platform-hygiene.Tests.ps1` 新增「三形态真值钉子」（takeown 裸 `&`/
+  Start-Process 拼接/包裹三形态双引擎断言）——落实构远图 R5 残余项时**反而更正了
+  R3 的因果口径**：`&` 绑定形态是引擎分歧（PS 5.1 失败 / pwsh 7 成功），
+  「两引擎共有」仅对 Start-Process 纯拼接成立。752 → **753**（双引擎各 753/753）。
+- AGENTS.md 两条门禁降级已知限制改写为加固后现实；第三批变更记录入册。
+- **测试侧 PSSA 技术债如实入册**：按仓库设置对 tests/ 全量 PSSA = 328 条告警
+  （PSUseDeclaredVarsMoreThanAssignments 164 / PSAvoidGlobalVars 131 /
+  PSAvoidOverwritingBuiltInCmdlets 18 / PSUseShouldProcessForStateChangingFunctions 11 /
+  PSUseApprovedVerbs 3 / PSUseSingularNouns 1），属 Pester 执行模型误报面；
+  门禁按「收产品范围」处理而非放宽规则，测试文件不进判据。
+
+### 7.4 试金石提交
+
+第三批的全部修复以一次真实 `git commit` 验收：钩子在提交内真跑 PSSA（Gate 1
+powershell 分支）+ 全量 Pester + 覆盖率生成与解析（Gate 5）+ semgrep 对暂存 .ps1
+扫描（Gate 10）。结果见该提交的质量报告（`.xp-gate/quality-status`）。
+

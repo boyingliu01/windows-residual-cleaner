@@ -1,0 +1,13 @@
+# Directories excluded from the xp-gate PowerShell adapter's file discovery
+# (test discovery, coverage denominator, source discovery).
+#
+# One directory NAME per line (find -name, matches at any depth). '#'
+# comments and blank lines ignored.
+#
+# 2026-10-16 gate hardening (#538): before this file existed, wrc-drill/ (the
+# admin drill harnesses: drill3/4/5, rdlab, teardown) was collected as
+# coverage-denominator source files, diluting the product-only baseline, and
+# was at risk of test double-discovery. With discovery pruned, the coverage
+# denominator is exactly the product list (references/scripts + setup.ps1 =
+# 18 files), and .xp-gate-powershell-coverage-ignore returned to empty.
+wrc-drill

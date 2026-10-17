@@ -1,0 +1,24 @@
+# PowerShell analysis scope for the xp-gate pre-commit hook (Gate 1).
+#
+# One repo-root-relative path per line. '#' comments and blank lines ignored.
+# Non-existent paths are skipped with a notice; if NO path exists the gate
+# downgrades to WARN (never a silent PASS).
+#
+# Why a scope file (2026-10-16 gate hardening): Gate 1 PSSA is pinned to the
+# PRODUCT scripts listed here, with the repo-root PSScriptAnalyzerSettings.psd1
+# applied explicitly. The project's "PSScriptAnalyzer 0 error / 0 warning"
+# claim is a product-code claim; the Pester suite files are behaviorally
+# covered by Gate 5 (752+ tests, dual engine). A whole-repo scan cannot reach
+# a clean, enforceable baseline because Pester execution-model patterns
+# produce hundreds of false-positive warnings in test files (measured
+# 2026-10-16, repo settings applied: 328 = PSUseDeclaredVarsMoreThanAssignments
+# x164 + PSAvoidGlobalVars x131 + PSAvoidOverwritingBuiltInCmdlets x18 +
+# PSUseShouldProcessForStateChangingFunctions x11 + PSUseApprovedVerbs x3 +
+# PSUseSingularNouns x1) — recorded as known, reasoned lint debt, NOT silently
+# suppressed: the rule-by-rule breakdown lives in
+# docs/audits/2026-10-16-gate-status.md.
+#
+# HARD BOUNDARY: every product PowerShell file must be covered by this list.
+# New product scripts must be added here in the same commit.
+references/scripts
+setup.ps1

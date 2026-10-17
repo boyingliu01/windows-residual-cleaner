@@ -10,7 +10,7 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 752 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 753 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -663,30 +663,30 @@ It 'Works against real registry data' {
   pwsh 7 与 PS 5.1 均 59/59。上条「提交前两引擎各跑一次」指**先跑完一个再跑另一个**，
   不是并行。UI 侧附带一条：vitest `ItemTable` 用例的 5s 默认超时在高负载下会抖动超时
   （单跑 2.6s 通过），全量偶红时先单文件复测再判回归。
-- **本机工具链路径与门禁降级链（2026-10-07 实测）**：`pwsh` 7 位于
-  `C:\Users\think\AppData\Local\Microsoft\WindowsApps\pwsh.exe`，`node.exe` 位于
-  `C:\Program Files\nodejs\node.exe`——**git-bash 的 PATH 里都没有裸命令名**，`jq` 未安装。
-  钩子继承 git 的环境，工具缺席时门禁**静默降级**：Gate 5 → SKIP（跳过测试与覆盖率生成），
-  Gate 11 → SKIP（打印 "no JSON parser available"，**放行提交**）。
-  需要在钩子里拿到真实 Gate 11 时：`PATH="/c/Program Files/nodejs:$PATH" git commit …`。
-  **不要**顺手把 pwsh 加进钩子 PATH——当前文件发现不排除 `.worktrees`（见下下条）。
+- **本机工具链路径与门禁降级链（2026-10-07 实测；2026-10-16 第三批加固后已改观）**：
+  `pwsh` 7 位于 `C:\Users\think\AppData\Local\Microsoft\WindowsApps\pwsh.exe`，`node.exe`
+  位于 `C:\Program Files\nodejs\node.exe`——git-bash 的 PATH 里没有裸命令名，`jq` 未安装。
+  **加固后**：适配器 `_detect_pwsh` 会显式探测 WindowsApps pwsh 与 System32
+  powershell.exe 的标准安装位置（PATH 剥离也找得到）；Gate 1 有了 fail-closed 的
+  powershell 分支（引擎/PSSA 模块缺席 → WARN 计入分母，绝不静默 PASS）；gate-10.sh
+  会兜底探测 `%APPDATA%\Python\*\Scripts\semgrep.exe`。 commit 时仍建议前置
+  `C:\Program Files\nodejs`（Gate 10 verdict 解析与 Stage-2 覆盖率解析都依赖 node）。
 - **Gate 5 的陈旧 `coverage.xml` 陷阱（2026-10-07 实测）**：hook 适配器在找不到 pwsh 时
   跳过测试与覆盖率**生成**，但 Stage-2 仍会解析仓库根目录**既有的** `coverage.xml`
   （只要 node 在 PATH 上）。于是旧产物会拦新提交（实测：2026-10-01 的 68% 产物拦下了
   2026-10-07 的提交）。**不跑 pwsh 覆盖率就提交时，先手动跑一次覆盖率管线刷新
-  `coverage.xml`**（该文件已 gitignore，属于本机门禁工件）。
-- **hook 的文件发现不排除 `.worktrees` / `wrc-drill`**：适配器的 `_find_powershell_files`
-  只 prune `.git/node_modules/dist/coverage/plugins/*`，因此 `.worktrees/`（sprint 隔离
-  worktree 里的整套重复脚本与测试）与 `wrc-drill/` 的演练脚本都会被当作源文件与测试收集
-  ——测试重复执行、覆盖率被稀释。补丁（把 `-name .worktrees -o` 加进 prune 列表）位于
-  `~/.config/xp-gate` 下、需用户手工执行；补丁落地前别把 pwsh 放进钩子 PATH。
-  **补充（2026-10-07 实测）**：适配器的 Gate 1 静态分析是未按目录过滤的
-  `Invoke-ScriptAnalyzer -Path . -Recurse`，整仓 Error/Warning 共 **675 条**
-  （tests 330 + `.worktrees` 255 + `wrc-drill` 88 + `.sprint-state` 2；root 运行时
-  会自动套用仓库根的 `PSScriptAnalyzerSettings.psd1`，故 `references/scripts` 计 0）。
-  **即使 `.worktrees` 补丁落地，只要 pwsh 上了钩子 PATH，Gate 1 就会拿这数百条既有
-  告警拦下每次提交**——想真正启用 pwsh，必须连同分析范围（排除 `*.Tests.ps1` 与
-  prune 目录）一起收敛。
+  `coverage.xml`**（该文件已 gitignore，属于本机门禁工件）。加固后 Gate 5 在 PS-only
+  提交上会真跑 Pester 并重新生成 coverage.xml，此陷阱只剩「纯文档提交」时仍适用。
+- ~~**hook 的文件发现不排除 `.worktrees` / `wrc-drill`**~~ → **2026-10-16 第三批加固已解决**：
+  `_find_powershell_files` 的 prune 列表覆盖 xp-gate 脚手架 dot 目录
+  （`.worktrees/.workbuddy/.sprint-state/.delphi-work/.qoder/.vscode/.idea/.xp-gate`），
+  项目专属目录经 `.xp-gate-powershell-prune-dirs`（本仓含 `wrc-drill`）注入；
+  实测发现结果 = 20 个测试文件 + **18 个产品源文件**（17 脚本 + setup.ps1），wrc-drill
+  不再进测试发现与覆盖率分母。Gate 1 的 PSSA 经 `.xp-gate-powershell-analysis-paths`
+  收敛到产品范围（references/scripts + setup.ps1），Pester 测试文件按 Pester 执行模型
+  产生的数百条规则误报不再进入门禁判据（328 条清单见审计文档；同规则、收范围，
+  非放宽规则）。~~想真正启用 pwsh，必须连同分析范围一起收敛~~ → 已落地，pwsh 可安全
+  上钩子 PATH。
 - **测试密闭性**：`backup-*` 是 gitignored 的运行时目录。任何「非 DryRun + 走 ConfirmFile/Mode A-C」
   的清理测试都需要它存在，否则 `Main` 会在备份门提前中止。**测试必须自建自清该 fixture**，
   不得依赖主仓里遗留的 `backup-*`（否则新克隆 / CI 下会出现假绿或假红）。
@@ -710,7 +710,8 @@ It 'Works against real registry data' {
   17 文件清单命令的实数为准。
   (3) 产物会被**任何**用默认 CodeCoverage 配置跑 Pester 的会话覆写污染——实测评审期间
   一次运行把 `.workbuddy/`（3 文件）与根目录本地脚本混进 23 个 sourcefile，顶层 counter
-  随之失真。引用前先数 `sourcefile` 数量是否与脚本清单一致，混入即重跑覆盖率管线。
+  随之失真；**另一种观测形态（R5 走查实测）**：产物被整个写成 **2 字节空文档
+  （0 sourcefile）**。两种形态都会被 sourcefile 计数自检抓出，混入/清空即重跑覆盖率管线。
 
 ---
 
@@ -941,6 +942,10 @@ if ($MyInvocation.InvocationName -ne '.') {
   - 陷阱清单新增第 9/10/11 条；退出码规范补 10–15 自动回滚矩阵。
   - `wrc-drill/`（drill3/4/5 + rdlab + teardown）**按用户决定保持 untracked**（本机管理员演练
     脚手架，会创建真实服务/PATH/注册表对象，不进仓）。
+    **2026-10-16 更正**：该目录实际处于 **tracked** 状态（6 个文件已随早期推送入仓，
+    `git ls-files wrc-drill` 可复核）——「保持 untracked」的决定并未真正落地。门禁侧已通过
+    `.xp-gate-powershell-prune-dirs` 把它隔离出文件发现/覆盖率分母；是否按原决定移出
+    git 跟踪留待维护者决策（drill 脚本会创建真实系统对象，克隆者误跑有风险）。
 - 2026-10-08: 自动回滚 Sprint 收尾 —— drill5 根因、CORS 收紧、REQ-031 盲区、setup.ps1 摘豁免
   - **drill5 根因定位（`12bf152`，Critical）**：`$null -ne $MachinePathOverride` 在三处
     （两处转发 + 一处读取）把「未注入」读成「注入了空 PATH」，跳过真实注册表读取 →
@@ -968,7 +973,8 @@ if ($MyInvocation.InvocationName -ne '.') {
     机器 PATH 回合 `-ceq` 字节一致；share=0 锁目录不变量继续通过。
   - 陷阱清单新增第 12/13 条（Pester 宿主偏好会凭空造失败；`It` 标题尖括号 + `BeforeDiscovery`
     的 `-ForEach` 数据不可用）；测试数 710 → **727**（双引擎各 727/727）；行覆盖率
-    83.94%（2765/3294，16 脚本）→ **84.08%（2804/3335，17 文件）**；PSScriptAnalyzer 维持 0。
+    83.94%（2765/3294，16 脚本）→ **84.08%（2804/3335，17 文件）**（历史值；现口径
+    18 sourcefile / 84.17%，见「coverage.xml 的口径与污染」）；PSScriptAnalyzer 维持 0。
   - 未复现抖动如实记录：pwsh 7 一次全量运行报 720/1，随后两次同样运行 721/0、定向 5 轮各 243/0，
     本次收尾双引擎复跑 727/727；未能定位到具体用例，判为环境级争用。
 - 2026-10-16: 门禁加固与平台层原语收敛（接管审计第二批）
@@ -1024,7 +1030,10 @@ if ($MyInvocation.InvocationName -ne '.') {
     曾把「裸尾反斜杠让 takeown 报 Invalid argument/option」写成 PS 5.1 引擎特有
     缺陷，实测复核为**两引擎共有**失败形态（两引擎裸形态均 exit=1，经
     Invoke-NativeExe 引号+翻倍后两引擎均成功），已按「写下必然/100% 必须附可复现
-    命令」的纪律改为诚实口径；(b) `create-restore-point.ps1` 的 '/' 净化被指出为
+    命令」的纪律改为诚实口径；**R5 再更正（2026-10-16）**：R3 的「两引擎共有」
+    仍只对 **Start-Process 纯拼接**形态成立——`&` 原生绑定形态实为**引擎分歧**
+    （PS 5.1 失败 / pwsh 7 标准实参传递成功），三形态真值已由可执行钉子
+    （platform-hygiene「三形态真值钉子」用例）双引擎持续钉住；(b) `create-restore-point.ps1` 的 '/' 净化被指出为
     **不可达预留**（当前 regPaths 三条键名均无 '/'），注释改为如实标注「预留，
     当前不可达，落地 HKCR CLSID 形态时须同步补测」；(c) `Get-RenameTarget` 对无
     目录成分的相对路径先 `GetFullPath` 解析（否则 Join-Path 抛错被 catch 伪装成
@@ -1034,3 +1043,43 @@ if ($MyInvocation.InvocationName -ne '.') {
     不写宿主作用域状态、AST 守卫按破坏性语义而非名字模式判定、/api/confirm 落点
     断言、reg 备份文件名两套命名方案的碰撞面。测试数 751 → **752**（双引擎各
     752/752，新增相对路径 Get-RenameTarget 用例）；PSScriptAnalyzer 维持 0。
+- 2026-10-16: **门禁真生效加固（接管审计第三批）**——把「SKIP/空转」的 XP 门禁变成
+  真跑且 fail-closed（用户点名的重要事项）
+  - **背景**：第二批体检结论是 13 道门禁里 PowerShell 侧大量空转——Gate 5 靠旧
+    coverage.xml、Gate 10 对 .ps1 零扫描、Gate 1 没有 powershell 分支、文件发现不
+    prune 演练目录。本批全部落地修复（钩子层文件在 `~/.config/xp-gate`，仓库外，
+    已留 `.bak-gate-harden-20261016` 备份）：
+    1. `adapters/powershell.sh`：`_detect_pwsh` 显式回退探测（WindowsApps pwsh →
+       System32 powershell.exe，PATH 剥离可复现）；`_find_powershell_files` prune 列表
+       补 xp-gate 脚手架 dot 目录 + `.xp-gate-powershell-prune-dirs` 项目注入（实测
+       发现 20 测试 + 18 产品源，wrc-drill 出局）；Gate 1 静态分析新增**范围文件
+       模式**（`.xp-gate-powershell-analysis-paths`，本仓 = references/scripts +
+       setup.ps1）与逐路径 PSSA 循环（`$ErrorActionPreference='Stop'` 防静默；
+       PSSA `-Path` 不接受数组的实测坑已绕开）；引擎/PSSA 模块缺席 → WARN 计入
+       分母，不再静默 PASS；Pester 超时 300 → 900 秒（752+ 用例 + 覆盖率运行）。
+    2. `hooks/pre-commit`：Gate 1 入口正则补 `ps1|psm1` + 新增 fail-closed
+       `powershell)` 分支（0 告警 + reason → WARN；非零 → BLOCK exit 1）；
+       Gate 10 包装正则补 `ps1|psm1`。
+    3. `adapters/gate-10.sh`：SEMGREP_FILES 补 `ps1|psm1`；semgrep 回退探测
+       `%APPDATA%\Python\*\Scripts\semgrep.exe`。
+  - **仓库侧配套（本提交）**：`.xp-gate-powershell-prune-dirs`（wrc-drill，#538）与
+    `.xp-gate-powershell-analysis-paths`（产品范围 + 硬边界：新增产品脚本必须同提交
+    加路径）入库；`.xp-gate-powershell-coverage-ignore` 清空（prune 已覆盖其历史条目，
+    保留硬边界规则）；AGENTS.md「已知限制」两条门禁降级记录改写为加固后现实。
+  - **单元验证（Git bash 直测钩子函数）**：探测在剥离 PATH 下找到 pwsh；发现剪枝
+    精确；范围 PSSA 干净 → exit 0；告警探针文件 → exit 1 + PSSA 发现表（真 BLOCK）；
+    3 轮重复无抖动；`bash -n` 全部通过。
+  - **R5 可执行钉子更正了 R3 的因果口径**：为落实构远图残余项写的
+    「三形态真值钉子」用例实测发现——R3 的「裸透传 takeown **两引擎**共有失败」
+    只对 **Start-Process 纯拼接**形态成立；`&` 原生绑定形态是**引擎分歧**
+    （PS 5.1 失败 / pwsh 7 的 7.2+ 标准实参传递成功）。已按三形态真值改写
+    native-invoke.ps1 注释、测试注释与 CHANGELOG/AGENTS.md 记录。教训入册：
+    「两引擎共有」与「引擎分歧」是两个不同的命题，换验证形态即换命题。
+  - **测试侧 PSSA 技术债如实入册**：以仓库设置测 tests/ 全量为 328 条告警
+    （PSUseDeclaredVarsMoreThanAssignments 164 + PSAvoidGlobalVars 131 +
+    PSAvoidOverwritingBuiltInCmdlets 18 + PSUseShouldProcessForStateChangingFunctions 11
+    + PSUseApprovedVerbs 3 + PSUseSingularNouns 1），属 Pester 执行模型的误报面；
+    门禁按「产品范围」收敛而非放宽规则，测试文件不进 PSSA 判据。
+  - 测试数 752 → **753**（三形态真值钉子，双引擎各 753/753）；PSScriptAnalyzer
+    产品范围维持 0。
+

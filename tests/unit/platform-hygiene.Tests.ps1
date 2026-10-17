@@ -34,10 +34,11 @@ Describe 'Platform hygiene: ConvertTo-NativeArgument（引号封装契约）' {
     }
 
     It '结尾反斜杠在包裹前翻倍（防止吞掉闭合引号）' {
-        # Round-2/3 走查（2026-10-16）：裸尾反斜杠不得透传——含空格+尾反斜杠实参
-        # 裸透传时 takeown 在 **两个**引擎都报 Invalid argument/option（两引擎共有
-        # 失败形态，非引擎特有，见 native-invoke.ps1 同款注释），引号+翻倍双引擎
-        # 都正确，故尾反斜杠值一律进入包裹分支。
+        # Round-2/3/5 走查（2026-10-16，三形态真值）：失败面取决于透传形态——
+        # `&` 原生绑定裸透传是引擎分歧（PS 5.1 失败 / pwsh 7 标准实参传递成功）；
+        # Start-Process 纯拼接裸透传才是两引擎共有失败（空格碎裂）；本函数的
+        # 包裹+翻倍两引擎都正确，故尾反斜杠值一律进入包裹分支（见 native-invoke.ps1
+        # 三形态注释与下方可执行钉子用例）。
         ConvertTo-NativeArgument 'C:\dir\' | Should -Be '"C:\dir\\"'
         # 被包裹的值（含空格）结尾反斜杠必须翻倍，否则吞掉闭合引号
         ConvertTo-NativeArgument 'C:\Program Files\dir \' | Should -Be '"C:\Program Files\dir \\"'
@@ -89,6 +90,47 @@ Describe 'Platform hygiene: Invoke-NativeExe（真实进程行为）' {
             $r.ok | Should -Be $true -Because "md 失败说明尾反斜杠形态被引号规则破坏: $($r.error)"
             (Test-Path -LiteralPath $spaced) | Should -Be $true
             (Test-Path -LiteralPath ($spaced + '"') -ErrorAction SilentlyContinue) | Should -Be $false -Because '闭合引号被吞掉时 cmd 会把引号字面量并进目录名'
+        } finally {
+            if (Test-Path -LiteralPath $base) { Remove-Item -LiteralPath $base -Recurse -Force }
+        }
+    }
+
+    It 'Round-5 三形态真值钉子：& 裸透传引擎分歧 / Start-Process 拼接两引擎共有失败 / 包裹后成功' {
+        # 陷阱 7 纪律的落点：写下「必然」必须附可复现命令——本用例就是命令的自动化
+        # 形态，双引擎各跑一次即持续复核因果口径（R5 走查 构远图 残余项 → 实测
+        # 反而更正了 R3 的「两引擎共有」口径：它只对 Start-Process 纯拼接成立）。
+        # 形态一 `&` 原生绑定：PS 5.1 尾反斜杠吞闭合引号 → 失败；pwsh 7（7.2+
+        # PSNativeCommandArgumentPassing 标准形态）正确转义 → 成功（引擎分歧）。
+        # 形态二 Start-Process 纯拼接：空格碎裂 → 两引擎共有失败。
+        # 形态三 ConvertTo-NativeArgument 包裹：两引擎都成功（产品唯一通道）。
+        $takeown = Join-Path $env:SystemRoot 'System32\takeown.exe'
+        $base = Join-Path ([System.IO.Path]::GetTempPath()) "wrc-takeown-$(New-Guid)"
+        $spaced = Join-Path $base 'a b'
+        New-Item -ItemType Directory -Path $spaced -Force | Out-Null
+        $isCore = $PSVersionTable.PSVersion.Major -ge 7
+        $engine = if ($isCore) { 'pwsh 7' } else { 'PS 5.1' }
+        try {
+            # 形态一：& 裸透传 —— 引擎分歧，按引擎分别钉住
+            $null = & $takeown /f "$spaced\" 2>&1
+            $bareExit = $LASTEXITCODE
+            if ($isCore) {
+                $bareExit | Should -Be 0 -Because "pwsh 7 标准实参传递下裸透传必须成功；变红说明引擎行为变化，须重审三形态口径: exit=$bareExit"
+            } else {
+                $bareExit | Should -Be 1 -Because "PS 5.1 裸透传必须失败（尾反斜杠吞闭合引号）: exit=$bareExit"
+            }
+            # 形态二：Start-Process 纯拼接 —— 两引擎共有失败（空格碎裂）
+            $outFile = [System.IO.Path]::GetTempFileName()
+            $errFile = [System.IO.Path]::GetTempFileName()
+            try {
+                $proc = Start-Process -FilePath $takeown -ArgumentList @('/f', "$spaced\") -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+                $proc.ExitCode | Should -Be 1 -Because "Start-Process 纯拼接在 $engine 下也必须失败（两引擎共有形态）"
+                (Get-Content $errFile -Raw) | Should -Match 'Invalid argument/option'
+            } finally {
+                Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+            }
+            # 形态三：包裹 + 翻倍 —— 两引擎都成功（产品唯一通道）
+            $r = Invoke-NativeExe -FilePath $takeown -Arguments @('/f', ($spaced + '\')) -TimeoutSeconds 60
+            $r.ok | Should -Be $true -Because "包裹后必须成功: exit=$($r.exit_code) err=$($r.error)"
         } finally {
             if (Test-Path -LiteralPath $base) { Remove-Item -LiteralPath $base -Recurse -Force }
         }

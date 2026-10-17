@@ -56,9 +56,10 @@ All notable changes to this project will be documented in this file.
   最后尝试而非可用兜底（AGENTS.md 陷阱 15）。
 - **delphi Round 2 证实项落实**（三专家三模型：1 APPROVED / 2 PASS_WITH_CAVEATS，
   全部发现 Minor 级）：`ConvertTo-NativeArgument` 早退条件收紧——尾反斜杠值一律进入
-  引号+翻倍分支（实测口径经 Round 3 复核更正：含空格+尾反斜杠裸透传时 takeown 在
-  **两个**引擎都报 Invalid argument/option，引号+翻倍在两个引擎都正确——统一到唯一
-  正确形态的防御性加固，非引擎特有缺陷修复）；tier-4 拆解收敛为可单测纯函数
+  引号+翻倍分支（口径沿革：R2 定性为引擎分歧 → R3 更正为「两引擎共有」→ **R5 可执行
+  钉子实测三形态真值**：`&` 原生绑定裸透传是**引擎分歧**（PS 5.1 失败 / pwsh 7
+  7.2+ 标准实参传递成功），Start-Process 纯拼接裸透传才是**两引擎共有**失败，包裹+
+  翻倍两引擎都成功——见 native-invoke.ps1 三形态注释）；tier-4 拆解收敛为可单测纯函数
   `Get-RenameTarget`（尾反斜杠归一化 + 盘根/空白如实拒绝 + 相对路径 GetFullPath
   解析）；`create-restore-point.ps1` 备份文件名净化补 `/`（按 Round 3 口径如实标注为
   HKCR CLSID 形态的**预留**，当前 regPaths 三条键名不可达）；`rollback-backup.ps1`
@@ -71,7 +72,10 @@ All notable changes to this project will be documented in this file.
   构远图/稳落地 PASS_WITH_CAVEATS，全部发现 Minor 级）：`ConvertTo-NativeArgument`
   的注释与变更记录按陷阱 7 纪律更正因果口径——含空格+尾反斜杠裸透传时 takeown 在
   **两个**引擎都报 Invalid argument/option（非 PS 5.1 特有），引号+翻倍在两个引擎都
-  正确，改动定性为「统一到唯一正确形态」的防御性加固；`create-restore-point.ps1`
+  正确，改动定性为「统一到唯一正确形态」的防御性加固（**2026-10-16 R5 更正**：该
+  「两引擎共有」只对 Start-Process 纯拼接形态成立；`&` 绑定形态实为引擎分歧——
+  PS 5.1 失败 / pwsh 7 成功，见 native-invoke.ps1 三形态注释与平台卫生测试的
+  三形态真值钉子）；`create-restore-point.ps1`
   的 '/' 净化如实标注为**不可达预留**（当前 regPaths 三条键名均无 '/'，落地 HKCR
   CLSID 形态时须同步补测）；`Get-RenameTarget` 对无目录成分的相对路径先
   `[System.IO.Path]::GetFullPath` 解析（否则 Join-Path 空参数抛错被 catch 伪装成

@@ -3,52 +3,38 @@
 # One glob per line. Blank lines and lines starting with '#' are ignored.
 # Matched source files are removed from Pester's -CodeCoverage path list.
 #
-# Current entries (2026-10-09): the adapter's coverage denominator is
-# `find . -name '*.ps1'` over the WHOLE repo, so any non-product script on
-# disk dilutes the ratio. The project baseline (84.08%, 2804/3335, 17 files:
-# references/scripts + setup.ps1) covers product code only. The files below
-# are excluded because they are NOT product code and are BY DESIGN never
-# exercised by the Pester suite — this is a structural distinction, not the
-# "hard to test" excuse that setup.ps1's entry once was (see below).
+# Current state (2026-10-16, gate-hardening batch 3): this list is EMPTY.
+# The root cause of the historical entries — the adapter's coverage
+# denominator being a whole-repo `find . -name '*.ps1'` — has been fixed in
+# the local adapter (`~/.config/xp-gate/adapters/powershell.sh`): the file
+# discovery prune list now covers the xp-gate scaffold dot directories
+# (.worktrees/.workbuddy/.sprint-state/.delphi-work/.qoder/.vscode/.idea/
+# .xp-gate) plus project-specific entries injected via
+# `.xp-gate-powershell-prune-dirs` (this repo: wrc-drill). Measured discovery
+# after the fix: 20 test files + 18 product source files (references/scripts
+# 17 scripts + setup.ps1) — exactly the baseline, nothing extra, nothing
+# excluded. Verified in the batch-3 commit (see docs/audits/2026-10-16
+# -gate-status.md, appendix).
 #
-# -------------------------------
-# wrc-drill/*.ps1 — admin drill harnesses (drill3/4/5, rdlab, teardown).
-# They deliberately touch live system state (services, PATH, registry) and
-# are exercised by the manual 23-check admin drill recorded in CHANGELOG,
-# never by Pester; wiring them into unit tests would mean mocking away the
-# very realness they exist to verify.
-# -------------------------------
-# .sprint-state/delphi-run.ps1 and the archived worktree copy under
-# .delphi-work/ — Delphi multi-round review orchestration tooling, not shipped
-# scripts. Note: the entry is the directory glob `.delphi-work/*`; the matcher
-# is a bash `case`, whose `*` crosses `/`, so it covers arbitrarily deep
-# nesting (this is intentional — but do not port the pattern to a
-# path-aware glob matcher without re-checking).
-# -------------------------------
-wrc-drill/*.ps1
-.sprint-state/delphi-run.ps1
-.delphi-work/*
-#
-# The list was previously exactly one file, setup.ps1, on the grounds that
-# its `Main` ended in `exit 0` / `exit 1` and therefore killed the Pester
-# host when dot-sourced, making it "structurally unmeasurable". That was a
-# code defect dressed up as a structural limit: ADR-001 moved the exit code
-# to `[ref]$ExitCode` and put `exit` only in the execution guard, so
-# setup.ps1 is now instrumented like every other script (it was REMOVED from
-# this list in 721cada). The entries above differ: they are not product code
-# and never will be.
+# Historical entries (removed, with their original rationale kept below for
+# the record): wrc-drill/*.ps1, .sprint-state/delphi-run.ps1, .delphi-work/*.
+# They were never product code; they are now pruned at discovery time, not
+# silently subtracted from the coverage denominator — the denominator stays
+# honest (it is the true product file list) instead of being patched per
+# artifact.
 #
 # Do NOT add files here merely because they are hard to test. If a script
 # really cannot be instrumented, prove it in the commit message and fix the
-# script first.
+# script first (setup.ps1 was exactly that case: a code defect dressed up as
+# a structural limit, refactored away in 721cada).
 #
 # HARD BOUNDARY RULES (do not weaken):
 # 1. references/scripts/** and setup.ps1 are PRODUCT CODE and must NEVER be
 #    listed here. If they are hard to test, that is a defect to fix, not to
-#    exclude (see the setup.ps1 history above).
+#    exclude.
 # 2. Prefer exact file entries over directory globs. A directory-level glob
 #    silently exempts anything later dropped into that directory.
-# 3. Root cause note: the local adapter's coverage denominator is a whole-repo
-#    `find . -name '*.ps1'`; its prune list should eventually cover these
-#    directories so this list can return to empty. Follow-up, not done here
-#    (the adapter is a global hook outside this repo).
+# 3. Non-product scratch scripts must NOT be listed here — put the directory
+#    into `.xp-gate-powershell-prune-dirs` instead so it leaves discovery,
+#    testing, analysis AND the coverage denominator together, in one visible
+#    tracked file.
