@@ -3,7 +3,10 @@
 # hand the hook an entry like "references/scripts\r"; the path test failed and
 # Gate 1 degraded from a real product-scope analysis to a WARN without any
 # error signal. Pin LF explicitly (verified: the adapter now also strips CR,
-# this is the belt-and-suspenders second layer).
+# this is the belt-and-suspenders second layer). NOTE: eol=lf is a
+# checkout-time normalization only - it does not rewrite existing blobs or
+# stop a same-machine writer from putting CRLF content on disk; the adapter's
+# CR stripping is the enforcing layer.
 .xp-gate-powershell-analysis-paths text eol=lf
 .xp-gate-powershell-prune-dirs   text eol=lf
 .xp-gate-powershell-coverage-ignore text eol=lf

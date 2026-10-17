@@ -320,7 +320,9 @@ run_coverage() {
     test_files[${#test_files[@]}]="$path"
   done < "$discovery_file"
   if [ "${#test_files[@]}" -gt 0 ]; then
-    _find_powershell_files "*.ps1" | grep -v '\.Tests\.ps1$' > "$discovery_file"
+    # `|| true`: grep -v exits 1 when every discovered path is a test file
+    # (nothing left); the redirected assignment would abort a set -e consumer.
+    _find_powershell_files "*.ps1" | grep -v '\.Tests\.ps1$' > "$discovery_file" || true
     while IFS= read -r path; do
       source_files[${#source_files[@]}]="$path"
     done < "$discovery_file"
@@ -347,7 +349,9 @@ run_coverage() {
         # raw path AND the "./"-stripped form so a plain "setup.ps1" glob works.
         local src_norm="${src#./}"
         while IFS= read -r pat; do
-          # skip blanks and comments
+          # skip blanks and comments; strip CR (same CRLF discipline as the
+          # scope/prune readers - a trailing \r would silently never match)
+          pat="${pat%$'\r'}"
           case "$pat" in ''|'#'*) continue ;; esac
           local pat_norm="${pat#./}"
           # shellcheck disable=SC2254
