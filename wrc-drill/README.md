@@ -12,6 +12,8 @@
 | `rdlab.ps1` | 演练辅助（锁定文件等复现工具） | 视用法定 |
 | `teardown.ps1` | 清理演练产物 | 与被清产物匹配 |
 
-这些脚本**不在** Pester 套件内，也不被 CI 触发；覆盖率分母已通过
-`.xp-gate-powershell-coverage-ignore` 排除（理由见该文件注释）。
+这些脚本**不在** Pester 套件内，也不被 CI 触发；发现/覆盖率/静态分析三处
+分母均通过 `.xp-gate-powershell-prune-dirs`（本目录已声明）在**发现阶段**剪除
+（2026-10-16 R6 更正：早期经由 `.xp-gate-powershell-coverage-ignore` 按产物减扣，
+该机制已废弃、文件已清空——分母必须是真实产品清单，见该文件注释）。
 drill5 的 23 项检查清单与判定记录见 CHANGELOG（2026-10-07/08 条目）。

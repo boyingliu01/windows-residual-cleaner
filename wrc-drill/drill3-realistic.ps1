@@ -48,7 +48,15 @@ $DryRun      = $false
 $LogPath     = Join-Path $drillRoot 'drill3-log.json'
 $WhitelistPath = Join-Path $repoRoot 'references\config\whitelist.json'
 
-function Test-AdminPrivilege { param([switch]$Mandatory) return $true }
+function Test-AdminPrivilege {
+    # R6 走查证实项（2026-10-17）：原桩 `return $true` 让本演练在非管理员会话里
+    # 静默驱动真实清理（drill3 会真的删文件/注册表键），是 fail-open 脚手架。
+    # 改为真实检测：非管理员直接中止（drill 本来就该在管理员会话里跑）。
+    param([switch]$Mandatory)
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($id)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
 
 Write-Host "=== BEFORE ==="
 Write-Host "  fs dir   exists: $(Test-Path $fsTarget)"

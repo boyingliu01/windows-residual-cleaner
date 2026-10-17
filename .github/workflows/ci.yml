@@ -70,7 +70,7 @@ jobs:
           Import-Module Pester -MinimumVersion 5.5.0 -Force
           Import-Module PSScriptAnalyzer -MinimumVersion 1.21.0 -Force
 
-      - name: Run Pester suite (727 tests) with coverage gate (>= 80%)
+      - name: Run Pester suite with coverage gate (>= 80%)
         run: |
           # GitHub Actions' powershell/pwsh wrapper prepends
           # $ErrorActionPreference = 'stop' to every run step. The suite's
@@ -85,11 +85,17 @@ jobs:
           $cfg.Run.Exit = $true
           $cfg.Output.Verbosity = 'Normal'
           # Same denominator as the local xp-gate coverage gate: product code
-          # only (references/scripts + setup.ps1). Drill/review tooling is
-          # excluded locally via .xp-gate-powershell-coverage-ignore and is
-          # simply not included here.
+          # only. The authoritative scope is .xp-gate-powershell-analysis-paths
+          # (kept consistent with tracked reality by the platform-hygiene
+          # '门禁边界一致性' tests); scratch/drill directories leave discovery
+          # via .xp-gate-powershell-prune-dirs — they are NOT subtracted from
+          # the denominator here (coverage-ignore is intentionally empty).
+          $scope = @(Get-Content .xp-gate-powershell-analysis-paths |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') })
+          if ($scope.Count -eq 0) { Write-Output 'FAILED: empty analysis-paths scope'; exit 1 }
           $cfg.CodeCoverage.Enabled = $true
-          $cfg.CodeCoverage.Path = @('references/scripts/*.ps1', 'setup.ps1')
+          $cfg.CodeCoverage.Path = $scope
           $cfg.CodeCoverage.OutputFormat = 'JaCoCo'
           $cfg.CodeCoverage.OutputPath = 'coverage-ci.xml'
           Invoke-Pester -Configuration $cfg
@@ -114,13 +120,24 @@ jobs:
       - name: PSScriptAnalyzer (must be 0 findings)
         run: |
           $findings = @()
-          # @() + Invoke-ScriptAnalyzer would append a single $null on a clean
-          # run ("@() + $null" yields a 1-element array), making "0 findings"
-          # fail closed in the wrong direction. Guard instead.
-          $r1 = Invoke-ScriptAnalyzer -Path references/scripts -Recurse -Settings PSScriptAnalyzerSettings.psd1
-          if ($r1) { $findings += @($r1) }
-          $r2 = Invoke-ScriptAnalyzer -Path setup.ps1 -Settings PSScriptAnalyzerSettings.psd1
-          if ($r2) { $findings += @($r2) }
+          # Same authoritative scope as the coverage step:
+          # .xp-gate-powershell-analysis-paths (consistency enforced by the
+          # platform-hygiene tests). Directories are scanned recursively,
+          # single files directly.
+          $scope = @(Get-Content .xp-gate-powershell-analysis-paths |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') })
+          foreach ($p in $scope) {
+            if (-not (Test-Path -LiteralPath $p)) {
+              Write-Output "FAILED: analysis-paths entry does not exist: $p"
+              exit 1
+            }
+            # @() + Invoke-ScriptAnalyzer would append a single $null on a clean
+            # run ("@() + $null" yields a 1-element array), making "0 findings"
+            # fail closed in the wrong direction. Guard instead.
+            $r = Invoke-ScriptAnalyzer -Path $p -Recurse:$([System.IO.Directory]::Exists($p)) -Settings PSScriptAnalyzerSettings.psd1
+            if ($r) { $findings += @($r) }
+          }
           if ($findings.Count -gt 0) {
             $findings | Format-Table -AutoSize | Out-String | Write-Output
             exit 1

@@ -130,6 +130,24 @@ entry parameters in a top-level `param()` block and consumes them inside `functi
 which that rule cannot follow across scopes. The single genuinely unused parameter it
 flagged (`run-all.ps1 -Verbose`) was removed instead of suppressed.
 
+### Pre-commit quality gates (xp-gate)
+
+Commits run a 13-gate quality chain (static analysis, tests + coverage ≥ 80%,
+semgrep SAST on `.ps1`, secret scanning, architecture diff, sprint-flow
+enforcement). The chain lives **outside this repo** in a user-level hook install
+(`core.hooksPath` → `~/.config/xp-gate/hooks`), so a **fresh clone on a machine
+without that install silently runs the degraded/idle variants** of those gates.
+Three tracked files keep the repo-side boundary explicit and are enforced by
+tests in `tests/unit/platform-hygiene.Tests.ps1` (门禁边界一致性):
+
+- `.xp-gate-powershell-analysis-paths` — the product scope Gate 1 lint scans;
+  **a new product script must add its path in the same commit** (missing paths
+  fail closed to WARN).
+- `.xp-gate-powershell-prune-dirs` — scratch/drill directories kept out of
+  test discovery, coverage denominator, and analysis scope (currently `wrc-drill`).
+- `.xp-gate-powershell-coverage-ignore` — intentionally **empty**: per-artifact
+  subtraction from the coverage denominator is not allowed.
+
 ## License
 
 MIT License — see [LICENSE](LICENSE).

@@ -10,7 +10,7 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 753 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 756 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -693,15 +693,23 @@ It 'Works against real registry data' {
   见 `tests/unit/hermeticity.Tests.ps1`、`tests/unit/rollback.Tests.ps1`（`BackupRoot` 可注入）
   与 `scripts.Tests.ps1` 的 `backup-svcregress` fixture。**2026-10-07 复查**：主仓
   `backup-*` 目录数为 0，双引擎 710 全绿——隐藏前置依赖确已消除。
-- **覆盖率门禁的口径**：`xp-gate` 的 80% 阈值写死在共享 hook 里，唯一受支持的调节手段是
-  `.xp-gate-powershell-coverage-ignore`（**按文件**排除）。该文件的注释已明确写下
+- **覆盖率门禁的口径**：`xp-gate` 的 80% 阈值写死在共享 hook 里。**2026-10-16 第三批
+  加固后**，调节分母的正确手段是 `.xp-gate-powershell-prune-dirs`（非产品脚手架目录在
+  **发现阶段**整体离场，发现=分母）；`.xp-gate-powershell-coverage-ignore` 保持**空列表**
+  （按产物减扣会把真实产品代码静默移出分母，已由 `platform-hygiene.Tests.ps1`
+  「门禁边界一致性」守卫）。该文件的注释已明确写下
   「Do NOT add files here merely because they are hard to test」——所以**不要**为了过门禁
   而把 `clean-residuals.ps1` / `confirm-cleanup.ps1` 整文件排除：那会连同已覆盖的
   163/170 行一起丢掉。正确方向是把可测逻辑抽成纯函数（`ConvertFrom-*`、`Get-*Verdict`、
   `Get-MatchingRestorePoint` 等，本次已示范）并补测。
   **判断口径**：若某脚本看起来「结构性不可插桩」，先怀疑它违反了 ADR-001（`Main` 内 `exit`），
-  而不是往列表里加一行——`setup.ps1` 正是这样一条被写成豁免的代码缺陷，2026-10-08 已重构消除，
-  该文件现为空列表。
+  而不是往列表里加一行——`setup.ps1` 正是这样一条被写成豁免的代码缺陷，2026-10-08 已重构消除。
+  **R6 补充（2026-10-17）**：`.xp-gate-powershell-analysis-paths` 是 Gate 1 的产品分析
+  范围——**新产品脚本必须同提交把路径加进去**，缺失条目现会 fail-closed 发 WARN
+  （`XP_G1_REASON: analysis-path-missing:<路径>`，R6 前是静默跳过）；一致性由
+  「门禁边界一致性」测试守卫（tracked 产品源必须全被 scope 覆盖 + scope 条目必须真实存在
+  + coverage-ignore 必须空 + prune-dirs 必须含 wrc-drill）。注意发现是 `*.ps1` 端到端：
+  `.psm1` 模块不在发现/覆盖率/分析三处分母内（见 analysis-paths 文件头 R6 note）。
 - **coverage.xml 的口径与污染（2026-10-16 走查实测）**：引用覆盖率数字前先核对产物：
   (1) 本地包装脚本的 `CoveragePercent`（如 80.40%）是 **Pester 命令口径**；
   (2) JaCoCo `coverage.xml` 的 LINE counter 是**行口径**，两者不可互引；Gate 5 读的是后者。
@@ -742,6 +750,12 @@ if ($MyInvocation.InvocationName -ne '.') {
 ```
 
 - 需要被单元测试直接调用的辅助函数（`Get-ExecutablePath`、`Remove-ItemRobust`、`Test-Whitelisted`、`Set-Id`、`Test-AdminPrivilege` 等）保留在 **Main 外部**作为顶层函数。
+- **新产品脚本 checklist（R6 硬边界，2026-10-17）**：新增 `.ps1` 产品脚本的同一次提交必须
+  (1) 把脚本路径（或其目录）加进 `.xp-gate-powershell-analysis-paths`；
+  (2) 若在 `references/scripts/` 外，确认 `.xp-gate-powershell-prune-dirs` 未把它剪掉；
+  (3) 确认它带 `function Main` + `[ref]$ExitCode` + 执行守卫（hermeticity 契约会穷举）。
+  漏做 (1) 时「门禁边界一致性」测试当场变红；漏做且钩子侧为旧版本时 Gate 1 对它失明
+  （analysis-path-missing WARN 是 R6 加固后的兜底）。
 - 不要用 `$PSCommandPath -eq $MyInvocation.MyCommand.Path` 做守卫，在 `powershell -Command ". script.ps1"` 场景下不可靠。
 - 不要使用「顶层代码 + 提前 `return`」的写法：它虽能挡住 dot-source，但 `exit` 语句会散落到文件末尾，与其余脚本不一致。
 
@@ -1032,7 +1046,8 @@ if ($MyInvocation.InvocationName -ne '.') {
     Invoke-NativeExe 引号+翻倍后两引擎均成功），已按「写下必然/100% 必须附可复现
     命令」的纪律改为诚实口径；**R5 再更正（2026-10-16）**：R3 的「两引擎共有」
     仍只对 **Start-Process 纯拼接**形态成立——`&` 原生绑定形态实为**引擎分歧**
-    （PS 5.1 失败 / pwsh 7 标准实参传递成功），三形态真值已由可执行钉子
+    （PS 5.1 失败 / pwsh 7 的原生实参绑定正确转义——R6 实测三种
+    PSNativeCommandArgumentPassing 模式均成功，非 7.2 特性门控），三形态真值已由可执行钉子
     （platform-hygiene「三形态真值钉子」用例）双引擎持续钉住；(b) `create-restore-point.ps1` 的 '/' 净化被指出为
     **不可达预留**（当前 regPaths 三条键名均无 '/'），注释改为如实标注「预留，
     当前不可达，落地 HKCR CLSID 形态时须同步补测」；(c) `Get-RenameTarget` 对无
@@ -1072,7 +1087,7 @@ if ($MyInvocation.InvocationName -ne '.') {
   - **R5 可执行钉子更正了 R3 的因果口径**：为落实构远图残余项写的
     「三形态真值钉子」用例实测发现——R3 的「裸透传 takeown **两引擎**共有失败」
     只对 **Start-Process 纯拼接**形态成立；`&` 原生绑定形态是**引擎分歧**
-    （PS 5.1 失败 / pwsh 7 的 7.2+ 标准实参传递成功）。已按三形态真值改写
+    （PS 5.1 失败 / pwsh 7 的原生实参绑定正确转义，R6 实测三种 passing 模式均成功）。已按三形态真值改写
     native-invoke.ps1 注释、测试注释与 CHANGELOG/AGENTS.md 记录。教训入册：
     「两引擎共有」与「引擎分歧」是两个不同的命题，换验证形态即换命题。
   - **测试侧 PSSA 技术债如实入册**：以仓库设置测 tests/ 全量为 328 条告警
@@ -1082,4 +1097,31 @@ if ($MyInvocation.InvocationName -ne '.') {
     门禁按「产品范围」收敛而非放宽规则，测试文件不进 PSSA 判据。
   - 测试数 752 → **753**（三形态真值钉子，双引擎各 753/753）；PSScriptAnalyzer
     产品范围维持 0。
+- 2026-10-17: 门禁真生效收口 + R6 走查证实项（接管审计第三批续）
+  - **试金石提交实测**：第三批加固以真实 `git commit`（`a78ac47`）验收——Gate 1
+    PSSA 真扫（产品范围 0）、Gate 5 真跑（commit 时新鲜 coverage.xml，18 sourcefile，
+    2844/3379 = 84.17%）、Gate 10 首次真扫描（files scanned: 2，semgrep on .ps1），
+    verdict PASS 10.0/10。
+  - **R6 code-walkthrough Round 1（三专家三模型）**：1 APPROVED / 2 PASS_WITH_CAVEATS，
+    零 Critical；三位专家各自实测复现了同类根因——**analysis-paths 的「硬边界」此前
+    只有散文承诺**：列表条目缺失时钩子静默跳过（fail-open），根级产品脚本带真告警也
+    PASS（两位专家以临时探针脚本实证）；coverage 分母与 Gate 1 分析范围是两条
+    独立维护的边界，无交叉校验；发现是 `*.ps1` 端到端，`.psm1` 模块不在三处分母内；
+    ci.yml 硬编码产品清单并仍引用已清空的 coverage-ignore；R5 的因果归属
+    「7.2+ 标准实参传递」被实测否定（三种 PSNativeCommandArgumentPassing 模式均
+    成功，非 7.2 特性门控）。drill3 的 `Test-AdminPrivilege` 桩 `return $true`
+    让演练在非管理员会话静默驱动真实清理。
+  - **证实项当场落实**：(1) 钩子适配器缺失条目改为发 `XP_G1_REASON:
+    analysis-path-missing:<路径>`（fail-closed WARN，同 analysis-paths-empty 语义）+
+    超时文案 300 字面量改用真值；(2) 新增「门禁边界一致性」测试组（tracked 产品源
+    必须全被 analysis-paths 覆盖 + scope 条目必须存在 + coverage-ignore 必须空 +
+    prune-dirs 必须含 wrc-drill）——散文边界变成门禁守卫；(3) ci.yml 产品清单改读
+    `.xp-gate-powershell-analysis-paths`（scope 空即 fail），移除陈旧 coverage-ignore
+    引用与 727 历史计数；(4) README 新增「Pre-commit quality gates」节（钩子链在
+    仓库外 + 新克隆静默降级的事实 + 三份 tracked 边界文件）；(5) wrc-drill/README
+    同步 prune 机制口径；(6) drill3 权限桩改真实管理员检测（非管理员中止）；
+    (7) 三形态因果归属全文更正为「原生实参绑定正确转义（三种 passing 模式实测）」；
+    (8) analysis-paths 文件头补 `.psm1` 盲区 note；AGENTS.md 补新产品脚本 checklist。
+  - 测试数 753 → **756**（+3 边界一致性用例）；产品范围 PSSA 维持 0。
+
 

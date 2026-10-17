@@ -35,7 +35,8 @@ Describe 'Platform hygiene: ConvertTo-NativeArgument（引号封装契约）' {
 
     It '结尾反斜杠在包裹前翻倍（防止吞掉闭合引号）' {
         # Round-2/3/5 走查（2026-10-16，三形态真值）：失败面取决于透传形态——
-        # `&` 原生绑定裸透传是引擎分歧（PS 5.1 失败 / pwsh 7 标准实参传递成功）；
+        # `&` 原生绑定裸透传是引擎分歧（PS 5.1 失败 / pwsh 7 的原生实参绑定正确转义，
+        # 实测三种 PSNativeCommandArgumentPassing 模式均成功）；
         # Start-Process 纯拼接裸透传才是两引擎共有失败（空格碎裂）；本函数的
         # 包裹+翻倍两引擎都正确，故尾反斜杠值一律进入包裹分支（见 native-invoke.ps1
         # 三形态注释与下方可执行钉子用例）。
@@ -97,11 +98,13 @@ Describe 'Platform hygiene: Invoke-NativeExe（真实进程行为）' {
 
     It 'Round-5 三形态真值钉子：& 裸透传引擎分歧 / Start-Process 拼接两引擎共有失败 / 包裹后成功' {
         # 陷阱 7 纪律的落点：写下「必然」必须附可复现命令——本用例就是命令的自动化
-        # 形态，双引擎各跑一次即持续复核因果口径（R5 走查 构远图 残余项 → 实测
+        # 形态，双引擎各跑一次即持续复核因果口径（R6 走查 构远图 残余项 → 实测
         # 反而更正了 R3 的「两引擎共有」口径：它只对 Start-Process 纯拼接成立）。
-        # 形态一 `&` 原生绑定：PS 5.1 尾反斜杠吞闭合引号 → 失败；pwsh 7（7.2+
-        # PSNativeCommandArgumentPassing 标准形态）正确转义 → 成功（引擎分歧）。
-        # 形态二 Start-Process 纯拼接：空格碎裂 → 两引擎共有失败。
+        # 形态一 `&` 原生绑定：PS 5.1 尾反斜杠吞闭合引号 → 失败；pwsh 7 的原生
+        # 实参绑定正确转义 → 成功（引擎分歧；实测三种 PSNativeCommandArgumentPassing
+        # 模式均如此）。
+        # 形态二 Start-Process 纯拼接：含空格元素按空格碎裂 → 两引擎共有失败
+        # （与尾反斜杠无关；仅「引号不翻倍」形态才报另一种 not-found 错误）。
         # 形态三 ConvertTo-NativeArgument 包裹：两引擎都成功（产品唯一通道）。
         $takeown = Join-Path $env:SystemRoot 'System32\takeown.exe'
         $base = Join-Path ([System.IO.Path]::GetTempPath()) "wrc-takeown-$(New-Guid)"
@@ -114,7 +117,7 @@ Describe 'Platform hygiene: Invoke-NativeExe（真实进程行为）' {
             $null = & $takeown /f "$spaced\" 2>&1
             $bareExit = $LASTEXITCODE
             if ($isCore) {
-                $bareExit | Should -Be 0 -Because "pwsh 7 标准实参传递下裸透传必须成功；变红说明引擎行为变化，须重审三形态口径: exit=$bareExit"
+                $bareExit | Should -Be 0 -Because "pwsh 7 原生实参绑定下裸透传必须成功；变红说明引擎行为变化，须重审三形态口径: exit=$bareExit"
             } else {
                 $bareExit | Should -Be 1 -Because "PS 5.1 裸透传必须失败（尾反斜杠吞闭合引号）: exit=$bareExit"
             }
@@ -382,5 +385,50 @@ Describe 'Platform hygiene: AST 静态守卫（新增违规即在门禁变红）
         # clean-residuals 直接调用 Invoke-NativeExe（Tier2），必须自己显式加载，
         # 不得依赖 rollback-backup 的传递加载（走查 2026-10-16 minor）。
         $clean | Should -Match "'native-invoke\.ps1'"
+    }
+}
+
+Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-17）' {
+    # 背景：R6 三专家走查实测证明——analysis-paths 的「硬边界」此前只由散文承诺，
+    # 钩子对「列表条目缺失」是静默跳过（fail-open），产品源若放错了位置 Gate 1
+    # 对它失明且无人报警。本组用例把散文边界变成可执行守卫（fail-closed）。
+    It 'analysis-paths 覆盖全部 tracked 产品源；列表条目必须真实存在' {
+        $scope = @(Get-Content -LiteralPath (Join-Path $script:Root '.xp-gate-powershell-analysis-paths') |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') })
+        $scope.Count | Should -BeGreaterThan 0 -Because '空 scope 会让 Gate 1 降级（analysis-paths-empty WARN）'
+        foreach ($t in $scope) {
+            (Test-Path -LiteralPath (Join-Path $script:Root $t)) | Should -Be $true -Because "analysis-paths 条目 $t 不存在——钩子会以 analysis-path-missing 发 WARN，产品代码失明"
+        }
+        # 产品源 = git tracked *.ps1，排除测试与已 prune 的脚手架/演练目录。
+        $tracked = @(& git -C $script:Root ls-files '*.ps1' | ForEach-Object { $_ -replace '\\', '/' })
+        $prunedPrefixes = @('tests/', 'wrc-drill/', '.sprint-state/', '.delphi-work/', '.worktrees/', '.workbuddy/', '.qoder/', '.vscode/', '.idea/', '.xp-gate/')
+        $product = @($tracked | Where-Object {
+            $p = $_
+            -not ($prunedPrefixes | Where-Object { $p.StartsWith($_) })
+        })
+        $product.Count | Should -BeGreaterThan 0
+        foreach ($p in $product) {
+            $covered = $false
+            foreach ($t in $scope) {
+                $tn = ($t -replace '\\', '/').TrimEnd('/')
+                if ($p -eq $tn -or $p.StartsWith("$tn/")) { $covered = $true; break }
+            }
+            $covered | Should -BeTrue -Because "产品源 $p 不被 .xp-gate-powershell-analysis-paths 覆盖——Gate 1 对它失明；新产品脚本必须同提交加路径（硬边界）"
+        }
+    }
+
+    It 'coverage-ignore 保持空列表（分母即真实产品清单，禁止按产物减扣）' {
+        $active = @(Get-Content -LiteralPath (Join-Path $script:Root '.xp-gate-powershell-coverage-ignore') |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') })
+        $active | Should -BeNullOrEmpty -Because 'prune 机制已让发现=分母；往 coverage-ignore 加条目会把真实产品代码从覆盖率分母里静默减掉'
+    }
+
+    It 'prune-dirs 声明 wrc-drill（tracked 演练脚手架必须隔离于发现/覆盖率/分析三处分母）' {
+        $prune = @(Get-Content -LiteralPath (Join-Path $script:Root '.xp-gate-powershell-prune-dirs') |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') })
+        $prune | Should -Contain 'wrc-drill' -Because 'wrc-drill 是 tracked 演练脚手架（会创建真实系统对象），必须留在三处分母之外'
     }
 }

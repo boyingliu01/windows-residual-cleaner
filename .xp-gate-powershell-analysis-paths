@@ -20,5 +20,10 @@
 #
 # HARD BOUNDARY: every product PowerShell file must be covered by this list.
 # New product scripts must be added here in the same commit.
+# R6 note (2026-10-17): file DISCOVERY is `*.ps1` end-to-end — a product
+# module named `*.psm1` placed OUTSIDE the paths below would be blind to
+# discovery, the coverage denominator AND Gate 1 alike. Keep product code as
+# `.ps1` files under the paths listed here, or extend this mechanism (and the
+# prune/analysis toolchain) together when introducing `.psm1` modules.
 references/scripts
 setup.ps1

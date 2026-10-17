@@ -144,3 +144,25 @@ CI（run #6，`ac970b2`）：双引擎 727 用例全绿、行覆盖 82.89%、PSS
 powershell 分支）+ 全量 Pester + 覆盖率生成与解析（Gate 5）+ semgrep 对暂存 .ps1
 扫描（Gate 10）。结果见该提交的质量报告（`.xp-gate/quality-status`）。
 
+### 7.5 R6 走查证实项（2026-10-17，收口补丁）
+
+R6 code-walkthrough Round 1（三专家三模型，commit `a78ac47` 对象）：1 APPROVED /
+2 PASS_WITH_CAVEATS，零 Critical。两位专家以临时探针脚本**独立实测复现**同一根因：
+analysis-paths 的「硬边界」此前只有散文承诺——scope 条目缺失时钩子静默跳过
+（fail-open），根级产品脚本带真告警照样 PASS。证实项当场落实（收口提交）：
+
+| 发现（专家实测） | 落实 |
+|---|---|
+| scope 条目缺失 → 静默跳过 + PASS（fail-open） | 钩子适配器改为发 `XP_G1_REASON: analysis-path-missing:<路径>`（fail-closed WARN，同 analysis-paths-empty 语义）；超时文案 300 字面量同步改真值 |
+| analysis-paths 与覆盖率分母两条边界无交叉校验，可各自腐烂 | 新增「门禁边界一致性」测试组（platform-hygiene.Tests.ps1）：tracked 产品源 ⊆ scope、scope 条目必须存在、coverage-ignore 必须空、prune-dirs 必须含 wrc-drill |
+| 发现是 `*.ps1` 端到端，`.psm1` 模块不在三处分母内 | analysis-paths 文件头 R6 note（产品代码保持 .ps1 或扩展机制时三处一起改） |
+| ci.yml 硬编码产品清单、引用已清空的 coverage-ignore、标注 727 历史计数 | ci.yml 改读 `.xp-gate-powershell-analysis-paths`（scope 空即 fail），陈旧引用清除 |
+| 钩子链在仓库外，新克隆静默降级且 README 未提 | README 新增「Pre-commit quality gates」节（三份 tracked 边界文件 + 一致性测试守卫） |
+| wrc-drill/README 仍指向 coverage-ignore | 更正为 prune-dirs 发现阶段剪除口径 |
+| drill3 `Test-AdminPrivilege` 桩 `return $true`——非管理员会话静默驱动真实清理 | 改真实管理员检测（WindowsPrincipal），非管理员中止 |
+| 「7.2+ 标准实参传递」因果归属被三模式实测否定（三种 PSNativeCommandArgumentPassing 均成功） | 全文更正为「原生实参绑定正确转义（R6 实测三种 passing 模式）」，native-invoke.ps1/测试/CHANGELOG/AGENTS.md 同步 |
+
+R5 钉子中「pwsh 7 期望 exit 0」的引擎行为断言在 R6 复核中保持成立（且与
+passing-mode 无关），按原样保留为回归钉。
+
+
