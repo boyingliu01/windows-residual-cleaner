@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # platform-hygiene.Tests.ps1 — 平台层细节的静态与行为契约
 # =============================================================================
 # 背景（2026-10-16 接管审计）：P1-1（Start-Process -ArgumentList 不加引号）、
@@ -439,11 +439,11 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
         $active | Should -BeNullOrEmpty -Because 'prune 机制已让发现=分母；往 coverage-ignore 加条目会把真实产品代码从覆盖率分母里静默减掉'
     }
 
-    It 'prune-dirs 声明 wrc-drill（tracked 演练脚手架必须隔离于发现/覆盖率/分析三处分母）' {
+    It 'prune-dirs 声明 wrc-drill（本机演练脚手架必须隔离于发现/覆盖率/分析三处分母）' {
         $prune = @(Get-Content -LiteralPath (Join-Path $script:Root '.xp-gate-powershell-prune-dirs') |
             ForEach-Object { $_.Trim() } |
             Where-Object { $_ -and -not $_.StartsWith('#') })
-        $prune | Should -Contain 'wrc-drill' -Because 'wrc-drill 是 tracked 演练脚手架（会创建真实系统对象），必须留在三处分母之外'
+        $prune | Should -Contain 'wrc-drill' -Because 'wrc-drill 是本机管理员演练脚手架（会创建真实系统对象，2026-10-20 起已移出 git 跟踪、仅存本地），必须留在三处分母之外'
     }
 
     It '钩子安装与 vendored 副本一致（被回退/删除时变红，杜绝静默降级）' {

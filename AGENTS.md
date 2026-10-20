@@ -664,7 +664,7 @@ It 'Works against real registry data' {
   不是并行。UI 侧附带一条：vitest `ItemTable` 用例的 5s 默认超时在高负载下会抖动超时
   （单跑 2.6s 通过），全量偶红时先单文件复测再判回归。
 - **本机工具链路径与门禁降级链（2026-10-07 实测；2026-10-16 第三批加固后已改观）**：
-  `pwsh` 7 位于 `C:\Users\think\AppData\Local\Microsoft\WindowsApps\pwsh.exe`，`node.exe`
+  `pwsh` 7 位于 `%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe`，`node.exe`
   位于 `C:\Program Files\nodejs\node.exe`——git-bash 的 PATH 里没有裸命令名，`jq` 未安装。
   **加固后**：适配器 `_detect_pwsh` 会显式探测 WindowsApps pwsh 与 System32
   powershell.exe 的标准安装位置（PATH 剥离也找得到）；Gate 1 有了 fail-closed 的
@@ -960,6 +960,9 @@ if ($MyInvocation.InvocationName -ne '.') {
     `git ls-files wrc-drill` 可复核）——「保持 untracked」的决定并未真正落地。门禁侧已通过
     `.xp-gate-powershell-prune-dirs` 把它隔离出文件发现/覆盖率分母；是否按原决定移出
     git 跟踪留待维护者决策（drill 脚本会创建真实系统对象，克隆者误跑有风险）。
+    **2026-10-20 落地**：原决定执行——`git rm -r --cached` 移出跟踪（本地文件保留）+
+    `.gitignore` 钉住 `wrc-drill/`；公开仓库不再分发会动真实系统对象的脚本，clone 者只
+    得到 README 之外的空目录。门禁三处分母的隔离（prune-dirs）与本决定无关，继续生效。
 - 2026-10-08: 自动回滚 Sprint 收尾 —— drill5 根因、CORS 收紧、REQ-031 盲区、setup.ps1 摘豁免
   - **drill5 根因定位（`12bf152`，Critical）**：`$null -ne $MachinePathOverride` 在三处
     （两处转发 + 一处读取）把「未注入」读成「注入了空 PATH」，跳过真实注册表读取 →
