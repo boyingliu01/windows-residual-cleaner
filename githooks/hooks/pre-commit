@@ -15,6 +15,89 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ADAPTER_DIR=""
 GLOBAL_ADAPTER_DIR="$HOME/.config/xp-gate/adapters"
 
+# #505: load the resolution-order data BEFORE any tier decision runs. The file is
+# generated from src/npm-package/lib/hook-module-resolution.js, which doctor.js
+# also reads, so the hook and the diagnostic share one order instead of two
+# hand-written copies that a parity test had to keep honest.
+#
+# It is looked up beside the hook (SCRIPT_DIR — always present, since this file
+# IS the hook) and beside adapter-common.sh (ADAPTER_DIR — where `xp-gate init`
+# and setup-global install the supporting modules). Either location works; the
+# hook-dir copy is what `doctor --sync-hooks` and sync-package-content maintain.
+# Note this runs BEFORE ADAPTER_DIR is resolved, which is why the script dir is
+# the primary location: reading the order cannot depend on the order.
+HOOK_RESOLUTION_SH="${SCRIPT_DIR}/hook-module-resolution.sh"
+if [ ! -f "$HOOK_RESOLUTION_SH" ] && [ -f "$GLOBAL_ADAPTER_DIR/hook-module-resolution.sh" ]; then
+  HOOK_RESOLUTION_SH="$GLOBAL_ADAPTER_DIR/hook-module-resolution.sh"
+fi
+if [ ! -f "$HOOK_RESOLUTION_SH" ]; then
+  # Fail closed: a hook that cannot load its resolution order must not fall back
+  # to an invented one — that would silently resurrect the duplication removed
+  # here, and doctor would report a different surface than the hook executes.
+  echo "FATAL: cannot load hook-module-resolution.sh (module resolution order is unavailable)" >&2
+  echo "Fix: reinstall the hooks (xp-gate init, or xp-gate doctor --sync-hooks in the xp-gate repo)." >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+. "$HOOK_RESOLUTION_SH"
+
+# Look up one tier's directory variable by name without eval-ing arbitrary input:
+# the base names are a closed set baked into the generated file.
+_hook_tier_base() {
+  case "$1" in
+    ADAPTER_DIR)      printf '%s' "$ADAPTER_DIR" ;;
+    GLOBAL_ADAPTER_DIR) printf '%s' "$GLOBAL_ADAPTER_DIR" ;;
+    PROJECT_GITHOOKS) printf '%s' "$PROJECT_GITHOOKS" ;;
+    SCRIPT_DIR)       printf '%s' "$SCRIPT_DIR" ;;
+    *)                printf '%s' "" ;;
+  esac
+}
+
+# Walk a "tier_id|base|suffix" table in order and print the first existing match.
+# Usage: _hook_resolve <module_filename> <tiers_array_name>
+_hook_resolve() {
+  local module_name="$1"
+  local tiers_var="$2"
+  local entry base suffix base_dir candidate
+  eval "set -- \"\${${tiers_var}[@]}\""
+  for entry in "$@"; do
+    entry="${entry#*|}"
+    base="${entry%%|*}"
+    suffix="${entry#*|}"
+    base_dir="$(_hook_tier_base "$base")"
+    [ -n "$base_dir" ] || continue
+    candidate="$base_dir/${suffix/\{name\}/$module_name}"
+    if [ -f "$candidate" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Walk a gate tier table and print the first DIRECTORY that contains the probe.
+# The adapter table yields a file; this one yields the directory the gate suite
+# lives in (GATE_DIR), which is why it probes rather than substitutes.
+# Usage: _hook_resolve_dir <probe_filename> <tiers_array_name>
+_hook_resolve_dir() {
+  local probe="$1"
+  local tiers_var="$2"
+  local entry base suffix base_dir
+  eval "set -- \"\${${tiers_var}[@]}\""
+  for entry in "$@"; do
+    entry="${entry#*|}"
+    base="${entry%%|*}"
+    suffix="${entry#*|}"
+    base_dir="$(_hook_tier_base "$base")"
+    [ -n "$base_dir" ] || continue
+    if [ -f "$base_dir${suffix}/$probe" ]; then
+      printf '%s' "$base_dir${suffix}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # BEGIN GIT CONTEXT FALLBACK
 if ! declare -F run_without_git_context >/dev/null 2>&1; then
   run_without_git_context() (
@@ -29,6 +112,7 @@ fi
 # END GIT CONTEXT FALLBACK
 
 PROJECT_GITHOOKS="$(run_without_git_context git rev-parse --show-toplevel 2>/dev/null)/githooks"
+# shellcheck disable=SC2034  # consumed by adapter-common.sh when that layout is installed
 GATES_DIR="$SCRIPT_DIR/gates"
 
 if [ -f "$GLOBAL_ADAPTER_DIR/adapter-common.sh" ]; then
@@ -38,6 +122,10 @@ elif [ -f "$PROJECT_GITHOOKS/adapter-common.sh" ]; then
 else
   ADAPTER_DIR="$SCRIPT_DIR"
 fi
+# The sourced lib is resolved at runtime (global/project/script-dir layouts);
+# it may legitimately be absent until `xp-gate init` runs - the || block is
+# the designed fallback, not a bug.
+# shellcheck disable=SC1091
 source "$ADAPTER_DIR/adapter-common.sh" 2>/dev/null || {
   echo "Error: Cannot source adapter-common.sh from $ADAPTER_DIR"
   echo "Run: xp-gate init (per-project) or xp-gate setup-global (all projects)"
@@ -51,39 +139,25 @@ source "$ADAPTER_DIR/adapter-common.sh" 2>/dev/null || {
 # ADAPTER_DIR points to the base directory that contains either
 # adapter-common.sh directly (global) or adapter-common.sh in a flat layout.
 # Gate scripts live alongside adapter-common.sh.
+#
+# #505: the ORDER is not written here. HOOK_ADAPTER_TIERS is generated from
+# src/npm-package/lib/hook-module-resolution.js, which doctor.js reads directly,
+# so the hook and the diagnostic cannot disagree about which file wins.
 resolve_adapter_path() {
-  local lang="$1"
-  # Try flat layout first (global: typescript.sh next to adapter-common.sh)
-  if [ -f "$ADAPTER_DIR/${lang}.sh" ]; then
-    echo "$ADAPTER_DIR/${lang}.sh"
-    return 0
-  fi
-  # Try nested layout (project: adapters/typescript.sh)
-  if [ -f "$ADAPTER_DIR/adapters/${lang}.sh" ]; then
-    echo "$ADAPTER_DIR/adapters/${lang}.sh"
-    return 0
-  fi
-  # Try project githooks as fallback
-  if [ -f "$PROJECT_GITHOOKS/adapters/${lang}.sh" ]; then
-    echo "$PROJECT_GITHOOKS/adapters/${lang}.sh"
-    return 0
-  fi
-  # Try script dir as last resort
-  if [ -f "$SCRIPT_DIR/adapters/${lang}.sh" ]; then
-    echo "$SCRIPT_DIR/adapters/${lang}.sh"
-    return 0
-  fi
-  return 1
+  # ADAPTER templates carry the extension ("{name}.sh"), so pass the bare language
+  # name here. GATE templates are "{name}", so their call passes the full filename.
+  _hook_resolve "${1}" HOOK_ADAPTER_TIERS
 }
 
-# Gate scripts directory — falls back to project githooks if ADAPTER_DIR doesn't have them
-if [ -f "$ADAPTER_DIR/gate-3.sh" ]; then
-  GATE_DIR="$ADAPTER_DIR"
-elif [ -f "$PROJECT_GITHOOKS/gate-3.sh" ]; then
-  GATE_DIR="$PROJECT_GITHOOKS"
-elif [ -f "$SCRIPT_DIR/gate-3.sh" ]; then
-  GATE_DIR="$SCRIPT_DIR"
-else
+# Gate scripts directory — falls back to project githooks if ADAPTER_DIR doesn't have them.
+# #505: the probe file and the tier order come from the generated data file, so
+# this cascade cannot drift from what doctor.js reports.
+GATE_DIR="$(_hook_resolve_dir "$HOOK_GATE_PROBE" HOOK_GATE_TIERS)" || GATE_DIR=""
+# Deliberate last resort: when no tier carries the gate suite, point at
+# ADAPTER_DIR anyway rather than leaving GATE_DIR empty. The gate-N.sh sources
+# further down check for the file before sourcing, so an absent suite still
+# degrades to a reported skip instead of a path built from an empty string.
+if [ -z "$GATE_DIR" ]; then
   GATE_DIR="$ADAPTER_DIR"
 fi
 
@@ -91,15 +165,16 @@ fi
 # Using a guard prevents recursion when 'exit' is called from inside the trap.
 # IMPORTANT: Captures exit status FIRST so generate_quality_report cannot override it.
 _QUALITY_REPORT_DONE=0
+# (Invoked indirectly via the `trap ... EXIT` below; SC2329 cannot see that.)
 _quality_report_on_exit() {
   local _saved_exit=$?
   if [ "$_QUALITY_REPORT_DONE" = "1" ]; then
-    exit $_saved_exit
+    exit "$_saved_exit"
     return
   fi
   _QUALITY_REPORT_DONE=1
   command -v generate_quality_report >/dev/null 2>&1 && generate_quality_report 2>/dev/null || true
-  exit $_saved_exit
+  exit "$_saved_exit"
 }
 trap '_quality_report_on_exit' EXIT
 
@@ -215,34 +290,66 @@ file_exists_in_subdir() {
 AUDIT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT_FOR_AUDIT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$AUDIT_SCRIPT_DIR/../..")"
 
+# Issue #535: a failed `source` used to print one stderr line and keep going,
+# so a missing lib silently removed gate logic from the run while every gate
+# still reported PASS. Fail closed instead: abort with FATAL when the file is
+# absent or its body exits non-zero while being sourced. `exit` inside a
+# sourced file exits the SOURCING shell, so an `if ! source` wrapper cannot
+# catch it — trap EXIT for the duration of the source instead.
+source_gate_lib() {
+  local lib_file="$1"
+  if [ ! -f "$lib_file" ]; then
+    echo "FATAL: cannot load $lib_file (missing)" >&2
+    exit 1
+  fi
+  # Marker the EXIT trap compares against: only a source that never reached
+  # its end counts as a load failure. A lib calling `exit` at top level would
+  # otherwise be misread as a crash after it already did its job.
+  SOURCE_GATE_LIB_COMPLETED=""
+  local prev_trap=""
+  prev_trap="$(trap -p EXIT || true)"
+  # shellcheck disable=SC2064  # expand lib_file NOW: it is the failure target
+  trap "[ -n \"\$SOURCE_GATE_LIB_COMPLETED\" ] || { echo 'FATAL: cannot load $lib_file (source failed)' >&2; exit 1; }" EXIT
+  # shellcheck disable=SC1090  # sourcing the resolved lib is the contract here
+  source "$lib_file"
+  SOURCE_GATE_LIB_COMPLETED=1
+  eval "$prev_trap"
+}
+
 # Issue #370: source cross-platform now_ms() helper (node-preferred, regex-validated)
-source "${AUDIT_SCRIPT_DIR}/lib/now-ms.sh"
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/now-ms.sh"
+# REQ-B: duration bookkeeping sanitizer used by record_gate_audit below.
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/audit-sanitize.sh"
+# REQ-F2 (sprint-20261018-quality): commit-level docs-only detection used to
+# short-circuit the heavy, code-blind gates below. Distinct from the
+# PROJECT-level documentation_project detection further down.
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/docs-only.sh"
 
 # Issue #473 (+ #454): Gate 5's vitest exit-code judgement, sourced as a library
 # so the fail-closed contract is unit-testable without executing this hook.
-source "${AUDIT_SCRIPT_DIR}/lib/test-failure.sh"
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/test-failure.sh"
 
 # Issue #477: Gate 2's jscpd config probe and outcome classification, same reason.
-source "${AUDIT_SCRIPT_DIR}/lib/jscpd-run.sh"
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/jscpd-run.sh"
 
 # Issue #476: Gate 11's sprint-gate.sh resolution chain and decision translation.
-source "${AUDIT_SCRIPT_DIR}/lib/sprint-gate-report.sh"
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/sprint-gate-report.sh"
 
 # Issue #523: Gate 5's Python coverage parsing and threshold verdict. The old
 # `grep -o '[0-9]*%'` never matched --format=total's bare number, so the 80%
 # branch never ran; sourced as a library so the fail-closed contract is
 # unit-testable without executing this hook.
-source "${AUDIT_SCRIPT_DIR}/lib/coverage-total.sh"
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/coverage-total.sh"
 
 # Issue #399: Python smart test selection — strategy decision + related-test
 # lookup, kept in a library so the truth table and the path conventions are
 # unit-testable without executing this hook.
-source "${AUDIT_SCRIPT_DIR}/lib/python-test-selection.sh"
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/python-test-selection.sh"
 
 # Issue #534: incremental Python type-check for the pre-commit python branch —
 # staged-only mypy (fast) that complements python.sh's CI-aligned full pass.
 # Kept in a library so the exit-code capture and scope handling are unit-testable.
-source "${AUDIT_SCRIPT_DIR}/lib/python-incremental-typecheck.sh"
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/python-incremental-typecheck.sh"
 
 # Read max_duration_ms from .xp-gate-config.json (default 7200000 = 2 hours)
 _MAX_DURATION_MS=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('${PROJECT_ROOT_FOR_AUDIT}/.xp-gate-config.json','utf8'));console.log((c.audit&&c.audit.max_duration_ms)||7200000);}catch(e){console.log(7200000);}" 2>/dev/null || echo "7200000")
@@ -251,6 +358,104 @@ _MAX_DURATION_MS=$(node -e "try{const c=JSON.parse(require('fs').readFileSync('$
 # Issue #370: delegates to now_ms() — node-preferred, regex-validated, cross-platform
 gate_start_ms() {
   now_ms
+}
+
+# ---------------------------------------------------------------------------
+# #537: per-language coverage classification.
+#
+# A gate that SKIPs tells the reader nothing on its own — "documentation
+# project", "tool not installed" and "nothing changed" are wildly different
+# facts that used to collapse into one word. A PowerShell-primary repo could
+# therefore look fully covered while 3.3k lines were measured by nothing.
+#
+# classify_coverage_reason REASON GATE_STATUS
+#   -> covered | not_applicable | no_changes | tool_missing | unknown
+#
+# FAIL CLOSED: an unrecognised reason is `unknown`, never `covered`. `covered`
+# is reachable ONLY by a gate that actually passed (PASS / WARN /
+# PASS_WITH_WARNINGS) with no skip reason attached.
+# ---------------------------------------------------------------------------
+classify_coverage_reason() {
+  local reason="${1:-}"
+  local gate_status="${2:-}"
+
+  case "$reason" in
+    documentation_project)        echo "not_applicable" ;;
+    architecture_skip_exemption)  echo "not_applicable" ;;
+    no_source_files_changed)      echo "no_changes" ;;
+    # Gate 4 names the same concept "no_matching_files_changed"; Gate 3/6 use
+    # the shorter form. Both mean "the tool exists, nothing to look at".
+    no_matching_files_changed)    echo "no_changes" ;;
+    tool_missing|tool_not_installed|no_powershell_tool|no_archlint_detector|checker_not_found)
+                                  echo "tool_missing" ;;
+    # archlint / import-linter / arch-go / Java arch tests exist as concepts but
+    # this repo carries no config for the language, so nothing was measured.
+    architecture_not_configured)  echo "tool_missing" ;;
+    # Gate 4's checker ran but crashed. Not covered, not "tool missing" — the
+    # measurement was attempted and failed, so the honest answer is unknown.
+    checker_execution_error)      echo "unknown" ;;
+    "")
+      case "$gate_status" in
+        PASS|WARN|PASS_WITH_WARNINGS|PASSED) echo "covered" ;;
+        *) echo "unknown" ;;
+      esac
+      ;;
+    *) echo "unknown" ;;
+  esac
+}
+
+# #537: record where the language key set came from. PROJECT_LANGS is derived
+# from the CURRENTLY CHANGED files, not from a static inventory of the repo, so
+# a docs-only commit legitimately yields an empty set. Reporting the matrix
+# without this provenance would repeat the sin the matrix exists to fix.
+resolve_languages_source() {
+  local override_langs="${1:-}"
+  local config_langs="${2:-}"
+  local resolved_langs="${3:-}"
+  if [ -n "$override_langs" ]; then
+    echo "override"
+  elif [ -n "$config_langs" ]; then
+    echo "config"
+  elif [ -n "$resolved_langs" ]; then
+    echo "changed_files"
+  else
+    echo "none"
+  fi
+}
+
+# #537: resolve Gate 6's reason for ONE language.
+#
+# Reads the flattened GATE_6_LANG_REASONS ("lang=reason,lang=reason") because
+# the associate array that produced it is function-local to the gate and
+# invisible to generate_quality_report().
+#
+# The scalar GATE_6_REASON is a SUMMARY across languages and must NOT be used
+# as a per-language fallback when per-language detail exists: with langs
+# "typescript iac" where only iac lacks a detector, the scalar reads
+# no_archlint_detector and would relabel typescript — the exact language
+# archlint had just measured. A real probe run exposed this:
+#   langs=[typescript iac] reasons=[iac=no_archlint_detector]
+#
+# So: an explicit pair wins; otherwise there is no skip reason for this
+# language, and "no reason" + PASS status is precisely what `covered` means.
+# The scalar only speaks for every language when there is no detail at all
+# (config-missing / bash<4 paths).
+coverage_g6_reason_for() {
+  local lang="${1:-}"
+  local detail="${GATE_6_LANG_REASONS:-}"
+  local scalar="${GATE_6_REASON:-}"
+  local pairs=",${detail},"
+  local reason=""
+  case "$pairs" in
+    *",${lang}="*)
+      reason="${pairs#*",${lang}="}"
+      reason="${reason%%,*}"
+      ;;
+  esac
+  if [ -z "$reason" ] && [ -z "$detail" ] && [ -n "$scalar" ]; then
+    reason="$scalar"
+  fi
+  echo "$reason"
 }
 
 # Audit helper — records gate execution to .xp-gate/audit.jsonl
@@ -267,15 +472,32 @@ record_gate_audit() {
   local detail="${6:-}"
   local end_ms
   end_ms=$(now_ms)
-  local duration_ms=$((end_ms - start_ms))
-  if [ "$duration_ms" -lt 0 ] 2>/dev/null; then
-    duration_ms=0
+  # REQ-B: sanitize BEFORE subtracting. A poisoned start (empty -> arithmetic
+  # 0, or a seconds-unit value from an old code path) used to survive as an
+  # epoch-sized duration_ms that only the anomaly flag papered over. Now the
+  # record carries null + reason so every consumer can exclude it honestly.
+  local clean_start duration_reason=""
+  clean_start=$(sanitize_start "$start_ms")
+  local duration_ms
+  if [ "$clean_start" = "null" ]; then
+    duration_ms="null"
+    duration_reason="poisoned_start_ms"
+  else
+    duration_ms=$((end_ms - clean_start))
+    if [ "$duration_ms" -lt 0 ] 2>/dev/null; then
+      duration_ms="null"
+      duration_reason="clock_skew"
+    fi
   fi
 
   # Issue #370: detect anomalous duration (poisoned timestamp arithmetic)
   local duration_anomaly_flag=""
-  if [ "$duration_ms" -gt "$_MAX_DURATION_MS" ] 2>/dev/null; then
+  if [ "$duration_ms" != "null" ] && [ "$duration_ms" -gt "$_MAX_DURATION_MS" ] 2>/dev/null; then
     duration_anomaly_flag="--duration-anomaly true"
+  fi
+  local duration_reason_flag=""
+  if [ -n "$duration_reason" ]; then
+    duration_reason_flag="--duration-reason $duration_reason"
   fi
 
   # Determine gate result: PASS or FAIL based on status variable
@@ -286,13 +508,14 @@ record_gate_audit() {
 
   # Fire-and-forget: audit must never block the commit
   {
-    npx tsx "${PROJECT_ROOT_FOR_AUDIT}/src/npm-package/lib/gate-audit.ts" record \
+    run_tsx "${PROJECT_ROOT_FOR_AUDIT}/src/npm-package/lib/gate-audit.ts" record \
       --gate-id "$gate_id" \
       --gate-name "$gate_name" \
       --passed "$gate_result" \
       --issues-found "$issues_found" \
       --duration-ms "$duration_ms" \
       $duration_anomaly_flag \
+      $duration_reason_flag \
       --trigger commit \
       ${detail:+--detail "$detail"} \
       2>/dev/null
@@ -511,6 +734,14 @@ MIRROR_PATH_FILTER='^src/npm-package/'
 DASHBOARD_PATH_FILTER='^dashboard/'
 RAW_CHANGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
 CHANGED_FILES=$(printf '%s\n' "$RAW_CHANGED_FILES" | grep -v "$MIRROR_PATH_FILTER" | grep -v "$DASHBOARD_PATH_FILTER" || true)
+
+# REQ-F2: one commit-level docs-only verdict, computed once and reused by the
+# heavy gates (2/5/9/12). Light gates never consult it — a secret in a README
+# is still a secret.
+DOCS_ONLY_COMMIT=false
+if printf '%s\n' "$CHANGED_FILES" | detect_docs_only_commit | grep -q '^true$'; then
+  DOCS_ONLY_COMMIT=true
+fi
 
 if [ -z "$RAW_CHANGED_FILES" ]; then
   echo "No files changed. Skipping gates."
@@ -1005,14 +1236,24 @@ fi
 # ============================================================================
  2>&1 echo ""
  2>&1 echo "→ Gate 1: Code Quality (static analysis + linting)..."
-if ! any_changed_files_match "\.(ts|tsx|js|jsx|py|go|java|kt|cpp|c|swift|m|mm|dart|sh)$" "\.ps1$" "\.psm1$" "\.ya?ml$" "\.json$" "Dockerfile" "\.tf$"; then
-  echo "✅ PASSED - No code files changed, skipping lint."
-else
+# REQ-B: the start stamp is taken OUTSIDE the branches below. It used to be
+# assigned only on the lint path, so every skipped Gate 1 recorded an empty
+# GATE_1_START -> duration_ms=null with reason=poisoned_start_ms. That null is
+# honest but it answers the wrong question: those commits never ran the gate, so
+# the log should say SKIP, not "measurement failed".
 GATE_1_START=$(gate_start_ms)
-
+GATE_1_STATUS="PASS"
+GATE_1_DETAIL=""
+if ! any_changed_files_match "\.(ts|tsx|js|jsx|py|go|java|kt|cpp|c|swift|m|mm|dart|sh)$" "\.ya?ml$" "\.json$" "Dockerfile" "\.tf$"; then
+  echo "✅ PASSED - No code files changed, skipping lint."
+  GATE_1_STATUS="SKIP"
+  GATE_1_DETAIL="no_matching_files"
+else
 if [ "$PROJECT_LANG" = "documentation-only" ]; then
   # Documentation-only project - skip static analysis
   echo "⏭️  SKIPPED - Code quality (documentation project)."
+  GATE_1_STATUS="SKIP"
+  GATE_1_DETAIL="documentation_project"
   
 else
   for CURRENT_LANG in $PROJECT_LANGS; do
@@ -1061,7 +1302,7 @@ else
       ; source "${AUDIT_SCRIPT_DIR}/lib/typecheck.sh" && run_typescript_typecheck )
     TS_CHECK_EXIT=$?
   else
-    source "${AUDIT_SCRIPT_DIR}/lib/typecheck.sh"
+    source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/typecheck.sh"
     run_typescript_typecheck
     TS_CHECK_EXIT=$?
   fi
@@ -1529,57 +1770,6 @@ else
   fi
     ;;
 
-    powershell)
-      # v2026-10-16/17: fail-closed PowerShell branch (mirrors java). The
-      # adapter crosses SKIP/WARN reasons as stdout "XP_G1_REASON: ..." lines
-      # (a subshell cannot export env into this process). Verdict mapping:
-      #   exit 0 + reason   -> WARN (counts in the denominator - never a
-      #                        silent PASS: engine/module missing, scope file
-      #                        empty, or a scope entry missing from disk)
-      #   exit 0 + no reason -> PASS (product-scope PSSA ran clean)
-      #   non-zero          -> BLOCK (PSSA findings; exit 1)
-      ADAPTER_FILE=$(resolve_adapter_path "$CURRENT_LANG")
-      if [ -z "$ADAPTER_FILE" ] || ! source "$ADAPTER_FILE" 2>/dev/null; then
-        echo "⚠️  WARN - PowerShell adapter not found (code quality NOT verified)"
-        GATE_1_STATUS="WARN"
-        GATE_1_DETAIL="powershell: adapter missing"
-      else
-        PS_G1_EXIT=0
-        # `|| PS_G1_EXIT=$?` (not a bare assignment): under a set -e consumer
-        # a non-zero verdict would abort the host hook before the mapping.
-        PS_G1_OUTPUT=$(run_static_analysis 2>&1) || PS_G1_EXIT=$?
-        # Collect ALL reason lines (R6 R3: head -1 truncated diagnostics when
-        # several scope entries were missing at once); joined into one detail.
-        PS_G1_REASON=$(printf '%s\n' "$PS_G1_OUTPUT" | sed -n 's/^XP_G1_REASON: //p' | paste -sd ';' -)
-        if [ -n "$PS_G1_REASON" ]; then
-          # `|| true`: when every line matched, grep exits 1 and the assignment
-          # would abort a set -e consumer (same trap class as AGENTS trap 12).
-          PS_G1_OUTPUT=$(printf '%s\n' "$PS_G1_OUTPUT" | grep -v '^XP_G1_REASON: ' || true)
-        fi
-        [ -n "$PS_G1_OUTPUT" ] && echo "$PS_G1_OUTPUT" | head -40
-        case "$PS_G1_EXIT" in
-          0)
-            if [ -n "$PS_G1_REASON" ]; then
-              echo "⚠️  WARN - PowerShell code quality NOT verified ($PS_G1_REASON)"
-              GATE_1_STATUS="WARN"
-              GATE_1_DETAIL="powershell: $PS_G1_REASON"
-            else
-              echo "✅ PASSED - PowerShell code quality (PSScriptAnalyzer, product scope)."
-            fi
-            ;;
-          1)
-            echo "❌ BLOCKED - PowerShell static analysis violations (fix them; Pester test files are outside the product analysis scope by design)"
-            exit 1
-            ;;
-          *)
-            echo "⚠️  WARN - PowerShell code quality NOT verified (unexpected verdict $PS_G1_EXIT)"
-            GATE_1_STATUS="WARN"
-            GATE_1_DETAIL="powershell: ${PS_G1_REASON:-unexpected verdict $PS_G1_EXIT}"
-            ;;
-        esac
-      fi
-      ;;
-
     *)
       # Route to appropriate adapter for other languages
       ADAPTER_FILE=$(resolve_adapter_path "$CURRENT_LANG")
@@ -1621,7 +1811,6 @@ GATE_1_TOOL="${PROJECT_LANGS}"
 # trail via the S2 detail plumbing so a WARN verdict is diagnosable, not
 # silent. WARN stays IN the scoring denominator (Delphi round-2 A-MAJOR-1).
 record_gate_audit "gate-1" "code-quality" "$GATE_1_STATUS" "0" "$GATE_1_START" "${GATE_1_DETAIL:-}"
-
 # ============================================================================
 # GATE 2: Duplicate Code Detection (NEW gate)
 # Uses jscpd, or similar tools, specific to language
@@ -1631,8 +1820,14 @@ record_gate_audit "gate-1" "code-quality" "$GATE_1_STATUS" "0" "$GATE_1_START" "
 GATE_2_START=$(gate_start_ms)
 GATE_2_STATUS="PASS"
 
-if [ "$PROJECT_LANG" = "documentation-only" ]; then
-echo "⏭️  SKIPPED - Duplicate code (documentation project)."
+if [ "$PROJECT_LANG" = "documentation-only" ] || [ "$DOCS_ONLY_COMMIT" = true ]; then
+echo "⏭️  SKIPPED - Duplicate code (documentation-only ${DOCS_ONLY_COMMIT:+commit})."
+GATE_2_STATUS="SKIP"
+ # GATE_2_DETAIL feeds record_gate_audit's detail field. The previous
+ # GATE_2_REASON was assigned and never read by anything, which is worse than
+ # useless: it looks like the skip reason reaches the audit journal when it does
+ # not (no set -u, so nothing complained).
+ GATE_2_DETAIL="docs_only_change"
 
 else
   for CURRENT_LANG in $PROJECT_LANGS; do
@@ -1740,7 +1935,7 @@ else
 fi
 # Set at the top of this gate; a branch may already have marked it SKIP (#477). The
 # audit must record what happened, not what the gate defaults to.
-record_gate_audit "gate-2" "duplicate-code" "$GATE_2_STATUS" "0" "$GATE_2_START"
+record_gate_audit "gate-2" "duplicate-code" "$GATE_2_STATUS" "0" "$GATE_2_START" "${GATE_2_DETAIL:-}"
 
 # ============================================================================
 # GATE 3: Cyclomatic Complexity Check
@@ -1769,8 +1964,10 @@ source "$GATE_DIR/gate-4.sh"
  2>&1 echo "→ Gate 5: Tests & coverage..."
 GATE_5_START=$(gate_start_ms)
 
-if [ "$PROJECT_LANG" = "documentation-only" ]; then
-  echo "✅ PASSED - Skipped (documentation project)."
+if [ "$PROJECT_LANG" = "documentation-only" ] || [ "$DOCS_ONLY_COMMIT" = true ]; then
+  echo "⏭️  SKIPPED - Tests & coverage (documentation-only commit — no code changed to test)."
+  GATE_5_STATUS="SKIP"
+  GATE_5_DETAIL="docs_only_change"
 
 else
   # ========================================================================
@@ -2847,7 +3044,7 @@ else
   fi
 fi
 GATE_5_STATUS="PASS"
-record_gate_audit "gate-5" "tests-coverage" "$GATE_5_STATUS" "0" "$GATE_5_START"
+record_gate_audit "gate-5" "tests-coverage" "$GATE_5_STATUS" "0" "$GATE_5_START" "${GATE_5_DETAIL:-}"
 
 # ============================================================================
 # GATE 6: Architecture & Tech Debt (Combines Old Gate 8 - Boy Scout and Gate 9 - Architecture)
@@ -2878,6 +3075,15 @@ else
 
   # Check if architecture config exists (use $PROJECT_ROOT — hook may have cd'd to a subdir via ARCH-03)
   if [ -f "$PROJECT_ROOT/architecture.yaml" ] || [ -f "$PROJECT_ROOT/.architecturerc" ] || [ -f "$PROJECT_ROOT/.archlint.yaml" ]; then
+    # #537: per-language reason bookkeeping. Gate 3/4 are single-language gates
+    # and get away with one scalar reason; Gate 6 loops, so a scalar would lose
+    # information ("TS passed, PS has no detector" cannot be one string).
+    # Bash 4 associative array, with a scalar aggregate for the legacy field.
+    GATE_6_REASON=""
+    GATE_6_LANG_REASONS=""
+    if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+      declare -A GATE_6_REASON_BY_LANG=()
+    fi
     # Different architecture tools per language
     for CURRENT_LANG in $PROJECT_LANGS; do
     case "$CURRENT_LANG" in
@@ -2923,6 +3129,8 @@ else
          else
            echo "     ✅ TypeScript architecture validation completed (zero-tolerance mode). no baseline found."
          fi
+         # #537: archlint actually ran here, so there is no skip reason. The
+         # matrix reads an absent reason + PASS status as `covered`.
          ;;
       "python")
         # detect any import-linter carrier (incl. pyproject.toml [tool.importlinter])
@@ -2948,6 +3156,12 @@ else
         else
           echo "     ℹ️  No import-linter config found (.import-linter.yml/.importlinter/[tool.importlinter]) - skipping"
           echo "     ⏭️  SKIPPED - Python architecture validation (no config)"
+          # #537: no config means Python architecture was NOT measured. Without
+          # this the matrix would call it `covered` simply because the branch
+          # recorded nothing — the exact false-confidence the matrix prevents.
+          if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+            GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_not_configured"
+          fi
         fi
         ;;
       "go")
@@ -2964,6 +3178,10 @@ else
         else
           echo "     ℹ️  No arch-go.yaml found - skipping Go architecture"
           echo "     ⏭️  SKIPPED - Go architecture validation (no config)"
+          # #537: same reasoning as the Python branch above.
+          if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+            GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_not_configured"
+          fi
         fi
         ;;
       "java")
@@ -2980,19 +3198,63 @@ else
         else
           echo "     ℹ️  No architecture test files found - skipping"
           echo "     ⏭️  SKIPPED - Architecture validation (no tests)"
+          # #537: no test files means Java architecture was NOT measured.
+          if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+            GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_not_configured"
+          fi
         fi
         ;;
       *)
         echo "     ℹ️  Architecture validation not configured for $CURRENT_LANG"
         echo "     ⏭️  SKIPPED - Architecture validation (not configured for $CURRENT_LANG)"
+        # #537: archlint ships no detector for this language. Say so in a way
+        # the quality report can read, instead of leaving the dimension silent.
+        if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+          GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="no_archlint_detector"
+        fi
         ;;
     esac
     done  # end for CURRENT_LANG (architecture)
+
+    # #537: fold the per-language reasons into the legacy scalar. Homogeneous
+    # reasons survive as-is; a genuine mix becomes the `mixed` sentinel, which
+    # classify_coverage_reason() maps to `unknown` (fail closed) rather than
+    # pretending one language's verdict covers all of them.
+    #
+    # `declare -A` inside a function is FUNCTION-LOCAL in bash, and the report
+    # is written by generate_quality_report() — a different function. So the
+    # assoc array is flattened into this global string, which the report parses.
+    # (Found by running the hook: the matrix reported tool_missing for
+    # typescript because the lookup saw an empty array.)
+    GATE_6_LANG_REASONS=""
+    _g6_seen=""
+    _g6_mixed=0
+    for _g6_lang in $PROJECT_LANGS; do
+      _g6_r=""
+      if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+        _g6_r="${GATE_6_REASON_BY_LANG[$_g6_lang]:-}"
+      fi
+      if [ -n "$_g6_r" ]; then
+        GATE_6_LANG_REASONS="${GATE_6_LANG_REASONS:+$GATE_6_LANG_REASONS,}${_g6_lang}=${_g6_r}"
+        if [ -z "$_g6_seen" ]; then
+          _g6_seen="$_g6_r"
+        elif [ "$_g6_seen" != "$_g6_r" ]; then
+          _g6_mixed=1
+        fi
+      fi
+    done
+    if [ "$_g6_mixed" = "1" ]; then
+      GATE_6_REASON="mixed"
+    else
+      GATE_6_REASON="$_g6_seen"
+    fi
   else
     # Architecture config is REQUIRED — BLOCK if missing
     if [ -f "$PROJECT_ROOT/.architecture-skip" ]; then
       echo "     ⚠️  Architecture config missing but .architecture-skip present — allowed to skip"
       echo "     ⏭️  SKIPPED - Architecture validation (.architecture-skip exemption)"
+      # #537: an explicit exemption is "not applicable", not "tool missing".
+      GATE_6_REASON="architecture_skip_exemption"
     else
       echo ""
       echo "❌ ARCHITECTURE CONFIG MISSING - COMMIT BLOCKED"
@@ -3109,7 +3371,14 @@ else
     echo "     ⏭️  SKIPPED - Boy Scout Rule (not available in project)"
   fi
 fi
-GATE_6_STATUS="PASS"
+# A PASS here must mean 'the checks ran and found nothing'. The two
+# branches above print 'SKIPPED - not configured/available'; stamping PASS
+# after them turned 'nothing was checked' into a scored success.
+if [ -n "${GATE_6_STATUS:-}" ]; then
+  : # a branch that really ran already decided the verdict
+else
+  GATE_6_STATUS="SKIP"
+fi
 record_gate_audit "gate-6" "architecture-boy-scout" "$GATE_6_STATUS" "${BS_BLOCKED:-0}" "$GATE_6_START"
 
 # ============================================================================
@@ -3208,7 +3477,17 @@ GATE_9_TS_STATUS="SKIP"
 GATE_9_JAVA_STATUS="SKIP"
 GATE_9_STATUS="SKIP"
 
-if [ -f "package.json" ] && [ -f "tsconfig.json" ]; then
+if [ "$DOCS_ONLY_COMMIT" = true ]; then
+  # REQ-F2: tsc cannot observe a markdown edit. The commit-level docs-only
+  # verdict was already consulted by Gates 2 and 5 but not here, so a pure docs
+  # commit still paid ~11s for a compile that had nothing new to compile.
+  # Recorded as SKIP (not PASS): nothing was verified.
+  GATE_9_TS_STATUS="SKIP"
+  GATE_9_JAVA_STATUS="SKIP"
+  echo "   ⏭️  SKIPPED - Build integrity (docs-only commit)."
+elif [ "$PROJECT_LANG" = "documentation-only" ]; then
+  echo "   ⏭️  SKIPPED - Build integrity (documentation project)."
+elif [ -f "package.json" ] && [ -f "tsconfig.json" ]; then
   GATE_9_SCRIPT=""
   if [ -f "$PROJECT_ROOT/src/build-integrity/gate-10.ts" ]; then
     GATE_9_SCRIPT="$PROJECT_ROOT/src/build-integrity/gate-10.ts"
@@ -3309,16 +3588,20 @@ echo ""
 # v0.14.3+ (Issue #312): Skip if no code files changed
 # v0.18.5 (Issue #397): Fix gate status variable collision — SAST now sets GATE_10_STATUS
 # ============================================================================
-if any_changed_files_match "\.(ts|tsx|js|jsx|py|go|java|kt|cpp|c|swift|m|dart|sh)$" "\.ps1$" "\.psm1$"; then
+if any_changed_files_match "\.(ts|tsx|js|jsx|py|go|java|kt|cpp|c|swift|m|dart|sh)$"; then
   if [ -f "$GATE_DIR/gate-10.sh" ]; then
     source "$GATE_DIR/gate-10.sh"
   else
     echo "⏭️  SKIPPED - SAST (gate-10.sh not found)"
     GATE_10_STATUS="SKIP"
+    GATE_10_REASON="gate_script_missing"
   fi
 else
-  echo "✅ PASSED - No code files changed, skipping SAST scan."
-  GATE_10_STATUS="PASS"
+  echo "⏭️  SKIPPED - No code files changed, skipping SAST scan."
+  # #536: "nothing to scan" is NOT "scanned and clean". Record SKIP with a
+  # reason so the quality report never renders this path as a PASS claim.
+  GATE_10_STATUS="SKIP"
+  GATE_10_REASON="no_code_files_changed"
 fi
 # ============================================================================
 
@@ -3440,6 +3723,11 @@ generate_quality_report() {
   # non-passing gates INSIDE the effective denominator only -- a skipped gate
   # is out of scope, not a failure.
   local gate_status gate_default
+  # #536: a WARN means the check could not run (typically tool_not_installed)
+  # -- degraded coverage, kept in the denominator but flagged separately so a
+  # degraded gate is never confused with a real PASS.
+  local DEGRADED_COUNT=0
+  local DEGRADED_JSON=""
   for gate in 1 2 3 4 5 6 7 8 9 10 11 12; do
     local status_var="GATE_${gate}_STATUS"
     # Default mirrors the JSON report rendering below EXACTLY (gates 1-11
@@ -3447,12 +3735,15 @@ generate_quality_report() {
     # applicable" and must render and score identically. A previous scoring
     # default of FAIL produced self-contradictory reports -- the gate showed
     # PASS in JSON but scored as FAIL (#507 Delphi round-1 A-MAJOR-2).
-    if [ "$gate" -eq 12 ]; then gate_default="WARN"; else gate_default="PASS"; fi
+    # Default direction is "did not run", never "passed": an unassigned status
+    # is a gate that never reached a verdict, and scoring it PASS both claims a
+    # success that did not happen and hides the gap in the effective rate.
+    if [ "$gate" -eq 12 ]; then gate_default="WARN"; else gate_default="SKIP"; fi
     gate_status="${!status_var:-$gate_default}"
     case "$gate_status" in
       PASS) PASSED_COUNT=$((PASSED_COUNT + 1)) ;;
       SKIP) SKIP_COUNT=$((SKIP_COUNT + 1)) ;;
-      WARN) WARN_COUNT=$((WARN_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)) ;;
+      WARN) WARN_COUNT=$((WARN_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)); DEGRADED_COUNT=$((DEGRADED_COUNT + 1)); DEGRADED_JSON="${DEGRADED_JSON:+$DEGRADED_JSON, }\"gate${gate}\"";;
       *) NONPASS_COUNT=$((NONPASS_COUNT + 1)) ;;
     esac
   done
@@ -3520,6 +3811,37 @@ generate_quality_report() {
   local REPORT_FILE="${STATUS_DIR}/${BRANCH}.json"
   mkdir -p "$(dirname "$REPORT_FILE")"
 
+  # ── #537: per-language coverage matrix ───────────────────────────────────────
+  # Answers "was this dimension actually measured for this language?" instead of
+  # letting every SKIP read as a pass. Built by whitelist splicing (the same
+  # technique as DEGRADED_JSON above) rather than jq, because jq is an OPTIONAL
+  # dependency here (see the `command -v jq` guard earlier in this file) and a
+  # missing jq must not silently cost us the whole matrix.
+  #
+  # Safety: every spliced value is one of the five enum literals below — no
+  # quotes, backslashes or newlines can reach the JSON. Language names are
+  # whitelisted too, and a name that fails the whitelist is reported in
+  # coverageWarnings instead of being silently dropped.
+  local COVERAGE_MATRIX_JSON=""
+  local COVERAGE_WARNINGS_JSON=""
+  local _cm_lang _cm_g3 _cm_g4 _cm_g6 _cm_entry
+  for _cm_lang in $PROJECT_LANGS; do
+    if ! echo "$_cm_lang" | grep -qE '^[a-z][a-z0-9+]*$'; then
+      COVERAGE_WARNINGS_JSON="${COVERAGE_WARNINGS_JSON:+$COVERAGE_WARNINGS_JSON, }\"unsupported_language_name\""
+      continue
+    fi
+    _cm_g3=$(classify_coverage_reason "${GATE_3_REASON:-}" "${GATE_3_STATUS:-PASS}")
+    _cm_g4=$(classify_coverage_reason "${GATE_4_REASON:-}" "${GATE_4_STATUS:-PASS}")
+    # Gate 6 reason for this language — extracted so the rule is testable
+    # rather than inlined (see coverage_g6_reason_for below).
+    _cm_g6_reason=$(coverage_g6_reason_for "$_cm_lang")
+    _cm_g6=$(classify_coverage_reason "$_cm_g6_reason" "${GATE_6_STATUS:-SKIP}")
+    _cm_entry="\"${_cm_lang}\": {\"gate3_complexity\": \"${_cm_g3}\", \"gate4_principles\": \"${_cm_g4}\", \"gate6_architecture\": \"${_cm_g6}\"}"
+    COVERAGE_MATRIX_JSON="${COVERAGE_MATRIX_JSON:+$COVERAGE_MATRIX_JSON, }${_cm_entry}"
+  done
+  local LANGUAGES_SOURCE
+  LANGUAGES_SOURCE=$(resolve_languages_source "${_RESOLVED_LANG_OVERRIDE:-}" "${_CONFIG_LANGS:-}" "${PROJECT_LANGS:-}")
+
   cat > "$REPORT_FILE" << ENDJSON
 {
   "reportVersion": "2.0",
@@ -3531,11 +3853,16 @@ generate_quality_report() {
     "gatesPassed": $PASSED_COUNT,
     "gatesTotal": $TOTAL_GATES,
     "gatesSkipped": $SKIP_COUNT,
+    "gatesDegraded": $DEGRADED_COUNT,
+    "degradedGates": [$DEGRADED_JSON],
     "gatesEffective": $EFFECTIVE_TOTAL,
     "effectivePassRate": $EFFECTIVE_PASS_RATE_JSON,
     "score": $SCORE_JSON,
     "verdict": "$VERDICT"
   },
+  "languagesSource": "${LANGUAGES_SOURCE}",
+  "coverageMatrix": {${COVERAGE_MATRIX_JSON}},
+  "coverageWarnings": [${COVERAGE_WARNINGS_JSON}],
   "gates": {
     "gate1_static_analysis": {
       "name": "Code Quality (Static + Lint + Shell)",
@@ -3544,12 +3871,13 @@ generate_quality_report() {
     },
     "gate2_dup_code": {
       "name": "Duplicate Code",
-      "status": "${GATE_2_STATUS:-PASS}",
+      "status": "${GATE_2_STATUS:-SKIP}",
       "metric": "similarity <= 5%"
     },
     "gate3_complexity": {
       "name": "Cyclomatic Complexity",
       "status": "${GATE_3_STATUS:-PASS}",
+      "reason": "${GATE_3_REASON:-}",
       "threshold": "${CCN_THRESHOLD:-5}",
       "blockThreshold": "${CCN_THRESHOLD:-5}",
       "warnings": ${CC_WARNINGS:-0}
@@ -3557,6 +3885,7 @@ generate_quality_report() {
     "gate4_principles": {
       "name": "Clean Code + SOLID",
       "status": "${GATE_4_STATUS:-PASS}",
+      "reason": "${GATE_4_REASON:-}",
       "warnings": ${WARNING_COUNT:-0}
     },
     "gate5_tests": {
@@ -3568,13 +3897,15 @@ generate_quality_report() {
     },
     "gate6_arch_boyscout": {
       "name": "Architecture + Boy Scout Rule",
-      "status": "${GATE_6_STATUS:-PASS}",
+      "status": "${GATE_6_STATUS:-SKIP}",
+      "reason": "${GATE_6_REASON:-}",
       "boyScoutPassed": $BS_PASSED,
       "boyScoutBlocked": $BS_BLOCKED
     },
     "gate7_iac_security": {
       "name": "IaC Security Scanning",
       "status": "${GATE_7_STATUS:-PASS}",
+      "scanned_files": ${GATE_7_SCANNED_FILES:-0},
       "tools": "checkov, hadolint, kube-score, tflint"
     },
     "gate8_secret_scanning": {
@@ -3590,6 +3921,8 @@ generate_quality_report() {
     "gate10_sast": {
       "name": "SAST Security Scan",
       "status": "${GATE_10_STATUS:-PASS}",
+      "reason": "${GATE_10_REASON:-}",
+      "scanned_files": ${GATE_10_SCANNED_FILES:-0},
       "tool": "semgrep"
     },
     "gate11_sprint_flow": {
@@ -3617,11 +3950,11 @@ ENDJSON
   # ── History append (unchanged — append-only for trend) ────────────────────────────
   local GATES_JSON="{"
   GATES_JSON="${GATES_JSON}\"gate1\":{\"status\":\"${GATE_1_STATUS:-PASS}\",\"name\":\"Code Quality\"},"
-  GATES_JSON="${GATES_JSON}\"gate2\":{\"status\":\"${GATE_2_STATUS:-PASS}\",\"name\":\"Duplicate Code\"},"
+  GATES_JSON="${GATES_JSON}\"gate2\":{\"status\":\"${GATE_2_STATUS:-SKIP}\",\"name\":\"Duplicate Code\"},"
   GATES_JSON="${GATES_JSON}\"gate3\":{\"status\":\"${GATE_3_STATUS:-PASS}\",\"name\":\"Complexity\",\"warnings\":${CC_WARNINGS:-0}},"
   GATES_JSON="${GATES_JSON}\"gate4\":{\"status\":\"${GATE_4_STATUS:-PASS}\",\"name\":\"Principles\",\"warnings\":${WARNING_COUNT:-0}},"
   GATES_JSON="${GATES_JSON}\"gate5\":{\"status\":\"${GATE_5_STATUS:-PASS}\",\"name\":\"Tests+Coverage\",\"coverage\":\"${COV_PCT}\"},"
-  GATES_JSON="${GATES_JSON}\"gate6\":{\"status\":\"${GATE_6_STATUS:-PASS}\",\"name\":\"Architecture+BoyScout\",\"bsBlocked\":${BS_BLOCKED}},"
+  GATES_JSON="${GATES_JSON}\"gate6\":{\"status\":\"${GATE_6_STATUS:-SKIP}\",\"name\":\"Architecture+BoyScout\",\"bsBlocked\":${BS_BLOCKED}},"
   GATES_JSON="${GATES_JSON}\"gate7\":{\"status\":\"${GATE_7_STATUS:-PASS}\",\"name\":\"IaC Security\"},"
   GATES_JSON="${GATES_JSON}\"gate8\":{\"status\":\"${GATE_8_STATUS:-PASS}\",\"name\":\"Secret Scanning\"},"
   GATES_JSON="${GATES_JSON}\"gate9\":{\"status\":\"${GATE_9_STATUS:-PASS}\",\"name\":\"Build Integrity\"},"
@@ -3638,11 +3971,11 @@ ENDJSON
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
   printf "  %-45s %s\n" "Gate 1: Code Quality" "${GATE_1_STATUS:-PASS}"
-  printf "  %-45s %s\n" "Gate 2: Duplicate Code" "${GATE_2_STATUS:-PASS}"
+  printf "  %-45s %s\n" "Gate 2: Duplicate Code" "${GATE_2_STATUS:-SKIP}"
   printf "  %-45s %s (warnings: ${CC_WARNINGS:-0})\n" "Gate 3: Complexity" "${GATE_3_STATUS:-PASS}"
   printf "  %-45s %s (warnings: ${WARNING_COUNT:-0})\n" "Gate 4: Principles" "${GATE_4_STATUS:-PASS}"
   printf "  %-45s %s (coverage: ${COV_PCT}%%)\n" "Gate 5: Tests + Coverage" "${GATE_5_STATUS:-PASS}"
-  printf "  %-45s %s\n" "Gate 6: Architecture + Boy Scout" "${GATE_6_STATUS:-PASS}"
+  printf "  %-45s %s\n" "Gate 6: Architecture + Boy Scout" "${GATE_6_STATUS:-SKIP}"
   printf "  %-45s %s\n" "Gate 7: IaC Security" "${GATE_7_STATUS:-PASS}"
   printf "  %-45s %s\n" "Gate 8: Secret Scanning" "${GATE_8_STATUS:-PASS}"
   printf "  %-45s %s\n" "Gate 9: Build Integrity" "${GATE_9_STATUS:-PASS}"

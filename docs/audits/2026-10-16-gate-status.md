@@ -239,4 +239,30 @@ Round-3 评审同时确认的成立项（不再改）：live/vendored 哈希一�
 `_powershell_path_array` 对空格/单引号正确转义、防回退机制存放于不同信任域
 （tracked 仓库）设计合理。
 
+### 7.8 第四次改写：xp-gate upstream 更新覆盖硬化（2026-10-20）
+
+xp-gate 升级（钩子文件 10-20 09:14 重写，pre-commit 173K→189K）把三个钩子
+文件整体替换为新 upstream 版——**一次合法更新同样能清零硬化**：新版吸收了
+#538 的 prune 思路与其余语言修复，但 PowerShell 加固全部缺席（upstream 尚未
+吸收 #537 的 scope PSSA / fail-closed powershell 分支）：`PS_G1_REASON`=0、
+`powershell)`=0、`\.ps1$` 谓词=0、gate-10 无 Windows semgrep 回退且文件清单
+无 ps1/psm1。若直接提交，Gate 1 将退回 skip-as-pass、Gate 10 退回不扫
+PowerShell。hooksPath 双写（repo+global）在此次更新中幸存——链路层判据有效。
+
+恢复流程（本次实际执行）：
+1. vendored 副本为基底（本仓 githooks/ 即权威硬化版）；
+2. diff 确认 upstream 实质增量仅 5 条 prune 路径（plugins/*/skills、
+   src/npm-package/*）+ #538 注释，全部合入 vendored；
+3. 新 pre-commit 重打三补丁（Gate 1 谓词 + powershell fail-closed 分支 +
+   Gate 10 谓词）、gate-10.sh 重打两补丁（APPDATA semgrep 回退 + ps1|psm1）；
+4. 三份重新 vendored（哈希一致）→ 探针复测（发现 20+18 / ParseError 拦截
+   rc=1+2 findings / 缺 scope 条目发 WARN reason / semgrep 回退命中
+   APPDATA 路径）→ 双引擎一致性套件 27/27 → 实弹提交。
+
+**教训**：upstream 更新场景下「文件内容（哈希）」判据**必然变红**——这是
+设计行为（vendored 是本仓权威）；恢复不是简单 `cp` 回去，而是「以 vendored
+为基、diff upstream、合入 upstream 真增量、重打 PowerShell 补丁」。防回退
+机制至此经受四种形态检验：内容回退（保 mtime）/ 文件删除 / hooksPath 断链 /
+upstream 更新覆盖。
+
 

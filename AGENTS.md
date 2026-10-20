@@ -1166,5 +1166,15 @@ if ($MyInvocation.InvocationName -ne '.') {
     文件头补 `.psm1` 盲区 note；AGENTS.md 补新产品脚本 checklist。
   - 测试数 753 → **757**（+3 边界一致性 + 1 钩子一致性；双引擎各 757/757）；
     产品范围 PSSA 维持 0。
+- 2026-10-20: **第四次改写——xp-gate upstream 更新覆盖硬化（防回退机制首次实战触发）**
+  - xp-gate 升级把三个钩子文件整体替换为新 upstream 版（pre-commit 173K→189K）：
+    新版吸收 #538 prune 与其余语言修复，但 PowerShell 加固清零（PS_G1_REASON /
+    powershell 分支 / ps1 谓词 / semgrep Windows 回退全缺席）——**合法更新与恶意
+    回退在内容层不可区分，一致性测试按设计变红**。hooksPath 双写在此次幸存。
+  - 恢复流程（审计 7.8）：以 vendored 为基 → diff 合入 upstream 真增量
+    （5 条 prune 路径 + #538 注释）→ 新 pre-commit 重打三补丁、gate-10 重打两补丁
+    → 重新 vendored → 探针复测（ParseError 拦截 rc=1 / 缺条目 WARN / semgrep 回退）
+    → 双引擎 27/27 → 实弹提交。**恢复 ≠ `cp` 回去：必须合并 upstream 增量，否则
+    下次更新把本仓独有的 PowerShell 支持再冲掉一次。**
 
 

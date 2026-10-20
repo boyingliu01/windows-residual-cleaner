@@ -69,6 +69,9 @@ _detect_pwsh() {
 # + project-injected entries from .xp-gate-powershell-prune-dirs (one dir per
 # line, relative to repo root). Without this, drill/scaffold scripts dilute
 # test discovery AND the coverage denominator (xp-gate issue #538).
+# 2026-10-20: merged upstream v0.19+ prune additions (plugins/*/skills and
+# src/npm-package/* — xp-gate's own repo layout; harmless no-ops elsewhere)
+# so the vendored copy stays a superset of the upstream discovery list.
 _find_powershell_files() {
   local name_pattern="$1"
   local prune_file=".xp-gate-powershell-prune-dirs"
@@ -84,6 +87,8 @@ _find_powershell_files() {
       args+=(-o -name "$dir")
     done < "$prune_file"
   fi
+  # Upstream v0.19+ additions (path-anchored, xp-gate-repo-specific).
+  args+=(-o -path './plugins/claude-code/skills' -o -path './plugins/opencode/skills' -o -path './plugins/qoder/skills' -o -path './src/npm-package/skills' -o -path './src/npm-package/plugins')
   args+=(")" -prune ")" -o "(" -type f -name "$name_pattern" -print ")")
   "${args[@]}" 2>/dev/null
 }
