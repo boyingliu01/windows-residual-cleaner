@@ -1176,5 +1176,13 @@ if ($MyInvocation.InvocationName -ne '.') {
     → 重新 vendored → 探针复测（ParseError 拦截 rc=1 / 缺条目 WARN / semgrep 回退）
     → 双引擎 27/27 → 实弹提交。**恢复 ≠ `cp` 回去：必须合并 upstream 增量，否则
     下次更新把本仓独有的 PowerShell 支持再冲掉一次。**
+  - **当晚第二波（审计 7.8.1）**：维护者在 `D:\projects\xp-gate` 活跃开发并多次
+    部署（部署保留 mtime——live 被覆盖后 mtime 显示旧值是指纹）；适配器（含
+    SC2034 disable）被吸收进 upstream（与 vendored 逐字节一致），但 pre-commit
+    三补丁未吸收且 live 被部署回滚，一致性测试双引擎各红 1 次（另有本会话校验
+    脚本路径替换 bug 自比自的假 match——**哈希核对以测试套件为准**）。恢复：
+    重打三补丁于 195K 新基座（顺带获得 upstream 的 Gate 5「没跑不许报 PASS」
+    修复）→ vendored 拷回 live → 27/27 → 实弹提交。**upstream 吸收 pre-commit
+    三补丁前，每次部署都可能再回滚，信号=一致性测试红，恢复=以 vendored 为权威。**
 
 

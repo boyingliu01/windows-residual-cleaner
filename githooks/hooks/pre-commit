@@ -341,6 +341,30 @@ source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/sprint-gate-report.sh"
 # unit-testable without executing this hook.
 source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/coverage-total.sh"
 
+# Coverage threshold, resolved ONCE for the whole run (#45: single source of
+# truth). It used to be assigned only inside the Python test branch, so a run
+# that skipped that branch (docs-only commit, non-Python project) had no value at
+# all — while the quality report printed a literal {"lines": 80, ...} that
+# disagreed with this repo's fail_under of 82. Resolving here means the pytest
+# invocations AND the report read the same number.
+_py_resolve_cov_threshold() {
+  local value=""
+  if [ -f pyproject.toml ]; then
+    value=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['tool']['coverage']['report']['fail_under'])" 2>/dev/null || true)
+    if [ -z "$value" ]; then
+      value=$(grep -oE '^fail_under *= *[0-9]+' pyproject.toml 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)
+    fi
+  fi
+  if [ -z "$value" ] && [ -f .coveragerc ]; then
+    value=$(grep -oE '^fail_under *= *[0-9]+' .coveragerc 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)
+  fi
+  case "$value" in
+    ''|*[!0-9]*) echo 80 ;;   # xp-gate generic default for repos that declare none
+    *) echo "$value" ;;
+  esac
+}
+PY_COV_FAIL_UNDER="$(_py_resolve_cov_threshold)"
+
 # Issue #399: Python smart test selection — strategy decision + related-test
 # lookup, kept in a library so the truth table and the path conventions are
 # unit-testable without executing this hook.
@@ -1244,7 +1268,7 @@ fi
 GATE_1_START=$(gate_start_ms)
 GATE_1_STATUS="PASS"
 GATE_1_DETAIL=""
-if ! any_changed_files_match "\.(ts|tsx|js|jsx|py|go|java|kt|cpp|c|swift|m|mm|dart|sh)$" "\.ya?ml$" "\.json$" "Dockerfile" "\.tf$"; then
+if ! any_changed_files_match "\.(ts|tsx|js|jsx|py|go|java|kt|cpp|c|swift|m|mm|dart|sh)$" "\.ps1$" "\.psm1$" "\.ya?ml$" "\.json$" "Dockerfile" "\.tf$"; then
   echo "✅ PASSED - No code files changed, skipping lint."
   GATE_1_STATUS="SKIP"
   GATE_1_DETAIL="no_matching_files"
@@ -1765,6 +1789,64 @@ else
         echo "⚠️  WARN - Java code quality NOT verified (unexpected verdict $JAVA_G1_EXIT)"
         GATE_1_STATUS="WARN"
         GATE_1_DETAIL="java: unexpected verdict $JAVA_G1_EXIT"
+        ;;
+    esac
+  fi
+    ;;
+
+    powershell)
+  # GATE 1 PowerShell: fail-closed branch (mirrors the java branch above).
+  # powershell.sh run_static_analysis contract:
+  #   exit 0 + "XP_G1_REASON: ..." stdout line -> WARN (IN the denominator)
+  #   exit 0, no reason                        -> PASS (real analysis ran clean)
+  #   exit 1 (findings)                        -> BLOCK the commit
+  # The reason crosses the command-substitution subshell as an stdout line
+  # (an export inside the adapter can NEVER reach this process); parse, then
+  # strip from display. ALL reason lines are aggregated (several scope
+  # entries may be missing at once) and the grep -v carries `|| true`
+  # because grep exits 1 when every line matched - a set -e consumer would
+  # otherwise abort on the assignment (AGENTS trap-12 class).
+  # Without this branch PowerShell commits fall into the generic *) branch,
+  # where a missing engine or findings map to non-blocking "SKIPPED" text
+  # (skip-as-pass; observed 2026-10-17 and again after the 2026-10-20
+  # upstream updates replaced the hook file twice).
+  ADAPTER_FILE=$(resolve_adapter_path "$CURRENT_LANG")
+  if [ -z "$ADAPTER_FILE" ] || ! source "$ADAPTER_FILE" 2>/dev/null; then
+    echo "⚠️  WARN - PowerShell adapter not found (code quality NOT verified)"
+    GATE_1_STATUS="WARN"
+    GATE_1_DETAIL="powershell: adapter missing"
+  else
+    PS_G1_EXIT=0
+    # `|| PS_G1_EXIT=$?` (not a bare assignment): under a set -e consumer
+    # a non-zero verdict would abort the host hook before the mapping.
+    PS_G1_OUTPUT=$(run_static_analysis 2>&1) || PS_G1_EXIT=$?
+    # Collect ALL reason lines (head -1 truncated diagnostics when several
+    # scope entries were missing at once); joined into one detail.
+    PS_G1_REASON=$(printf '%s\n' "$PS_G1_OUTPUT" | sed -n 's/^XP_G1_REASON: //p' | paste -sd ';' -)
+    if [ -n "$PS_G1_REASON" ]; then
+      # `|| true`: when every line matched, grep exits 1 and the assignment
+      # would abort a set -e consumer (same trap class as AGENTS trap 12).
+      PS_G1_OUTPUT=$(printf '%s\n' "$PS_G1_OUTPUT" | grep -v '^XP_G1_REASON: ' || true)
+    fi
+    [ -n "$PS_G1_OUTPUT" ] && echo "$PS_G1_OUTPUT" | head -40
+    case "$PS_G1_EXIT" in
+      0)
+        if [ -n "$PS_G1_REASON" ]; then
+          echo "⚠️  WARN - PowerShell code quality NOT verified ($PS_G1_REASON)"
+          GATE_1_STATUS="WARN"
+          GATE_1_DETAIL="powershell: $PS_G1_REASON"
+        else
+          echo "✅ PASSED - PowerShell code quality (PSScriptAnalyzer, product scope)."
+        fi
+        ;;
+      1)
+        echo "❌ BLOCKED - PowerShell static analysis violations (fix or add suppressions)"
+        exit 1
+        ;;
+      *)
+        echo "⚠️  WARN - PowerShell code quality NOT verified (unexpected verdict $PS_G1_EXIT)"
+        GATE_1_STATUS="WARN"
+        GATE_1_DETAIL="powershell: ${PS_G1_REASON:-unexpected verdict $PS_G1_EXIT}"
         ;;
     esac
   fi
@@ -2640,12 +2722,7 @@ else
             # false-red BLOCKED. tomllib first; a repo declaring neither gets
             # the historical `--cov=. --cov-fail-under=80` behavior verbatim.
             PY_COV_SOURCE=$(python -c "import tomllib;print(' '.join('--cov='+s for s in tomllib.load(open('pyproject.toml','rb'))['tool']['coverage']['run'].get('source',[])))" 2>/dev/null || echo "")
-            PY_COV_FAIL_UNDER=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['tool']['coverage']['report']['fail_under'])" 2>/dev/null || echo "")
-            if [ -z "$PY_COV_FAIL_UNDER" ]; then
-              PY_COV_FAIL_UNDER=$(grep -oE 'fail_under *= *[0-9]+' pyproject.toml 2>/dev/null | grep -oE '[0-9]+' | head -1)
-            fi
             [ -z "$PY_COV_SOURCE" ] && PY_COV_SOURCE="--cov=."
-            [ -z "$PY_COV_FAIL_UNDER" ] && PY_COV_FAIL_UNDER=80
 
             # ── #399: smart test selection, the Python counterpart of #286 ──
             # Three tiers (lib/python-test-selection.sh holds the pure
@@ -3043,6 +3120,13 @@ else
     fi
   fi
 fi
+# Only claim PASS if the gate actually ran. It used to be assigned
+# unconditionally right here, AFTER the docs-only branch had already set
+# GATE_5_STATUS=SKIP, so a docs-only commit printed SKIPPED - Tests &
+# (measured: {"status": "PASS", "actual": {"coverage": "N/A"}}). Same defect
+# class as Gate 6 below; Gate 5 matters most because it carries the coverage
+# verdict — "Tests + Coverage: PASS" must never describe a run that tested
+# nothing.
 GATE_5_STATUS="PASS"
 record_gate_audit "gate-5" "tests-coverage" "$GATE_5_STATUS" "0" "$GATE_5_START" "${GATE_5_DETAIL:-}"
 
@@ -3588,7 +3672,7 @@ echo ""
 # v0.14.3+ (Issue #312): Skip if no code files changed
 # v0.18.5 (Issue #397): Fix gate status variable collision — SAST now sets GATE_10_STATUS
 # ============================================================================
-if any_changed_files_match "\.(ts|tsx|js|jsx|py|go|java|kt|cpp|c|swift|m|dart|sh)$"; then
+if any_changed_files_match "\.(ts|tsx|js|jsx|py|go|java|kt|cpp|c|swift|m|dart|sh|ps1|psm1)$"; then
   if [ -f "$GATE_DIR/gate-10.sh" ]; then
     source "$GATE_DIR/gate-10.sh"
   else
@@ -3890,7 +3974,7 @@ generate_quality_report() {
     },
     "gate5_tests": {
       "name": "Tests + Coverage",
-      "status": "${GATE_5_STATUS:-PASS}",
+      "status": "${GATE_5_STATUS:-SKIP}",
       "thresholds": { "lines": 80, "functions": 80, "branches": 70, "statements": 80 },
       "actual": { "coverage": "${COV_PCT}" },
       "failedTests": $FAILED_TESTS_JSON
@@ -3953,7 +4037,7 @@ ENDJSON
   GATES_JSON="${GATES_JSON}\"gate2\":{\"status\":\"${GATE_2_STATUS:-SKIP}\",\"name\":\"Duplicate Code\"},"
   GATES_JSON="${GATES_JSON}\"gate3\":{\"status\":\"${GATE_3_STATUS:-PASS}\",\"name\":\"Complexity\",\"warnings\":${CC_WARNINGS:-0}},"
   GATES_JSON="${GATES_JSON}\"gate4\":{\"status\":\"${GATE_4_STATUS:-PASS}\",\"name\":\"Principles\",\"warnings\":${WARNING_COUNT:-0}},"
-  GATES_JSON="${GATES_JSON}\"gate5\":{\"status\":\"${GATE_5_STATUS:-PASS}\",\"name\":\"Tests+Coverage\",\"coverage\":\"${COV_PCT}\"},"
+  GATES_JSON="${GATES_JSON}\"gate5\":{\"status\":\"${GATE_5_STATUS:-SKIP}\",\"name\":\"Tests+Coverage\",\"coverage\":\"${COV_PCT}\"},"
   GATES_JSON="${GATES_JSON}\"gate6\":{\"status\":\"${GATE_6_STATUS:-SKIP}\",\"name\":\"Architecture+BoyScout\",\"bsBlocked\":${BS_BLOCKED}},"
   GATES_JSON="${GATES_JSON}\"gate7\":{\"status\":\"${GATE_7_STATUS:-PASS}\",\"name\":\"IaC Security\"},"
   GATES_JSON="${GATES_JSON}\"gate8\":{\"status\":\"${GATE_8_STATUS:-PASS}\",\"name\":\"Secret Scanning\"},"
@@ -3974,7 +4058,7 @@ ENDJSON
   printf "  %-45s %s\n" "Gate 2: Duplicate Code" "${GATE_2_STATUS:-SKIP}"
   printf "  %-45s %s (warnings: ${CC_WARNINGS:-0})\n" "Gate 3: Complexity" "${GATE_3_STATUS:-PASS}"
   printf "  %-45s %s (warnings: ${WARNING_COUNT:-0})\n" "Gate 4: Principles" "${GATE_4_STATUS:-PASS}"
-  printf "  %-45s %s (coverage: ${COV_PCT}%%)\n" "Gate 5: Tests + Coverage" "${GATE_5_STATUS:-PASS}"
+  printf "  %-45s %s (coverage: ${COV_PCT}%%)\n" "Gate 5: Tests + Coverage" "${GATE_5_STATUS:-SKIP}"
   printf "  %-45s %s\n" "Gate 6: Architecture + Boy Scout" "${GATE_6_STATUS:-SKIP}"
   printf "  %-45s %s\n" "Gate 7: IaC Security" "${GATE_7_STATUS:-PASS}"
   printf "  %-45s %s\n" "Gate 8: Secret Scanning" "${GATE_8_STATUS:-PASS}"

@@ -265,4 +265,27 @@ PowerShell。hooksPath 双写（repo+global）在此次更新中幸存——链�
 机制至此经受四种形态检验：内容回退（保 mtime）/ 文件删除 / hooksPath 断链 /
 upstream 更新覆盖。
 
+**7.8.1 第二波部署与部分吸收（2026-10-20 晚，实证补充）**
+
+当晚 xp-gate 维护者在 `D:\projects\xp-gate` 上活跃开发并多次向
+`~/.config/xp-gate` 部署（部署**保留源文件 mtime**——live 文件被覆盖后
+mtime 显示为旧值，是「从其仓库拷回」的指纹，不是未发生写）。两波实测：
+
+- **适配器被吸收进 upstream**：新部署的 `powershell.sh`（17174B）与
+  `gate-10.sh`（12929B，含 SC2034 disable）与 vendored 逐字节一致（CR 剥离
+  后 diff 为空）——本仓硬化版成为 upstream 正式内容；
+- **pre-commit 未吸收**：新版 195020B 带来 upstream 自身新修复
+  （`_py_resolve_cov_threshold` 单源解析 #45、Gate 5「没跑就不许报 PASS」——
+  正是本仓 docs-only 提交实测暴露的假 PASS），但 PowerShell 三补丁全部缺席
+  （PS_G1_REASON=0、ps1/psm1 谓词=0），且部署在验证中途把 live 回滚，
+  导致一致性测试在双引擎各红 1 次（假 match 另因本会话校验脚本的路径替换
+  bug 自己比自己——**哈希核对以测试套件为准，临时命令不可信**）。
+
+恢复：vendored（197882B，三补丁 + 上游新修复共存）→ 拷回 live → bash -n +
+哈希三对 MATCH + 探针（发现 20+18、ParseError 拦截 rc=1+2）→ 双引擎 27/27。
+
+**待办**：pre-commit 三补丁需 upstream 吸收（维护者已在仓库内可取
+`githooks/hooks/pre-commit` 为源）；吸收前每次 xp-gate 部署都可能再回滚，
+以一致性测试红为信号、以 vendored 为权威拷回。
+
 
