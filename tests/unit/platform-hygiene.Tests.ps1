@@ -482,7 +482,13 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
         $pc = Get-Content -LiteralPath $livePreCommit -Raw
         $pc.Contains('PS_G1_REASON') | Should -BeTrue -Because 'pre-commit 缺 PS_G1_REASON 协议——Gate 1 powershell fail-closed 分支被回退'
         $pc.Contains('GATE_1_DETAIL="powershell:') | Should -BeTrue -Because 'pre-commit 缺 GATE_1_DETAIL powershell 前缀——WARN 详情映射被回退'
-        $pc.Contains('\.psm1$') | Should -BeTrue -Because 'pre-commit Gate 1/Gate 10 谓词不含 .psm1——psm1 变更会绕过静态分析与 SAST'
+        # 谓词断言（2026-10-21 升级 0.30.5 后校正）：上游 0.30.5 把 psm1 并进
+        # 同一条扩展名正则（`...(dart|sh|ps1|psm1)$`），本仓历史补丁用的是独立
+        # 参数 `"\.ps1$" "\.psm1$"`。两种形态都满足「psm1 被 Gate 1/Gate 10
+        # 谓词覆盖」这一实质要求，故按语义断言而不是钉死某一种字面写法——
+        # 否则每次上游合并写法变化都会假红。
+        $pc.Contains('ps1)') | Should -BeTrue -Because 'pre-commit Gate 1/Gate 10 谓词不含 ps1（独立参数或并入扩展名正则均可）——ps1 变更会绕过静态分析与 SAST'
+        $pc.Contains('psm1') | Should -BeTrue -Because 'pre-commit Gate 1/Gate 10 谓词不含 psm1——psm1 变更会绕过静态分析与 SAST'
 
         # 第 5 判据（2026-10-17 事故第三次实证）：内容完好还不够——git 必须真的
         # 走 xp-gate 链。实测 .git/config 被外部进程写入空 core.hooksPath（空值
