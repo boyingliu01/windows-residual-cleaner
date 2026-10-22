@@ -74,8 +74,25 @@ _find_powershell_files() {
   local prune_file=".xp-gate-powershell-prune-dirs"
   if [ -f "$prune_file" ]; then
     while IFS= read -r prune_dir; do
+      prune_dir="${prune_dir#$'\xEF\xBB\xBF'}"
       prune_dir="${prune_dir%$'\r'}"
       case "$prune_dir" in ''|'#'*) continue ;; esac
+      # Discovery feeds the test-discovery, coverage and analysis denominators
+      # alike, so an entry like '*' or a path with a separator would silently
+      # shrink all three while the config file still looked reasonable. Only
+      # bare directory names are honoured; anything else is reported and
+      # ignored, never silently honoured.
+      case "$prune_dir" in
+        */*|*\\*|*'*'*|*'?'*|*'['*)
+          echo "  ⚠️  $prune_file: ignoring invalid entry '$prune_dir' (must be a bare directory name, no separators or glob metacharacters)"
+          continue
+          ;;
+        .|..)
+          echo "  ⚠️  $prune_file: ignoring invalid entry '$prune_dir'"
+          continue
+          ;;
+      esac
+      echo "  ℹ️  pruning directory name '$prune_dir' (from $prune_file)"
       prune_args[${#prune_args[@]}]=-name
       prune_args[${#prune_args[@]}]="$prune_dir"
       prune_args[${#prune_args[@]}]=-o
@@ -149,33 +166,63 @@ run_static_analysis() {
     local analysis_targets=()
     local scope_file=".xp-gate-powershell-analysis-paths"
     local target_line
+    local scope_missing=0
+    local scope_declared=0
+    local scoped_mode=0
     if [ -f "$scope_file" ]; then
+      scoped_mode=1
       while IFS= read -r target_line; do
+        # A UTF-8 BOM (PowerShell 5.1 `Set-Content -Encoding UTF8` writes one)
+        # would otherwise glue itself to the first entry and turn the
+        # documented '#' header into a path.
+        target_line="${target_line#$'\xEF\xBB\xBF'}"
         target_line="${target_line%$'\r'}"
         case "$target_line" in ''|'#'*) continue ;; esac
+        scope_declared=$((scope_declared + 1))
         if [ -e "$target_line" ]; then
           analysis_targets[${#analysis_targets[@]}]="$target_line"
         else
-          echo "  ℹ️  analysis path not found (skipped): $target_line"
+          echo "  ⚠️  analysis path not found: $target_line"
           echo "XP_G1_REASON: analysis-path-missing:$target_line"
+          scope_missing=$((scope_missing + 1))
         fi
       done < "$scope_file"
-      if [ "${#analysis_targets[@]}" -eq 0 ]; then
+    fi
+
+    # Scoped mode with nothing analysable is not a pass: either every entry is
+    # missing, or the file declares no usable entry at all. Both mean product
+    # code is outside the gate.
+    if [ "$scoped_mode" -eq 1 ] && [ "${#analysis_targets[@]}" -eq 0 ]; then
+      if [ "$scope_declared" -eq 0 ]; then
         echo "XP_G1_REASON: analysis-paths-empty"
-        echo "  ℹ️  $scope_file present but no existing paths - skipping analysis"
-        return 3
+        echo "  ℹ️  $scope_file declares no paths - nothing to analyse"
+      else
+        echo "  ℹ️  $scope_file declares $scope_declared path(s), none exist - nothing to analyse"
       fi
+      return 3
+    fi
+
+    # The settings file is part of the contract: Invoke-ScriptAnalyzer -Settings
+    # on a missing path is a non-terminating error, so with SilentlyContinue the
+    # fragment returns zero findings and the gate reports PASSED on an
+    # unanalysed tree (code walkthrough round 1, finding A4). Require it before
+    # spending the run.
+    if [ "$scoped_mode" -eq 1 ] && [ ! -f "PSScriptAnalyzerSettings.psd1" ]; then
+      echo "XP_G1_REASON: analysis-settings-missing:PSScriptAnalyzerSettings.psd1"
+      echo "  ⚠️  $scope_file is in use but PSScriptAnalyzerSettings.psd1 is absent - refusing to analyse with an unknown rule set"
+      return 3
     fi
 
     echo "Running PSScriptAnalyzer static analysis on PowerShell scripts..."
     local PSSA_RC=0
     local PSSA_OUT
-    local scope_expr='.'
+    local scope_expr="Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error,Warning"
     if [ "${#analysis_targets[@]}" -gt 0 ]; then
-      scope_expr=$(_powershell_path_array "${analysis_targets[@]}")
-      scope_expr="foreach (\$t in $scope_expr) { Invoke-ScriptAnalyzer -Path \$t -Recurse -Severity Error,Warning -Settings PSScriptAnalyzerSettings.psd1 -ErrorAction SilentlyContinue }"
-    else
-      scope_expr="Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error,Warning"
+      # -ErrorAction Stop, not SilentlyContinue: an analyzer error (unreadable
+      # file, bad settings, a path that vanished between the -e test and the
+      # run) must become a fail-closed verdict, not an empty result set that
+      # reads as clean. The findings themselves are returned, not errors.
+      scope_expr="foreach (\$t in $(_powershell_path_array "${analysis_targets[@]}")) { Invoke-ScriptAnalyzer -Path \$t -Recurse -Severity Error,Warning -Settings PSScriptAnalyzerSettings.psd1 -ErrorAction Stop }"
     fi
     PSSA_OUT=$("$PWSH" "${POWERSHELL_ARGS[@]}" "
       if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
@@ -183,7 +230,12 @@ run_static_analysis() {
         exit 0
       }
       try { Import-Module PSScriptAnalyzer -ErrorAction Stop } catch { Write-Output 'PSSA_MODULE_MISSING'; exit 0 }
-      \$results = $scope_expr
+      try {
+        \$results = $scope_expr
+      } catch {
+        Write-Output ('PSSA_RUN_ERROR: ' + \$_.Exception.Message)
+        exit 3
+      }
       if (\$results) {
         \$results | Format-Table -AutoSize
         exit 1
@@ -201,10 +253,31 @@ run_static_analysis() {
           echo "XP_G1_REASON: PSScriptAnalyzer module not installed (Install-Module PSScriptAnalyzer)"
           return 3
         fi
+        # A missing scope entry stays a WARN even when the rest of the scope
+        # analysed cleanly. The reason line is emitted above; this return is
+        # what makes it count (the parent strips the line from display but
+        # keeps the verdict in the denominator).
+        if [ "$scope_missing" -gt 0 ]; then
+          echo "  ⚠️  $scope_missing scope entry(ies) did not exist - product code may have escaped the gate"
+          return 3
+        fi
         return 0
         ;;
       1)
+        # Real findings already BLOCK, so the missing-scope signal cannot change
+        # the verdict here -- but it must not be dropped either: "there are lint
+        # findings AND a product path escaped the gate" is strictly more
+        # information than "there are lint findings". Emit it so the operator
+        # fixes the scope in the same pass (code walkthrough round 2).
+        if [ "$scope_missing" -gt 0 ]; then
+          echo "  ⚠️  $scope_missing scope entry(ies) did not exist - product code may have escaped the gate (in addition to the findings above)"
+        fi
         return 1   # real findings -> BLOCK upstream
+        ;;
+      3)
+        echo "XP_G1_REASON: PSScriptAnalyzer raised an error during the run"
+        printf '%s\n' "$PSSA_OUT" | grep '^PSSA_RUN_ERROR: ' | sed 's/^PSSA_RUN_ERROR: //' | head -3 | while IFS= read -r _line; do echo "  ⚠️  $_line"; done
+        return 3   # analysis error -> fail closed as WARN
         ;;
       *)
         echo "XP_G1_REASON: PSScriptAnalyzer run failed (exit $PSSA_RC)"

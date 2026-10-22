@@ -1187,5 +1187,41 @@ if ($MyInvocation.InvocationName -ne '.') {
     重打三补丁于 195K 新基座（顺带获得 upstream 的 Gate 5「没跑不许报 PASS」
     修复）→ vendored 拷回 live → 27/27 → 实弹提交。**upstream 吸收 pre-commit
     三补丁前，每次部署都可能再回滚，信号=一致性测试红，恢复=以 vendored 为权威。**
+- 2026-10-22: **xp-gate 重基线到 0.30.5 + 三处 fail-closed 漏洞修复**
+  - 用最新版（0.30.5）重新体检本仓，发现 vendored 门禁落后 upstream **两个版本**，
+    且 upstream 已独立吸收我们报的 #547/#548（两个 issue 均已 CLOSED），我们的 fork
+    反而跑着「旧基座 + 重打补丁」的混合体。**重建**：以 0.30.5 为基（pre-commit
+    196176B / powershell.sh 12165B / gate-10.sh 17407B），只重打 upstream 没有的
+    三处增量——analysis-paths 作用域、prune-dirs 注入、semgrep 的 `%APPDATA%` 回退。
+    upstream 的 CRLF 自检（#546）、单一覆盖率阈值解析器（#555）、`XP_G1_REASON`
+    协议、`ps1|psm1` 合并正则全部照收。gate-10 的 APPDATA 计数由 1 归零后再补齐
+    （upstream 侧为 0），确认重打无遗漏。
+  - **三处 fail-closed 漏洞（真实缺陷，均已实证复现后修复）**：
+    (1) **critical**：`analysis-path-missing` 只 echo 了 reason、没有改变返回值。父
+    hook 对 reason 行做 `grep -v` 剥离后按键退出码判定，于是「一个有效路径 + 一个
+    幽灵路径」实测 `rc=0` → 报 **PASSED**，而产品代码已经逃出作用域。修复：用
+    `scope_missing` 计数，分析跑完后 `>0` 强制 `return 3`。**教训：没有配套返回值的
+    reason 是装饰品，必须与退出码绑定。**
+    (2) **major**：作用域模式下 `PSScriptAnalyzerSettings.psd1` 缺失时仍照跑片段；
+    `-Settings` 指向不存在的路径是**非终止错误**，配合 `-ErrorAction
+    SilentlyContinue` 结果集为空 → 未分析的树被判 PASS。修复：作用域模式前置校验
+    settings 存在（`analysis-settings-missing`），片段改 `-ErrorAction Stop` +
+    try/catch → exit 3 → WARN。
+    (3) **major**：prune-dirs 条目未校验，`*` 能把发现清空、分隔符能指向产品目录，
+    而发现同时供给测试发现/覆盖率分母/分析范围三个口径。修复：只接受裸目录名
+    （拒绝 `/`、`\`、`*`、`?`、`[`、`.`、`..`），拒绝项打印通知并忽略，采纳项也
+    公告。两个配置读取器同时剥离 UTF-8 BOM 与行尾 CR（PS 5.1 的 `Set-Content
+    -Encoding UTF8` 默认写 BOM，会把首个条目和 `#` 注释头一起吃成路径）。
+  - 验证：wrc 生产作用域 18 文件 PASS；注入一个幽灵条目 → `rc=3` + reason +
+    「1 scope entry(ies) did not exist」；wrc-drill 剪枝仍生效（泄漏 0）；
+    `bash -n` 全过、shellcheck CLEAN；Pester 757/757（pwsh 7）。
+  - **delphi 三专家 code-walkthrough 实跑两轮**（三模型：g-deepseek-v4-pro /
+    s-deepseek-v4.1-flash / doubao-seed-2.0-pro）。Round 1 **REQUEST_CHANGES**
+    （1 APPROVED / 2 REQUEST_CHANGES），critical A1 与 major A3/A4 均为真问题、
+    已全部按上述修复并补测试；Round 2 复核 APPROVED。**这是本项目第一次由自动化
+    评审抓住自己引入的 fail-open**，说明门禁评审流程有效。
+  - 提交门禁 12 道全过（含 Gate 5 测试、覆盖率），无 `--no-verify`、未加忽略项。
+  - 运维备注：期间 live 钩子被外部 xp-gate 部署覆盖 4 次（198247B 等变体，均不含
+    analysis-paths 增量），一致性测试每次如实报红，均以 vendored 同步恢复。
 
 
