@@ -52,6 +52,7 @@ Describe 'Get-TrimmedRegExport (DD-003 / REQ-007)' {
         $r.Content | Should -Not -BeLike '*GoodApp*'
     }
 
+    # @test AC-040
     It '裁剪结果必须恰好一个值定义（多值时 trim_multivalue 拒绝）' {
         $dup = New-RegText @'
 [HKCU\...\Run]
@@ -184,6 +185,7 @@ Describe 'Export-RegistryKeyBackup (integration, real reg.exe)' {
         $rd.Content | Should -Match 'Windows Registry Editor Version 5\.00'
     }
 
+    # @test AC-043
     It '导出不存在的键 -> 失败且不留半截文件（fail-closed）' {
         $r = Export-RegistryKeyBackup -Key 'HKCU\Software\WRC-Definitely-Missing-9f3a2b' `
             -BackupDir $script:exportDir -Id 'reg_t3'

@@ -173,6 +173,7 @@ Describe '启动期 T3 会真的消费上一轮未完成的日志（AC-033 接�
         (Test-Path -LiteralPath $script:fx.Target) | Should -BeFalse
     }
 
+    # @test AC-027
     It '上一轮的日志本轮不会被自己消费（本轮新建的备份不参与 T3）' {
         # 反证：本轮创建的 backup-<run_id> 在完成前也是「未完成日志」。若 Phase -1 排在
         # 建备份**之后**，它会立刻把自己的日志当成上轮残留 —— 顺序错了就会在这里露出来。
@@ -183,6 +184,7 @@ Describe '启动期 T3 会真的消费上一轮未完成的日志（AC-033 接�
         $again.Rc | Should -Be 0
     }
 
+    # @test AC-047
     It '抑制路径不建未修复清单，但补写 completed_at 后继续清理（AC-076 同族）' {
         $old = New-StartupBackup -Name 'backup-t3-sup' -CreatedAt (Format-IsoUtc -Value (Get-Date).ToUniversalTime())
         # 绑定一份「summary.failed == 0」的清理日志 → Step 2.5 抑制，不恢复但补标记。
@@ -217,6 +219,7 @@ Describe '启动期 T3 未能安全消费时本轮清理中止（AC-042 / REQ-02
         }
     }
 
+    # @test AC-042
     It '恢复有失败项 → 14，且未创建新备份、未执行任何破坏性操作、旧日志保持未完成' {
         $old = New-StartupBackup -Name 'backup-bad' -CreatedAt (Format-IsoUtc -Value (Get-Date).ToUniversalTime())
         $r = Invoke-StartupMain
@@ -309,6 +312,7 @@ Describe '-DryRun 下的启动期 T3 保持零副作用（AC-033 / 不返回 14�
         }
     }
 
+    # @test AC-061
     It '发现未完成日志 → 不消费、不恢复、不改标记，且本轮照常跑完（干跑不背 14）' {
         # 恢复引擎即便被调用也会回报 restore_failed=3 —— 用来证明干跑**没有**走到恢复，
         # 否则本轮就会以 14 中止。
@@ -325,6 +329,7 @@ Describe '-DryRun 下的启动期 T3 保持零副作用（AC-033 / 不返回 14�
 }
 
 Describe '启动期门禁与 T3 的交互（组件缺失 / 报告缺失）' {
+    # @test AC-022
     It '回滚组件缺失 → 告警后继续到 Phase 0，由同一道门禁 fail-closed 返回 3' {
         Reset-StartupProject
         $fx = New-StartupReport

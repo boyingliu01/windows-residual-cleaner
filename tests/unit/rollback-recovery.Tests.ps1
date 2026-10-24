@@ -63,6 +63,7 @@ Describe 'S2 crash-window: cleanup succeeded but completed_at never written' {
         }
     }
 
+    # @test AC-047
     It 'completed_at 非 null → 本轮已正常结束，既不抑制也不走 T3（NormalT3=false）' {
         $j = @{ run_id = [guid]::NewGuid().ToString(); completed_at = '2026-10-03T10:00:00Z' }
         $d = Get-UnfinishedJournalFallbackDecision -Journal $j
@@ -88,6 +89,7 @@ Describe 'S2 crash-window: cleanup succeeded but completed_at never written' {
         }
     }
 
+    # @test AC-027
     It '清理日志哈希不匹配 → RejectCandidate=true 且不走自动恢复（评审修复：篡改/损坏日志不得当正常 T3）' {
         $rid = [guid]::NewGuid().ToString()
         $logPath = Join-Path $env:TEMP ("wrc-cw-rej-" + [guid]::NewGuid().ToString('N') + '.json')
@@ -150,6 +152,7 @@ Describe 'S2 suppression verdict: evidence grading' {
         $r.Reason | Should -Be 'cleanup_log_fields_pattern_invalid'
     }
 
+    # @test AC-061
     It '日志文件已不存在 → EvidenceMissing，不抑制也不拒绝' {
         $j = $script:BaseJournal.Clone()
         $j['cleanup_log_path'] = Join-Path $script:VerdictDir 'gone.json'
@@ -173,6 +176,7 @@ Describe 'S2 suppression verdict: evidence grading' {
         $r.Reason | Should -Be 'cleanup_log_unparsable'
     }
 
+    # @test AC-027
     It '清理日志 run_id 缺失（旧格式）→ 无法证明归属，不得抑制' {
         $j = $script:BaseJournal.Clone()
         $log = Join-Path $script:VerdictDir 'old.json'
@@ -184,6 +188,7 @@ Describe 'S2 suppression verdict: evidence grading' {
         $r.Reason | Should -Be 'cleanup_log_run_id_absent'
     }
 
+    # @test AC-027
     It '清理日志 run_id 与日志不一致 → 拒绝候选，不抑制' {
         $j = $script:BaseJournal.Clone()
         $log = Join-Path $script:VerdictDir 'other.json'
@@ -231,6 +236,7 @@ Describe 'S2 suppression verdict: evidence grading' {
         $r.Reason | Should -Be 'cleanup_succeeded_failed_zero'
     }
 
+    # @test AC-083
     It 'cleanup_log_sha256 为空白字符串（非 null）→ 模式检查按缺失处理，拒绝候选而非凭 run_id 抑制（评审修复）' {
         $j = $script:BaseJournal.Clone()
         $log = Join-Path $script:VerdictDir 'blankhash.json'
@@ -421,11 +427,13 @@ Describe 'S2 Get-RecoveryCandidateSet' {
         $set[0].JournalSource | Should -Be 'rollback-journal.json'
     }
 
+    # @test AC-047
     It 'completed_at 非空 → 剔除（上一轮正常成功）' {
         New-FakeBackup -Sub 'backup-done' -Journal @{ run_id = $script:runId; completed_at = '2026-10-03T10:00:00Z' }
         (Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot).Count | Should -Be 0
     }
 
+    # @test AC-047
     It 'completed_at 损坏（非时间戳）→ 不被当作完成而永久剔除，保留候选且需确认（评审修复）' {
         New-FakeBackup -Sub 'backup-badca' -Journal @{ run_id = $script:runId; completed_at = 'completed' }
         $set = Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot
@@ -433,6 +441,7 @@ Describe 'S2 Get-RecoveryCandidateSet' {
         $set[0].RequiresAcknowledgement | Should -BeTrue
     }
 
+    # @test AC-047
     It 'completed_at 空白串 → 兜底判为 malformed 拒绝，不当未完成而走正常 T3（评审修复）' {
         $j = @{ run_id = [guid]::NewGuid().ToString(); completed_at = '   ' }
         $d = Get-UnfinishedJournalFallbackDecision -Journal $j
@@ -451,6 +460,7 @@ Describe 'S2 Get-RecoveryCandidateSet' {
         (Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot).Count | Should -Be 0
     }
 
+    # @test AC-089
     It '存在 consumed.failed 标记 → 候选留下，且 RequiresAcknowledgement=true' {
         New-FakeBackup -Sub 'backup-fail' -Journal @{ run_id = $script:runId; completed_at = $null } -WithConsumedFailed
         $set = Get-RecoveryCandidateSet -ProjectRoot $script:ProjRoot
@@ -522,6 +532,7 @@ Describe 'S2 Select-RecoveryCandidate' {
         }
     }
 
+    # @test AC-061
     It '空候选集 → no_candidate' {
         $r = Select-RecoveryCandidate -Candidates @()
         $r.Selected | Should -BeNullOrEmpty
@@ -659,6 +670,7 @@ Describe 'S2 Write-RecoveryMarker' {
         (Split-Path $p -Leaf) | Should -Be 'rollback-acknowledged.json'
     }
 
+    # @test AC-003
     It '未传 Timestamp → 自动生成可解析的 UTC 串' {
         $p = Write-RecoveryMarker -BackupDir $script:MarkerDir -Kind 'consumed' -RunId $script:runId
         $o = Get-Content $p -Raw | ConvertFrom-Json
@@ -726,6 +738,7 @@ Describe 'S2 Write-UnrepairedList' {
         if (Test-Path $script:URRoot) { Remove-Item $script:URRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    # @test AC-096
     It '写出文件于 output 子目录，顶层字段与 unrepaired[] 齐备' {
         $items = Add-UnrepairedItem -List @() -ItemId 'i1' -Reason 'skipped_older_journal' `
             -Kind 'registry_key' -Target 'HKCU\Software\WRC-Demo'
@@ -759,6 +772,7 @@ Describe 'S2 Write-UnrepairedList' {
         $raw | Should -Match '"unrepaired":\s*\[\s*\]'
     }
 
+    # @test AC-096
     It '-CandidateUnparseable：候选级清单仍写空 unrepaired[] 并置 true（REQ-030 Step 4b）' {
         $p = Write-UnrepairedList -ProjectRoot $script:URRoot -RunId $script:runId -Items @() `
             -BackupDir 'C:\proj\backup-broken' -Reason 'self_validation_failed' `
@@ -805,6 +819,7 @@ Describe 'S2 Complete-RollbackJournal' {
         if (Test-Path $script:CompDir) { Remove-Item $script:CompDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    # @test AC-047
     It '正常完成：写回 completed_at 且返回 Path' {
         $j = @{ run_id = $script:runId; completed_at = $null }
         $r = Complete-RollbackJournal -BackupDir $script:CompDir -Journal $j -CompletedAt '2026-10-03T10:00:00Z'

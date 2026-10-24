@@ -84,15 +84,24 @@ _find_powershell_files() {
       # ignored, never silently honoured.
       case "$prune_dir" in
         */*|*\\*|*'*'*|*'?'*|*'['*)
-          echo "  ⚠️  $prune_file: ignoring invalid entry '$prune_dir' (must be a bare directory name, no separators or glob metacharacters)"
+          echo "  ⚠️  $prune_file: ignoring invalid entry '$prune_dir' (must be a bare directory name, no separators or glob metacharacters)" >&2
           continue
           ;;
         .|..)
-          echo "  ⚠️  $prune_file: ignoring invalid entry '$prune_dir'"
+          echo "  ⚠️  $prune_file: ignoring invalid entry '$prune_dir'" >&2
           continue
           ;;
       esac
-      echo "  ℹ️  pruning directory name '$prune_dir' (from $prune_file)"
+      # MUST go to stderr, never stdout: this function's stdout IS the file
+      # list, and every caller captures it into the Pester
+      # Run.Path / CodeCoverage.Path arrays. Measured 2026-10-24: with this on
+      # stdout, the two advisory lines (prune + coverage exclusion) became
+      # "paths" in the array, Pester failed with
+      #   Could not resolve coverage path '  ℹ️  pruning directory name ...'
+      # and wrote a 2-byte empty coverage.xml. The gate then reported "could
+      # not parse coverage" and -- before the #570 fix -- would have counted
+      # that as "unknown" and let the commit through with no coverage at all.
+      echo "  ℹ️  pruning directory name '$prune_dir' (from $prune_file)" >&2
       prune_args[${#prune_args[@]}]=-name
       prune_args[${#prune_args[@]}]="$prune_dir"
       prune_args[${#prune_args[@]}]=-o
@@ -420,7 +429,7 @@ run_coverage() {
         if [ "$skip" -eq 0 ]; then
           filtered[${#filtered[@]}]="$src"
         else
-          echo "  ℹ️  Coverage exclusion matched: $src"
+          echo "  ℹ️  Coverage exclusion matched: $src" >&2
         fi
       done
       # Assign back unconditionally: when EVERY source file matched an

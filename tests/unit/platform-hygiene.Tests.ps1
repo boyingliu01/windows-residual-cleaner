@@ -499,5 +499,144 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
         $resolved = (git -C $script:Root config core.hooksPath)
         $resolvedNorm = if ([string]::IsNullOrWhiteSpace($resolved)) { '' } else { $resolved.Replace('\', '/').TrimEnd('/') }
         $resolvedNorm | Should -Be ($expectedHooks.TrimEnd('/')) -Because "core.hooksPath 解析为 '$resolved'——xp-gate 链被断开或指向别处（实测 .git/config 被写入空值覆盖全局配置，提交零门禁）；恢复：git config core.hooksPath $expectedHooks"
+
+        # 第 6 判据（2026-10-24 实测追加）：PowerShell 门禁的「真生效」本身也要钉住。
+        # 实测基线：只改 .ps1 的提交跑出来的报告是 6/12 PASS、verdict PASS，而
+        # Gate 10 显示 「no supported language files changed」、Gate 5 的覆盖率
+        # 只吃了 vitest 的 subset —— 门禁没有失败，是它看不见。下列标记就是
+        # 本仓对「看得见」的修法所在；任何一次回退都会让其中一条变红。
+        $pc.Contains('Coverage report integrity') | Should -BeTrue -Because 'pre-commit 缺 PowerShell 覆盖率报告完整性校验——coverage.xml 会以任意 sourcefile 集合通过 80% 线（实测出现过 23 个 sourcefile 与 0 个两种污染形态）'
+        $pc.Contains('Gate 5c-ps') | Should -BeTrue -Because 'pre-commit 缺 Pester 侧 @test 注解校验——PowerShell 测试的语义对齐在 jq/req-ids.json 缺席时是 no-op'
+        $pc.Contains('-ge 0 ] 2>/dev/null; then') | Should -BeTrue -Because 'pre-commit 缺「0% 覆盖率是数据而非缺失」的修复（#570）——什么都没测的套件会被当作"无法判定"放行'
+        $pc.Contains('PS_COV_EXPECTED') | Should -BeTrue -Because 'pre-commit 缺覆盖率分母（发现列表）与报告 sourcefile 的交叉校验'
+    }
+}
+
+Describe 'Platform hygiene: 需求 ID 单一真相源（2026-10-24）' {
+    # 背景：Gate 5c 的语义对齐在本仓长期是空转（req-ids.json 从未生成 + jq 不在
+    # 钩子 PATH + 发现只认 JS/TS 测试名）。修法是把 id 清单放进仓库
+    # （.xp-gate-req-ids，由 .xp-gate-req-ids.cjs 从 specification.yaml 生成），
+    # 钩子读它做校验。本组用例保证「清单不会腐烂」：任一侧改了 id 而另一侧
+    # 没跟上，套件立刻变红，而不是等到某个提交莫名其妙被放行。
+    BeforeAll {
+        if (-not $script:Root) {
+            $script:Root = (Resolve-Path "$PSScriptRoot\..\..").Path
+        }
+        $script:ReqIdsPath = Join-Path $script:Root '.xp-gate-req-ids'
+        $script:SpecPath = Join-Path $script:Root 'specification.yaml'
+        $script:GeneratorPath = Join-Path $script:Root '.xp-gate-req-ids.cjs'
+    }
+
+    It '.xp-gate-req-ids 与 specification.yaml 的 id 集合完全一致（双向）' {
+        (Test-Path -LiteralPath $script:ReqIdsPath) | Should -BeTrue -Because '缺少 .xp-gate-req-ids 会让钩子直接跳过 PowerShell 注解校验'
+        $specIds = @(
+            Select-String -LiteralPath $script:SpecPath -Pattern '^\s*-\s+id:\s*(REQ-\d+|AC-\d+)\s*$' |
+                ForEach-Object { $_.Matches[0].Groups[1].Value } |
+                Sort-Object -Unique
+        )
+        $specIds.Count | Should -BeGreaterThan 0 -Because '正则若失配，本用例会退化成空断言'
+        $listIds = @(Get-Content -LiteralPath $script:ReqIdsPath |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') } |
+            Sort-Object -Unique)
+        $listIds.Count | Should -BeGreaterThan 0
+        $missing = @($specIds | Where-Object { $listIds -notcontains $_ })
+        $extra = @($listIds | Where-Object { $specIds -notcontains $_ })
+        $missing -join ', ' | Should -Be '' -Because "specification.yaml 有而 .xp-gate-req-ids 没有的 id：$($missing -join ', ')——用 node .xp-gate-req-ids.cjs > .xp-gate-req-ids 重新生成"
+        $extra -join ', ' | Should -Be '' -Because "清单里有而 specification.yaml 已经没有的 id：$($extra -join ', ')——注解指向了已被删除的需求，测试无法为它失败"
+    }
+
+    It '清单可用钩子里的同一套 grep 判据逐条匹配（含 CRLF/BOM 容错）' {
+        # 钩子用 `grep -qxF -- "$id"` 对清洗后的清单做整行匹配。本用例用 PowerShell
+        # 复刻这条判据，确保清单的每一行都能被它命中（首尾空白、CRLF、注释行都是
+        # 实测过的翻车点）。
+        $raw = [System.IO.File]::ReadAllText($script:ReqIdsPath)
+        $clean = @($raw -split "`r?`n" |
+            ForEach-Object { ($_ -replace '^\uFEFF', '').TrimEnd() } |
+            Where-Object { $_ -and -not $_.TrimStart().StartsWith('#') })
+        $clean.Count | Should -BeGreaterThan 100
+        foreach ($id in @('REQ-001', 'REQ-035', 'AC-001', 'AC-100')) {
+            $clean | Should -Contain $id -Because "清单必须能让钩子按整行匹配到 $id"
+        }
+        # BOM 直接看字节，不看字符串：.NET 的 ReadAllText 会自动剥离 BOM，
+        # 用 [string]::StartsWith 判断会把带 BOM 的文件判成「干净」（本用例
+        # 第一版就是这么假绿的——实测 0xEF,0xBB,0xBF 仍在文件头）。
+        $bytes = [System.IO.File]::ReadAllBytes($script:ReqIdsPath)
+        $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+        $hasBom | Should -BeFalse -Because '带 BOM 的清单会让第一行 id 永远匹配不上（各工具对 BOM 的处理不一致）；用 node .xp-gate-req-ids.cjs 重新生成'
+    }
+
+    It '生成器存在且能独立跑通（specification.yaml 是唯一真相源）' {
+        (Test-Path -LiteralPath $script:GeneratorPath) | Should -BeTrue -Because '生成器入库才能让「重新生成」这条建议可执行'
+        $node = Get-Command node -ErrorAction SilentlyContinue
+        if (-not $node) {
+            Set-ItResult -Inconclusive -Because 'node 不可用：生成器行为由 CI/Gate 5 的 root vitest 侧覆盖'
+            return
+        }
+        $generated = & node $script:GeneratorPath 2>&1 | Out-String
+        $LASTEXITCODE | Should -Be 0 -Because "生成器跑失败：$generated"
+        $generated | Should -Match 'REQ-001'
+        $generated | Should -Match 'AC-100'
+    }
+}
+
+Describe 'Platform hygiene: 适配器 stdout 契约（2026-10-24 实测）' {
+    # 背景：`_find_powershell_files` 的 **stdout 就是文件清单**，每个调用方都把它
+    # 收进 Pester 的 `Run.Path` / `CodeCoverage.Path` 数组。
+    #
+    # 2026-10-24 实测：上游把 `pruning directory name 'wrc-drill'` 这行提示 echo 到
+    # stdout，于是提示语变成了「路径」，Pester 报
+    #   Could not resolve coverage path '  ℹ️  pruning directory name ...'
+    # 并写出 **2 字节空 coverage.xml**。门禁随后报「could not parse coverage」——
+    # 在 #570 修复前，这会被当成「无法判定」而**放行一条零覆盖率证据的提交**。
+    #
+    # 本组用例不 mock 任何东西：直接跑适配器的发现函数，断言「stdout 里每行都是
+    # .ps1 路径」。这类缺陷只能靠「输出面」断言抓到，逻辑断言永远是绿的。
+    BeforeAll {
+        if (-not $script:Root) {
+            $script:Root = (Resolve-Path "$PSScriptRoot\..\..").Path
+        }
+        $script:Bash = @(
+            'C:\Program Files\Git\bin\bash.exe',
+            'C:\Program Files\Git\usr\bin\bash.exe',
+            '/usr/bin/bash'
+        ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    }
+
+    It '文件发现函数的 stdout 只含 .ps1 路径，提示语全部走 stderr' {
+        if (-not $script:Bash) {
+            Set-ItResult -Inconclusive -Because 'bash 不可用：钩子适配器只在 git-bash 下运行'
+            return
+        }
+        $liveAdapter = Join-Path $env:USERPROFILE '.config\xp-gate\adapters\powershell.sh'
+        if (-not (Test-Path -LiteralPath $liveAdapter)) {
+            Set-ItResult -Inconclusive -Because '用户级 xp-gate 未安装（新克隆/CI）'
+            return
+        }
+        $script = & $script:Bash -lc "cd '$($script:Root -replace '\\','/')' && source '$($liveAdapter -replace '\\','/')' && _find_powershell_files '*.ps1' 2>/dev/null"
+        $lines = @($script | Where-Object { $_ -ne '' })
+        $lines.Count | Should -BeGreaterThan 0 -Because '发现结果为空说明适配器根本没跑起来，断言会退化为假绿'
+        $leaks = @($lines | Where-Object { $_ -notmatch '\.ps1$' })
+        $leaks -join ' | ' | Should -Be '' -Because "stdout 混入非 .ps1 的提示行：这些行会被当作路径塞进 Pester 的 CodeCoverage.Path，导致覆盖率产物变成空文档。漏出的行：$($leaks -join ' | ')"
+    }
+
+    It '发现的产品源恰好 18 个（17 脚本 + setup.ps1，权威口径）' {
+        if (-not $script:Bash) {
+            Set-ItResult -Inconclusive -Because 'bash 不可用'
+            return
+        }
+        $liveAdapter = Join-Path $env:USERPROFILE '.config\xp-gate\adapters\powershell.sh'
+        if (-not (Test-Path -LiteralPath $liveAdapter)) {
+            Set-ItResult -Inconclusive -Because '用户级 xp-gate 未安装'
+            return
+        }
+        $script = & $script:Bash -lc "cd '$($script:Root -replace '\\','/')' && source '$($liveAdapter -replace '\\','/')' && _find_powershell_files '*.ps1' 2>/dev/null"
+        $product = @($script | Where-Object { $_ -match '\.ps1$' -and $_ -notmatch '\.Tests\.ps1$' })
+        # AGENTS.md「coverage.xml 的口径与污染」：权威口径 = references/scripts 17
+        # 脚本 + setup.ps1 = 18 sourcefile。数量变了要么是新脚本没入列的缺陷，
+        # 要么是文档没跟上——两种都需要人看一眼，所以这里钉死。
+        $product.Count | Should -Be 18 -Because "发现到的产品源是 $($product.Count) 个（清单：$($product -join ', ')）——权威口径是 18 个，数量不符时先查是不是演练目录/本地脚本混进了分母"
+        @($product | Where-Object { $_ -match 'wrc-drill|\.workbuddy|backup-' }).Count |
+            Should -Be 0 -Because '演练目录/本地产物不得进入覆盖率分母（prune-dirs 的职责）'
     }
 }

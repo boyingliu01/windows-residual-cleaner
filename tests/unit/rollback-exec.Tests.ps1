@@ -31,6 +31,7 @@ Describe 'Split-StartupTarget (DD-003 composite target)' {
         $r.ValueName | Should -Be $Value
     }
 
+    # @test AC-022
     It '无法拆解（无 | / 半边为空）时 ValueName 为 null，调用方 fail-closed' -TestCases @(
         @{ Target = 'HKCU\Software\Run' }
         @{ Target = 'HKCU\Software\Run|' }
@@ -61,6 +62,7 @@ Describe 'Get-NormalizedRegKeyPath (base layer: rollback-journal.ps1)' {
 }
 
 Describe 'Get-TrimmedRegExport 的父键提示对 hive 写法不敏感（真实 reg.exe 形态）' {
+    # @test AC-043
     It 'reg export 写出的长 hive 块头必须能被短别名 HKCU 提示命中' {
         # 写入端拿到的键路径通常是短别名，而 reg.exe 导出的块头是长名。
         # 两者不做归一，DD-003 的裁剪在真实机器上恒判 value_not_found。
@@ -191,6 +193,7 @@ Describe 'Get-RegExportStructure / Test-RegStructureIdentical (REQ-024 比较口
 }
 
 Describe 'Get-RestoredMachinePath (REQ-021 整作用域)' {
+    # @test AC-022
     It '原值为 null -> $null（证据缺失，调用方 fail-closed）' {
         ($null -eq (Get-RestoredMachinePath -OriginalPath $null)) | Should -BeTrue
     }
@@ -236,6 +239,7 @@ Describe 'Get-ReportedRollbackVerdict (REQ-009 四种对外判定)' {
         $r.Reason | Should -Be ''
     }
 
+    # @test AC-006
     It 'restore + 执行失败 -> restore_failed 并保留执行原因' {
         $r = Get-ReportedRollbackVerdict -Verdict (New-InternalVerdict 'restore' 'decision_rule_3') `
             -Executed $false -ExecReason 'import_failed(reg_exit_1)'
@@ -243,6 +247,7 @@ Describe 'Get-ReportedRollbackVerdict (REQ-009 四种对外判定)' {
         $r.Reason | Should -Be 'restore_failed(import_failed(reg_exit_1))'
     }
 
+    # @test AC-006
     It 'already_present / not_restorable 原样对外' -TestCases @(
         @{ V = 'already_present'; Out = 'already_present' }
         @{ V = 'not_restorable';  Out = 'not_restorable' }
@@ -251,6 +256,7 @@ Describe 'Get-ReportedRollbackVerdict (REQ-009 四种对外判定)' {
         (Get-ReportedRollbackVerdict -Verdict (New-InternalVerdict $V 'r')).Verdict | Should -Be $Out
     }
 
+    # @test AC-006
     It 'conflict 归入 restore_failed 且保留原因（不得出现第五种判定）' {
         $r = Get-ReportedRollbackVerdict -Verdict (New-InternalVerdict 'conflict' 'external_change_sign_ii')
         $r.Verdict | Should -Be 'restore_failed'
@@ -313,6 +319,7 @@ Describe 'Get-RollbackEntryProbe + Restore-RegistryBackupFile (integration, real
         (Get-RollbackEntryProbe -Entry $entry -BackupDir $script:exDir).TargetState | Should -Be 'present_match'
     }
 
+    # @test AC-022
     It '备份文件缺失 -> 探测失败（fail-closed，绝不当作 absent 去恢复）' {
         $entry = @{ kind = 'registry_key'; target = $script:exRaw; backup_file = (Join-Path $script:exDir 'no-such.reg') }
         $p = Get-RollbackEntryProbe -Entry $entry -BackupDir $script:exDir
@@ -468,6 +475,7 @@ Describe 'Invoke-RollbackRestore (REQ-024 两阶段 + REQ-021 PATH + REQ-030/031
         $r.Counts.restore_failed | Should -Be 0
     }
 
+    # @test AC-006
     It '不可恢复类如实告知 not_restorable，不进未修复清单（REQ-030：那是告知不是失败）' {
         $j = ConvertTo-RollbackJournal -CreatedAt (Format-IsoUtc -Value $script:rrNow) -BackupDir $script:rrBackup -MachineFingerprint 'test'
         $j['entries'] = @(
@@ -544,6 +552,7 @@ Describe 'Invoke-RollbackRestore (REQ-024 两阶段 + REQ-021 PATH + REQ-030/031
         $r.Counts.restored | Should -Be 2
     }
 
+    # @test AC-021
     It '缺少 machine_path_original 时不得凭空造 PATH（fail-closed，不写系统）' {
         $script:rrWrites3 = [System.Collections.Generic.List[string]]::new()
         $seam = {
@@ -562,6 +571,7 @@ Describe 'Invoke-RollbackRestore (REQ-024 两阶段 + REQ-021 PATH + REQ-030/031
         $r.Counts.restore_failed | Should -Be 1
     }
 
+    # @test AC-005
     It '未注入 -MachinePathOverride 时读**真实** Machine PATH 比较（drill5 根因回归）' {
         # 只读真实 PATH，绝不写：写回走 -SetPathScript 接缝。
         # 原值 = 真实当前值 + 一个只存在于本 fixture 的段；本轮把它删掉后
@@ -719,6 +729,7 @@ Describe '父键作用域：Get-RollbackEntryParentKey / Get-ParentBaselineMaxBy
             | Should -Be 'HKCU\...\Run'
     }
 
+    # @test AC-093
     It '聚合基线按**父键**取 MAX，不得用全日志一个最大值（REQ-024 迹象 ii）' {
         $j = ConvertTo-RollbackJournal -BackupDir 'x' -MachineFingerprint 'f'
         $late = '2026-10-01T10:00:00Z'
@@ -787,6 +798,7 @@ Describe '父键作用域：Get-RollbackEntryParentKey / Get-ParentBaselineMaxBy
         ($null -eq (Get-ParentBaselineSnapshot -Key '')) | Should -BeTrue
     }
 
+    # @test AC-022
     It 'startup_value 条目：父键不存在 -> absent；target 不可拆解 -> fail-closed（不碰真实 Run 键）' {
         $guidN = [guid]::NewGuid().ToString('N')
         $parentOnly = 'HKCU\Software\WRC-NoParent-' + $guidN
@@ -826,6 +838,7 @@ Describe '父键作用域：Get-RollbackEntryParentKey / Get-ParentBaselineMaxBy
         $ii.SignIiReason | Should -Be 'parent_key_unreadable'
     }
 
+    # @test AC-087
     It '迹象 (ii) 输入：无基线 -> Undecidable(no_baseline)' {
         $ii = Get-SignIiInputForEntry -Entry @{ kind = 'registry_key'; target = 'HKCU\Software\Classes\x' } `
             -BaselineMax $null

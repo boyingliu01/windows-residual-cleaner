@@ -99,6 +99,7 @@ Describe 'Main returns exit code instead of calling exit (hermeticity contract)'
 
     Context 'static: Main must not contain bare exit' {
 
+        # @test AC-019
         It 'clean-residuals.ps1 Main contains no `exit <code>` statement inside the function body' {
             $lines = Get-Content $script:CleanScript
             $mainStart = ($lines | Select-String -Pattern '^function Main' | Select-Object -First 1).LineNumber
@@ -132,6 +133,7 @@ Describe 'Main returns exit code instead of calling exit (hermeticity contract)'
             $exits | Should -BeNullOrEmpty -Because "Test-AdminPrivilege must not exit; found: $($exits -join '; ')"
         }
 
+        # @test AC-019
         It 'clean-residuals.ps1 execution guard propagates the exit code and avoids exit (Main)' {
             # 只检查**可执行代码**，不检查解释性的注释
             $codeLines = @(Get-Content $script:CleanScript | Where-Object { $_ -notmatch '^\s*#' })
@@ -149,6 +151,7 @@ Describe 'Main returns exit code instead of calling exit (hermeticity contract)'
             $code | Should -Match 'function Main\s*\{[\s\S]{0,600}?param\(\[ref\]\$ExitCode\)'
         }
 
+        # @test AC-019
         It 'confirm-cleanup.ps1 Main contains no bare exit statement' {
             $lines = Get-Content $script:ConfirmScript
             $mainStart = ($lines | Select-String -Pattern '^function Main' | Select-Object -First 1).LineNumber

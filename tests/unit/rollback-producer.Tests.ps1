@@ -74,6 +74,7 @@ Describe 'ConvertTo-RollbackJournalTarget' {
 }
 
 Describe 'New-RollbackBackupDirectory（REQ-032）' {
+    # @test AC-032
     It '目录名即 backup-<run_id>，run_id 是 guid' {
         $r = New-RollbackBackupDirectory -ProjectRoot $script:ProdRoot
         $r.Ok | Should -BeTrue $r.Reason
@@ -97,6 +98,7 @@ Describe 'New-RollbackBackupDirectory（REQ-032）' {
         $b.Path | Should -Be $a.Path
     }
 
+    # @test AC-022
     It '建不出来时返回 Ok=$false + 原因，绝不抛给调用方（调用方据此 fail-closed）' {
         # 用 Mock 造失败：ProjectRoot 指向文件时 New-Item -Force 实测**不**报错，
         # 而写系统目录既依赖权限又可能真的建出目录，两种都不密闭。
@@ -189,6 +191,7 @@ Describe 'Add-RollbackJournalEntry / Update-RollbackJournalEntry（REQ-018 状�
         $foo[0]['state'] | Should -Be 'mutation_succeeded' -Because '注册表路径大小写不敏感，同一键的第二次登记必须覆盖而不是追加'
     }
 
+    # @test AC-085
     It '条目缺 item_id 时按 kind:target 补算（REQ-027 唯一权威规则）' {
         $j = New-J
         $entry = New-E
@@ -358,6 +361,7 @@ Describe 'Test-CompletionMarkerSuppressed（REQ-031：仍受损就不写标记�
         Test-CompletionMarkerSuppressed -ExitCode 15 -FailedCount 2 -RollbackAttempted -RestoreFailedCount 1 | Should -BeTrue
     }
 
+    # @test AC-049
     It '15(b) 变更后日志落盘失败（AC-052）→ 抑制：恢复端一条都看不到' {
         Test-CompletionMarkerSuppressed -ExitCode 15 -FailedCount 1 -UnjournaledCount 1 | Should -BeTrue
     }

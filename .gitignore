@@ -44,6 +44,13 @@ tests-run.log
 # WorkBuddy agent workspace data (memory, session artifacts)
 .workbuddy/
 
+# Toolchain manifest for the ROOT vitest run (Gate 5 also executes
+# `npx vitest run` from the repo root). It is tracked on purpose: the root run
+# is part of the gate chain, so a clone must be able to install the toolchain
+# that run needs. `ui/package.json` stays the authority for the UI toolchain.
+!package.json
+!package-lock.json
+
 # Drill run artifacts. The drill scripts themselves are ALSO untracked since
 # 2026-10-20 (original 2026-10-07 decision finally enforced): they create real
 # services / Machine PATH / HKLM objects and must not ship in a public repo.

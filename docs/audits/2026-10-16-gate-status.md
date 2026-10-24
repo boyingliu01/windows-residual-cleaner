@@ -4,6 +4,12 @@
 > 方法：官方记录（`.xp-gate/quality-status/master.json` + 最近 pre-commit 报告）
 > 与当日全仓实测（PSSA / eslint / tsc 构建 / jscpd / gitleaks / 双引擎 Pester / vitest）交叉验证。
 > 结论归属：DeepSeek agent 接管审计；行动项见文末。
+>
+> **更正（2026-10-24）**：后续审计 `2026-10-24-gate-status.md` 证伪了本文的一处结论——
+> 「Gate 5 对 PowerShell 空转」。实测 Stage-2 的 PowerShell 覆盖率分支**存在且会拦**
+> （`<80%` → BLOCK），适配器会真跑 Pester；真实缺陷是**产物可信性**（`coverage.xml`
+> 会被其它会话覆写成 23 sourcefile / 79.63% 或 2 字节空文档）与「0% 被当未知放行」
+> （上游 #570）。以新文档为准。
 
 ---
 
@@ -22,7 +28,7 @@ CI（run #6，`ac970b2`）：双引擎 727 用例全绿、行覆盖 82.89%、PSS
 | Gate 2 重复代码 | PASS | **22 克隆 / 205 行（2.68%）** < 5% 阈值；克隆位置与走查 P3 一一对应 | ✅ PASS |
 | Gate 3 圈复杂度 | SKIP | archlint（TS 侧）6 条 MEDIUM（`streamNDJSON` 圈复杂度 17、`CleanupPanel` 认知复杂度 30、`LogSummary` 21 等）；**PowerShell 侧零测量** | ⚠️ 半空转 |
 | Gate 4 原则检查 | SKIP | 未执行（仅 TS 工具链） | ⚠️ 空转 |
-| Gate 5 测试+覆盖率 | PASS(N/A) | 双引擎 **727/727**；行覆盖 **84.08%** 本地 / 82.89% CI（阈值 80%）；UI vitest 59/59 | ✅ 真 PASS，盲区见 3.4 |
+| Gate 5 测试+覆盖率 | PASS(N/A) | 双引擎 **727/727**；行覆盖 **84.08%** 本地 / 82.89% CI（阈值 80%）；UI vitest 59/59 | ✅ 真 PASS，盲区见 3.4（**2026-10-24 更正**：3.4 的「空转」判据不成立，真实缺陷是产物污染与 0% fail-open） |
 | Gate 6 架构 | PASS | zero-tolerance 但 `no baseline found`——无基线可比，6 条 MEDIUM 放行 | ⚠️ 弱 PASS |
 | Gate 7 IaC 安全 | PASS | 仓库无 IaC 文件（平凡 PASS） | ✅ |
 | Gate 8 密钥扫描 | PASS | gitleaks 8.30.1 实跑 0 泄露；detect-secrets 不可用（降级单工具） | ⚠️ 降级 |

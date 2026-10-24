@@ -1,0 +1,170 @@
+# Canonical requirement / acceptance-criterion id list for this repository.
+#
+# One id per line. '#' comments and blank lines are ignored.
+#
+# WHY THIS FILE EXISTS (2026-10-24)
+# ---------------------------------
+# xp-gate's Gate 5c checks that tests carry `@test REQ-XXX` annotations and
+# that every annotated id exists in the specification. Its inputs are
+# `.sprint-state/phase-outputs/req-ids.json` (produced by `xp-gate
+# check-alignment`, which this repo has never run) plus `jq`, and its file
+# discovery only matches JS/TS test names (`*.test.ts`, `*.spec.ts`, ...).
+# Measured consequence on this repo: the semantic check was a no-op, and a
+# Pester suite named `*.Tests.ps1` could never be examined even if the inputs
+# had existed.
+#
+# This file is the repo-side contract the hook falls back to (`.xp-gate-req-ids`
+# in githooks/hooks/pre-commit, Gate 5c-ps): an annotation naming an id that is
+# not listed here BLOCKS the commit. It is generated from specification.yaml
+# and must be regenerated in the same commit as any edit to the id set --
+# `tests/unit/platform-hygiene.Tests.ps1` enforces exactly that (ids here must
+# equal the ids in specification.yaml, both directions).
+#
+# ACCEPTANCE CRITERIA (AC-*) ARE PART OF THE CONTRACT ON PURPOSE
+# --------------------------------------------------------------
+# Most of this project's behavioural contract lives in AC-*, and AC ids are
+# what individual `It` blocks actually assert. Annotations may therefore use
+# either namespace; `@test REQ-*` for a whole requirement, `@test AC-*` for the
+# single criterion a test pins down.
+#
+# Regenerate with:
+#   node .xp-gate-req-ids.cjs > .xp-gate-req-ids
+
+# ── Requirements ─────────────────────────────────────────────────────────────
+REQ-001
+REQ-002
+REQ-003
+REQ-004
+REQ-005
+REQ-006
+REQ-007
+REQ-008
+REQ-009
+REQ-010
+REQ-011
+REQ-012
+REQ-013
+REQ-014
+REQ-015
+REQ-016
+REQ-017
+REQ-018
+REQ-019
+REQ-020
+REQ-021
+REQ-022
+REQ-023
+REQ-024
+REQ-025
+REQ-026
+REQ-027
+REQ-028
+REQ-029
+REQ-030
+REQ-031
+REQ-032
+REQ-033
+REQ-034
+REQ-035
+
+# ── Acceptance criteria ──────────────────────────────────────────────────────
+AC-001
+AC-002
+AC-003
+AC-004
+AC-005
+AC-006
+AC-007
+AC-008
+AC-009
+AC-010
+AC-011
+AC-012
+AC-013
+AC-014
+AC-015
+AC-016
+AC-017
+AC-018
+AC-019
+AC-020
+AC-021
+AC-022
+AC-023
+AC-024
+AC-025
+AC-026
+AC-027
+AC-028
+AC-029
+AC-030
+AC-031
+AC-032
+AC-033
+AC-034
+AC-035
+AC-036
+AC-037
+AC-038
+AC-039
+AC-040
+AC-041
+AC-042
+AC-043
+AC-044
+AC-045
+AC-046
+AC-047
+AC-048
+AC-049
+AC-050
+AC-051
+AC-052
+AC-053
+AC-054
+AC-055
+AC-056
+AC-057
+AC-058
+AC-059
+AC-060
+AC-061
+AC-062
+AC-063
+AC-064
+AC-065
+AC-066
+AC-067
+AC-068
+AC-069
+AC-070
+AC-071
+AC-072
+AC-073
+AC-074
+AC-075
+AC-076
+AC-077
+AC-078
+AC-079
+AC-080
+AC-081
+AC-082
+AC-083
+AC-084
+AC-085
+AC-086
+AC-087
+AC-088
+AC-089
+AC-090
+AC-091
+AC-092
+AC-093
+AC-094
+AC-095
+AC-096
+AC-097
+AC-098
+AC-099
+AC-100

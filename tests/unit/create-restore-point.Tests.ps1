@@ -135,6 +135,7 @@ Describe 'create-restore-point.ps1 restore point branches' {
         $script:checkpointDesc | Should -Match '^Pre-cleanup '
     }
 
+    # @test AC-018
     It 'warns and still proceeds when Checkpoint-Computer fails' {
         . $script:RestoreScript
         function Test-AdminPrivilege { param([switch]$Mandatory) return $true }

@@ -65,6 +65,7 @@ Describe 'Test-RollbackRestorable: kind -> restorable + reason' {
         $r.Reason | Should -Not -BeNullOrEmpty
     }
 
+    # @test AC-006
     It '未知 kind 判为不可恢复（fail-closed，不得抛）' {
         $r = Test-RollbackRestorable -Kind 'widget'
         $r.Restorable | Should -BeFalse
@@ -127,6 +128,7 @@ Describe 'Get-ExpectedPathAfterCleanup' {
         Get-ExpectedPathAfterCleanup -OriginalPath 'A;B' -RemovedEntries @() | Should -Be 'A;B'
     }
 
+    # @test AC-021
     It 'OriginalPath 为 null 时返回 null（证据缺失，由调用方降级人工）' {
         $r = Get-ExpectedPathAfterCleanup -OriginalPath $null -RemovedEntries @('A')
         ($null -eq $r) | Should -BeTrue
@@ -204,6 +206,7 @@ Describe 'Get-RollbackVerdict: REQ-024 decision table' {
         $v.EvidenceIncomplete | Should -BeTrue
     }
 
+    # @test AC-021
     It 'path_entry 命中迹象 (iii)（PATH 漂移）-> conflict（REQ-021 顺序：先窗口后漂移）' {
         $e = New-VerdictEntry -Kind 'path_entry' -Target 'C:\Tools\WRC'
         $v = Get-RollbackVerdict -Entry $e -TargetState 'absent' -WithinWindow $true `
@@ -212,6 +215,7 @@ Describe 'Get-RollbackVerdict: REQ-024 decision table' {
         $v.Reason | Should -Be 'external_change_sign_iii'
     }
 
+    # @test AC-021
     It 'path_entry 冲突必须留下比较证据（2026-10-07 drill5：只写 reason 导致现场不可复盘）' {
         $e = New-VerdictEntry -Kind 'path_entry' -Target 'C:\Tools\WRC'
         $v = Get-RollbackVerdict -Entry $e -TargetState 'absent' -WithinWindow $true `
@@ -221,6 +225,7 @@ Describe 'Get-RollbackVerdict: REQ-024 decision table' {
         $v.PathCurrent | Should -Be 'A;B;C'
     }
 
+    # @test AC-021
     It 'path_entry 比较双方任一为 null 时必须与 mismatch 区分（null 是故障，不是漂移）' {
         $e = New-VerdictEntry -Kind 'path_entry' -Target 'C:\Tools\WRC'
         # 传 null 必须靠「省略参数」而非 `-PathCurrent $null`：PS 5.1 和 pwsh 7 都会把
@@ -247,6 +252,7 @@ Describe 'Get-RollbackVerdict: REQ-024 decision table' {
         $v.PathCompare | Should -Be 'equal'
     }
 
+    # @test AC-006
     It 'path_deleted 条目 -> not_restorable 并给出原因，不参与决策表' {
         $e = New-VerdictEntry -Kind 'path_deleted' -Target 'C:\Old\WRC-App'
         $v = Get-RollbackVerdict -Entry $e -TargetState 'absent' -WithinWindow $true
@@ -254,6 +260,7 @@ Describe 'Get-RollbackVerdict: REQ-024 decision table' {
         $v.Reason | Should -Not -BeNullOrEmpty
     }
 
+    # @test AC-006
     It '裁决记录必须回指 item_id（REQ-030 未修复清单可直接回指）' {
         $e = New-VerdictEntry
         $v = Get-RollbackVerdict -Entry $e -TargetState 'absent' -WithinWindow $true
@@ -268,6 +275,7 @@ Describe 'Get-RollbackVerdict: REQ-024 decision table' {
 # ─────────────────────────────────────────────────────────────────────────────
 
 Describe 'Get-RestorableEntry' {
+    # @test AC-006
     It '仅返回判定为 restore 的条目；conflict/not_restorable/already_present 分流' {
         $eRestore = New-VerdictEntry -Target 'HKCU\Software\A'
         $eConflict = New-VerdictEntry -Target 'HKCU\Software\B' -AbsentConfirmed $false
@@ -296,6 +304,7 @@ Describe 'Get-RestorableEntry' {
         @($r.Restore).Count | Should -Be 0
     }
 
+    # @test AC-022
     It '条目缺外部状态时 fail-closed 判 conflict，绝不臆断为 absent 去恢复' {
         $e = New-VerdictEntry
         $r = Get-RestorableEntry -Entries @($e) -TargetStates @{} -TargetIdMap @{} -WithinWindow $true
@@ -334,6 +343,7 @@ Describe 'Format-RollbackReport' {
         $text | Should -Not -BeLike '*will be restored automatically*'
     }
 
+    # @test AC-021
     It 'path_entry 冲突的报告必须给出比较证据行（compare token + 长度 + 落盘指向）' {
         $e = New-VerdictEntry -Kind 'path_entry' -Target 'C:\Tools\WRC'
         $v = Get-RollbackVerdict -Entry $e -TargetState 'absent' -WithinWindow $true `
@@ -378,6 +388,7 @@ Describe 'ConvertTo-RollbackJournal: REQ-027 top-level completeness' {
         }
     }
 
+    # @test AC-021
     It 'machine_path_scope 可注入且随 Write/Read 往返存活' {
         $backupDir = Join-Path $env:TEMP ('wrc-jc-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $backupDir -Force | Out-Null

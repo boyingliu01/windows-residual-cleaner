@@ -201,6 +201,7 @@ Describe 'rollback.ps1 Main' {
         $out | Should -Match 'Restore point: Pre-cleanup 2026-06-01'
     }
 
+    # @test AC-003
     It 'reads the cleanup timestamp from a cleanup log' {
         $log = Join-Path $script:root 'cleanup-log.json'
         [IO.File]::WriteAllText($log, '{"summary":{"timestamp":"2026-06-01T12:00:00"}}')

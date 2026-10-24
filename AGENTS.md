@@ -603,10 +603,16 @@ It 'Works against real registry data' {
 
 ## 已知限制
 
-- **根目录 `package.json` 是有意 local-only**（2026-10-16 走查确认）：它只服务本机
-  `npx vitest`（Gate 5 根跑）的 devDeps，**已 gitignore、不进仓**；`ui/package.json`
-  才是 UI 工具链的权威依赖清单。不要把根 package.json 「补」进 git——那会引入两份
-  依赖源，且 Gate 5 读的是它而非仓库状态。
+- **根目录 `package.json` / `package-lock.json` 现在**入库**了（2026-10-24 更正）**：此前的
+  「有意 local-only、已 gitignore、不进仓」结论**没有落地**——`.gitignore` 里从来只有
+  `node_modules/` 与 `*.json` 的 un-ignore 列表，而根 `package.json` 恰好落在 `*.json`
+  的忽略面里，于是它**既没进仓、也不在本机可见**（`git check-ignore` 可复核）。
+  这制造的是「新克隆上 Gate 5 的根 vitest 跑不起来、而本地能跑」的假绿/假红分歧，
+  以及一份**无人审查**的依赖清单（`vitest` / `jsdom` / `@vitest/coverage-v8` /
+  `@testing-library/*` 全靠一次会话手工 `npm i`）。
+  现在二者用 `!package.json` / `!package-lock.json` 显式反忽略并入库，`vitest.config.ts`
+  把范围限定在服务端（`ui/server/**`），与 `ui/package.json` 的 UI 工具链**职责不重叠**：
+  根清单只承载 Gate 5 根跑所需的最小 devDeps。改依赖请同时提交 `package-lock.json`。
 - MSI 安装软件的 `UninstallString` 为 `MsiExec.exe /X{GUID}` 格式，当前逻辑已跳过此类条目
 - 系统 PATH 损坏（如 `C:\Program Fi;es\Memurai\`）会被如实报告，但不会被自动修复
 - 计划任务中的 bare exe 名（如 `sc.exe`）需要 PATH 解析，当前策略是跳过而非解析

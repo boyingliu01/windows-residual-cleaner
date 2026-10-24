@@ -1,0 +1,32 @@
+# Canonical requirement / acceptance-criterion id list for this repository.
+#
+# One id per line. '#' comments and blank lines are ignored.
+#
+# WHY THIS FILE EXISTS (2026-10-24)
+# ---------------------------------
+# xp-gate's Gate 5c checks that tests carry `@test REQ-XXX` annotations and
+# that every annotated id exists in the specification. Its inputs are
+# `.sprint-state/phase-outputs/req-ids.json` (produced by `xp-gate
+# check-alignment`, which this repo has never run) plus `jq`, and its file
+# discovery only matches JS/TS test names (`*.test.ts`, `*.spec.ts`, ...).
+# Measured consequence on this repo: the semantic check was a no-op, and a
+# Pester suite named `*.Tests.ps1` could never be examined even if the inputs
+# had existed.
+#
+# This file is the repo-side contract the hook falls back to (`.xp-gate-req-ids`
+# in githooks/hooks/pre-commit, Gate 5c-ps): an annotation naming an id that is
+# not listed here BLOCKS the commit. It is generated from specification.yaml
+# and must be regenerated in the same commit as any edit to the id set --
+# `tests/unit/platform-hygiene.Tests.ps1` enforces exactly that (ids here must
+# equal the ids in specification.yaml, both directions).
+#
+# ACCEPTANCE CRITERIA (AC-*) ARE PART OF THE CONTRACT ON PURPOSE
+# --------------------------------------------------------------
+# Most of this project's behavioural contract lives in AC-*, and AC ids are
+# what individual `It` blocks actually assert. Annotations may therefore use
+# either namespace; `@test REQ-*` for a whole requirement, `@test AC-*` for the
+# single criterion a test pins down.
+#
+# Regenerate with:
+#   node .xp-gate-req-ids.cjs > .xp-gate-req-ids
+

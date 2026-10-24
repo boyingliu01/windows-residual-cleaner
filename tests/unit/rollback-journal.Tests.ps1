@@ -95,6 +95,7 @@ Describe 'rollback-journal: 原子写两条路径（REQ-005 / AC-071）' {
         @(Get-ChildItem $script:Dir -Filter '*.prev').Count | Should -Be 1
     }
 
+    # @test AC-071
     It '不使用 Move-Item -Force（结构性断言：该 cmdlet 先删目标再移动，存在缺失窗口）' {
         # 实测结论（重要）：用「轮询探测目标是否存在」**无法可靠验证**原子性。
         # 证据：即使故意写成 delete-then-move 的非原子版本，同进程轮询 300 次也观测不到缺口
@@ -154,6 +155,7 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         ([guid]::TryParse([string]$j['run_id'], [ref]([guid]::Empty))) | Should -BeTrue
     }
 
+    # @test AC-032
     It 'backup_dir 默认为 backup-<run_id>（REQ-032，不是时间戳）' {
         $j = ConvertTo-RollbackJournal -BackupDir '' -MachineFingerprint 'FP'
         $j['backup_dir'] | Should -Be ("backup-" + $j['run_id'])
@@ -190,11 +192,13 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
     }
 
+    # @test AC-037
     It 'fingerprint_source 非法取值自证失败' {
         $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP' -FingerprintSource 'bogus'
         (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
     }
 
+    # @test AC-037
     It 'fingerprint_source 两种合法取值都通过' {
         foreach ($s in 'machine_guid', 'hostname_fallback') {
             $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP' -FingerprintSource $s
@@ -225,6 +229,7 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
     }
 
+    # @test AC-051
     It 'backup_file 存在且哈希匹配时通过；哈希不匹配时失败' {
         $bf = Join-Path $script:Dir 'reg-x.reg'
         [System.IO.File]::WriteAllText($bf, 'Windows Registry Editor Version 5.00')
@@ -261,6 +266,7 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         ($r.Reasons -join ' ') | Should -Match 'item_id'
     }
 
+    # @test AC-037
     It 'journal_version 非数字（外部畸形 JSON）→ 判不支持且不抛异常（评审修复）' {
         $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
         $j['journal_version'] = 'abc'
@@ -268,6 +274,7 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         (Test-RollbackJournalSelfValid -Journal $j -MachineFingerprint 'FP').Valid | Should -BeFalse
     }
 
+    # @test AC-083
     It 'cleanup_log_timestamp 非 null 但不可解析 → 自证失败，不静默忽略（评审修复 AC-083）' {
         $clp = Join-Path $script:Dir 'cl.json'
         [System.IO.File]::WriteAllText($clp, '{"summary":{"failed":1}}')
@@ -281,6 +288,7 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         ($r.Reasons -join ' ') | Should -Match 'timestamp'
     }
 
+    # @test AC-083
     It 'cleanup_log_timestamp 以 [datetime] 对象给出（pwsh7 ConvertFrom-Json 回读形态）→ 仍通过自证' {
         # pwsh 7 的 ConvertFrom-Json 会把 ISO-Z 串解析成 [datetime]（Kind=Utc），PS 5.1 保持字符串。
         # 自证必须直接接受 [datetime] 原始对象——先 [string] 化会丢 Z、再被严格解析器误拒，
@@ -297,6 +305,7 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         $r.Valid | Should -BeTrue -Because ($r.Reasons -join ' ')
     }
 
+    # @test AC-047
     It 'completed_at 非空但非合法时间戳（损坏/篡改）→ 自证失败，不永久静默阻断恢复（评审修复）' {
         $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
         $j['completed_at'] = 'completed'
@@ -319,6 +328,7 @@ Describe 'rollback-journal: 构造与自证（REQ-027）' {
         ($r.Reasons -join ' ') | Should -Match 'created_at 缺失'
     }
 
+    # @test AC-083
     It 'cleanup_log_* 三个都是空串（非 null）→ 等价于「无清理日志证据」，判合法（评审修复：空白≡缺失）' {
         $j = ConvertTo-RollbackJournal -BackupDir $script:Dir -MachineFingerprint 'FP'
         $j['cleanup_log_path'] = ''

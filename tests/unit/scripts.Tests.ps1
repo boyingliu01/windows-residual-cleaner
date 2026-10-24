@@ -200,6 +200,7 @@ Describe 'generate-report.ps1 Main input validation' {
         $again | Should -Be 3
     }
 
+    # @test AC-069
     It 'emits an empty candidate_directories array when the scan output omits it' {
         # 覆盖 generate-report.ps1 的 `else { @() }` 分支：
         # 当 uninstalled-list.json 没有 candidate_directories 字段时，
@@ -704,6 +705,7 @@ public static class WrcRirLock {
         Test-Path $target | Should -Be $false
     }
 
+    # @test AC-016
     It 'Returns exactly $false (success stream carries no extra objects) when all four tiers fail' {
         # share=0 目录句柄锁死目标：tier 1-4 全部失败。修复前 tier-3 的裸
         # `cmd /c ... 2>&1` 会把 cmd 的 stderr 包成 ErrorRecord 泄漏进**成功流**，
@@ -823,6 +825,7 @@ Describe 'clean-residuals.ps1 safety guards (fail-closed, static + subprocess)' 
     # 会终止 Pester 宿主，导致后续用例静默不执行（表现为 "Tests Passed" 骤降）。
     # 这些 fail-closed 契约改为：(a) 静态结构断言，(b) 子进程端到端断言。
 
+    # @test AC-022
     It 'Declares the fail-closed ConfirmFile guards in Main' {
         $c = Get-Content $global:_guardScript -Raw
         $c | Should -Match 'ConfirmFile not found'
@@ -871,6 +874,7 @@ Describe 'clean-residuals.ps1 safety guards (fail-closed, static + subprocess)' 
         $combined | Should -Match 'ConfirmFile not found|Administrator privileges required'
     }
 
+    # @test AC-013
     It 'Aborts with exit 2 (privilege) or 1 in a child process when no restore point exists (non-admin only)' -Skip:$script:IsAdmin {
         # 非 DryRun 且无 backup-* → exit 1；非管理员则先 exit 2。
         # 注意：这条契约只在**非管理员**会话可观测。管理员会话（如 CI runner）下
@@ -1045,6 +1049,7 @@ public static class WrcRirLock {
         }
     }
 
+    # @test AC-077
     It '退出码 15 且本轮有失败未回滚时，日志保持未完成（REQ-031 15(c)：仍受损就不写标记）' {
         . $global:_arbScript
         Mock Test-AdminPrivilege { return $true }
@@ -1321,6 +1326,7 @@ Describe 'clean-residuals.ps1 destructive-safety regressions (DryRun)' {
         $output | Should -Not -Match 'Deleting registry key: HKLM'
     }
 
+    # @test AC-015
     It 'Removes a dead PATH entry without treating it as a filesystem delete' {
         $fx = New-WrcFixture -Name 'pathentry' -Ids @('path_001') -Categories @{
             path_residuals = @(@{ id='path_001'; type='path_entry'; path='C:\GhostBin'; risk='caution'; reason='test' })

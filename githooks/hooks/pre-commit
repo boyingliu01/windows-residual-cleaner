@@ -2469,6 +2469,59 @@ else
   fi
 
   # ============================================================================
+  # Gate 5c-ps: Pester parity for the annotation convention (downstream, 2026-10-24)
+  #
+  # The block above drives from req-ids.json + jq + JS/TS test-file naming.
+  # Measured on this repo: req-ids.json does not exist (check-alignment is not
+  # run), so the whole semantic check degrades to "nothing happened" -- and
+  # even with the file present, a Pester suite named `*.Tests.ps1` matches
+  # NONE of those patterns, so the PowerShell half of a PowerShell project
+  # could never be checked.
+  #
+  # What this block does: when staged test files carry `@test INV-*` /
+  # `@test REQ-*` annotations AND the repo declares the canonical REQ list
+  # (`.xp-gate-req-ids`, one id per line, '#' comments allowed), every
+  # annotated id must exist in that list. An unknown id is a BLOCK -- an
+  # annotation that names nothing is a renamed or deleted requirement still
+  # being "enforced" by a test that cannot fail for it.
+  # ============================================================================
+  PS_ANNOTATED_TESTS=$(echo "$CHANGED_FILES" | grep -E '\.Tests\.ps1$' || true)
+  REQ_ID_LIST=".xp-gate-req-ids"
+  if [ -n "$PS_ANNOTATED_TESTS" ] && [ -f "$REQ_ID_LIST" ]; then
+    # Strip a UTF-8 BOM and trailing CR once, into a temp file. PowerShell 5.1's
+    # `Set-Content -Encoding UTF8` writes a BOM, and it glues itself to the
+    # first line -- the first id would then never match, and a leading '#'
+    # would stop looking like a comment (measured: the repo's own first
+    # generation of this file carried one).
+    REQ_ID_CLEAN=$(mktemp)
+    tr -d '\r' < "$REQ_ID_LIST" | sed '1s/^\xEF\xBB\xBF//' > "$REQ_ID_CLEAN"
+    PS_ANNOTATION_ERRORS=0
+    PS_ANNOTATION_CHECKED=0
+    for tf in $PS_ANNOTATED_TESTS; do
+      [ -f "$tf" ] || continue
+      PS_ANNOTATED_REQS=$(grep -oE '@test[[:space:]]+(INV|REQ|AC)-[A-Z0-9-]+' "$tf" 2>/dev/null | sed -E 's/@test[[:space:]]+//' | sort -u || true)
+      for req_id in $PS_ANNOTATED_REQS; do
+        PS_ANNOTATION_CHECKED=$((PS_ANNOTATION_CHECKED + 1))
+        if ! grep -v '^[[:space:]]*#' "$REQ_ID_CLEAN" | sed 's/[[:space:]]*$//' | grep -qxF -- "$req_id"; then
+          echo "❌ Gate 5c-ps: $tf — @test $req_id: id not declared in $REQ_ID_LIST"
+          PS_ANNOTATION_ERRORS=$((PS_ANNOTATION_ERRORS + 1))
+        fi
+      done
+    done
+    rm -f "$REQ_ID_CLEAN"
+    if [ "$PS_ANNOTATION_ERRORS" -gt 0 ]; then
+      echo ""
+      echo "❌ $PS_ANNOTATION_ERRORS PowerShell test annotation(s) reference undeclared ids — commit BLOCKED"
+      echo "   Fix: add the id to $REQ_ID_LIST (with its acceptance criterion) or correct the annotation."
+      exit 1
+    fi
+    if [ "$PS_ANNOTATION_CHECKED" -gt 0 ]; then
+      echo "  ✅ Gate 5c-ps: $PS_ANNOTATION_CHECKED Pester annotation(s) match $REQ_ID_LIST"
+    fi
+  fi
+
+  # ============================================================================
+  # ============================================================================
   # v0.14.3+ (Issue #312): Early skip when no code files changed.
   # If the commit only touches VERSION, CHANGELOG, docs, config, .gitignore,
   # or similar non-code files, skip the test run entirely.
@@ -3046,6 +3099,63 @@ else
       else
         echo "⚠️  coverage.xml not found. Ensure Pester coverage was run."
       fi
+      # ----------------------------------------------------------------------
+      # REPORT-INTEGRITY CHECK (downstream hardening, 2026-10-24).
+      #
+      # The percentage above is only as honest as the sourcefile set the report
+      # was generated from. Measured on this repo: two Pester runs sharing one
+      # checkout overwrite coverage.xml, and a run that collects a different
+      # file list turns the LINE counter into a different measurement entirely
+      # (observed 23 sourcefiles at 79.63% in one session, 0 sourcefiles / a
+      # 2-byte document in another). A number that is arithmetically valid but
+      # measured over the wrong code is the exact silent degradation this gate
+      # exists to prevent, and nothing in the hook looked at the file list.
+      #
+      # The denominator is the ADAPTER's discovery (`*.ps1`, pruned), minus the
+      # documented per-artifact exclusions. Whether a source file is actually
+      # instrumentable is not this check's business -- an absent file is
+      # VISIBLE arithmetic here, whereas a wrongly excluded file would be
+      # invisible. Fail closed only when the report covers NONE of it (a stale
+      # or empty artifact); a partial report is reported with the delta so the
+      # operator can tell "coverage is low" from "the report is about other
+      # files".
+      # ----------------------------------------------------------------------
+      PS_COVERAGE_ADAPTER=$(resolve_adapter_path "powershell" 2>/dev/null || true)
+      if [ -n "$PS_COVERAGE_ADAPTER" ] && [ -f "$PS_COVERAGE_ADAPTER" ]; then
+        PS_COV_EXPECTED=$(bash -c '
+          source "$1" >/dev/null 2>&1 || exit 1
+          _find_powershell_files "*.ps1" | grep -v "\.Tests\.ps1$" | sed "s|^\./||" | sort
+        ' _ "$PS_COVERAGE_ADAPTER" 2>/dev/null | grep -c '.' || true)
+        if [ "${PS_COV_EXPECTED:-0}" -gt 0 ] && [ -f "coverage.xml" ]; then
+          PS_COV_FILE_COUNT=$(PS_EXPECTED="$PS_COV_EXPECTED" node -e "
+            try {
+              const fs = require('fs');
+              const xml = fs.readFileSync('coverage.xml', 'utf8');
+              const files = [...xml.matchAll(/<sourcefile\b[^>]*\bname=\"([^\"]+)\"/gi)]
+                .map((m) => m[1].replace(/\\\\/g, '/').replace(/^\.\//, ''));
+              const expected = new Set(
+                (process.env.PS_EXPECTED || '').split(/\r?\n/).filter(Boolean)
+              );
+              let omitted = [];
+              for (const f of expected) if (!files.includes(f)) omitted.push(f);
+              console.log(files.length + '|' + omitted.join(','));
+            } catch (error) { console.log('parse_error|'); }
+          " 2>/dev/null) || PS_COV_FILE_COUNT="parse_error|"
+          PS_COV_N=${PS_COV_FILE_COUNT%%|*}
+          PS_COV_MISSING=${PS_COV_FILE_COUNT#*|}
+          if [ "$PS_COV_N" = "parse_error" ]; then
+            echo "⚠️  PowerShell coverage report integrity: could not read the sourcefile list"
+          elif [ "$PS_COV_N" -eq 0 ]; then
+            echo "❌ BLOCKED - PowerShell coverage.xml contains 0 sourcefile entries, so the percentage above describes no product code (stale or empty artefact)"
+            exit 1
+          elif [ -n "$PS_COV_MISSING" ]; then
+            echo "     ℹ️  Coverage denominator delta: ${PS_COV_N} file(s) in coverage.xml vs ${PS_COV_EXPECTED} discovered"
+            echo "        not in report: $(printf '%s' "$PS_COV_MISSING" | tr ',' ' ')"
+          else
+            echo "     ✅ Coverage report integrity: ${PS_COV_N}/${PS_COV_EXPECTED} discovered source files present"
+          fi
+        fi
+      fi
       ;;
     "iac")
       # IaC has no coverage concept — must not borrow the TypeScript report
@@ -3072,7 +3182,7 @@ else
           COVERAGE_PERCENT=$(grep -oP 'coverage: \K[0-9]+%' coverage/lcov.info 2>/dev/null | head -1 | tr -d '%') || COVERAGE_PERCENT=""
         fi
       fi
-      if [ -n "$COVERAGE_PERCENT" ] && [ "$COVERAGE_PERCENT" != "parse_error" ] && [ "$COVERAGE_PERCENT" -gt 0 ]; then
+      if [ -n "$COVERAGE_PERCENT" ] && [ "$COVERAGE_PERCENT" != "parse_error" ] && [ "$COVERAGE_PERCENT" -ge 0 ] 2>/dev/null; then
         if [ "$COVERAGE_PERCENT" -lt "$COVERAGE_THRESHOLD" ]; then
           # Only a subset test run (smart selection) warns — the full suite may
           # still reach ≥80%; a full suite run must block.
@@ -3841,6 +3951,8 @@ generate_quality_report() {
   # -- degraded coverage, kept in the denominator but flagged separately so a
   # degraded gate is never confused with a real PASS.
   local DEGRADED_COUNT=0
+  local FAILED_COUNT=0
+  local FAILED_JSON=""
   local DEGRADED_JSON=""
   for gate in 1 2 3 4 5 6 7 8 9 10 11 12; do
     local status_var="GATE_${gate}_STATUS"
@@ -3857,8 +3969,10 @@ generate_quality_report() {
     case "$gate_status" in
       PASS) PASSED_COUNT=$((PASSED_COUNT + 1)) ;;
       SKIP) SKIP_COUNT=$((SKIP_COUNT + 1)) ;;
-      WARN) WARN_COUNT=$((WARN_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)); DEGRADED_COUNT=$((DEGRADED_COUNT + 1)); DEGRADED_JSON="${DEGRADED_JSON:+$DEGRADED_JSON, }\"gate${gate}\"";;
-      *) NONPASS_COUNT=$((NONPASS_COUNT + 1)) ;;
+      WARN) WARN_COUNT=$((WARN_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)) ;;
+      DEGRADED) DEGRADED_COUNT=$((DEGRADED_COUNT + 1)); WARN_COUNT=$((WARN_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)); DEGRADED_JSON="${DEGRADED_JSON:+$DEGRADED_JSON, }\"gate${gate}\"";;
+      FAIL|BLOCK) FAILED_COUNT=$((FAILED_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)); FAILED_JSON="${FAILED_JSON:+$FAILED_JSON, }\"gate${gate}\"";;
+      *) NONPASS_COUNT=$((NONPASS_COUNT + 1)); FAILED_COUNT=$((FAILED_COUNT + 1)); FAILED_JSON="${FAILED_JSON:+$FAILED_JSON, }\"gate${gate}\"";;
     esac
   done
 
@@ -3872,6 +3986,17 @@ generate_quality_report() {
     else
       VERDICT="WARN"     # all effective gates passed or warned; warns forbid PASS
     fi
+  elif [ "$SKIP_COUNT" -gt 0 ]; then
+    # PARTIAL: 没有任何失败，但有门禁没跑。
+    #
+    # SKIP 被排除在分母外，于是 effective pass rate 把"没跑"与"跑过"算成同一件事。
+    # 实测只改一个 .md 的提交：12 道门跑了 3 道，全部通过，汇总却报
+    # "10.0/10 | verdict: PASS"，整个代码质量半边从未执行。
+    #
+    # docs-only 提交跳过重门禁是设计行为（REQ-F2），所以这里绝不阻断 —— 降级
+    # verdict 就是全部修复。它让 PASS 保持"该跑的都跑了且都过了"，而不是
+    # "没人抱怨"。
+    VERDICT="PARTIAL"
   fi
 
   local SCORE=0
@@ -3889,6 +4014,28 @@ generate_quality_report() {
   if [ "$EFFECTIVE_TOTAL" -gt 0 ]; then
     EFFECTIVE_PASS_RATE=$(awk "BEGIN {printf \"%.1f\", ($PASSED_COUNT / $EFFECTIVE_TOTAL) * 100}")
   fi
+
+  # #564: `score` above divides by the EFFECTIVE total, so a SKIPped gate leaves
+  # the denominator instead of counting against it. Arithmetic on that formula:
+  # 1 passed / 11 skipped is 1/1 -> 10.0, identical to 10 passed / 2 skipped.
+  # .quality-history.jsonl shows Gate 3 running in 7% of runs and Gate 4 in 8%,
+  # every one of them recording score 10 -- skipping work raised the score.
+  #
+  # The effective view answers a real question ("of the gates that could run,
+  # how many passed?"), so it stays. What was missing is the denominator being
+  # visible, and a score that counts skips against the run. `scoreAllGates`
+  # divides by TOTAL_GATES, so a skipped gate costs exactly what a failed one
+  # costs in that view; `gatesRan` says how much of the suite was exercised.
+  # `score` keeps its current value and meaning so dashboard/ and
+  # .quality-history.jsonl consumers do not break (#507 already made it
+  # number-or-null; this stays within that contract).
+  local GATES_RAN=$EFFECTIVE_TOTAL
+  local SCORE_ALL="N/A"
+  if [ "$TOTAL_GATES" -gt 0 ]; then
+    SCORE_ALL=$(awk "BEGIN {printf \"%.1f\", ($PASSED_COUNT / $TOTAL_GATES) * 10}")
+  fi
+  local SCORE_ALL_JSON="$SCORE_ALL"
+  [ "$SCORE_ALL_JSON" = "N/A" ] && SCORE_ALL_JSON="null"
   # JSON bodies need a number or null -- a literal N/A breaks every consumer.
   local SCORE_JSON="$SCORE"
   [ "$SCORE_JSON" = "N/A" ] && SCORE_JSON="null"
@@ -3970,7 +4117,12 @@ generate_quality_report() {
     "gatesDegraded": $DEGRADED_COUNT,
     "degradedGates": [$DEGRADED_JSON],
     "gatesEffective": $EFFECTIVE_TOTAL,
+    "gatesWarned": $WARN_COUNT,
+    "gatesFailed": $FAILED_COUNT,
+    "failedGates": [$FAILED_JSON],
     "effectivePassRate": $EFFECTIVE_PASS_RATE_JSON,
+    "gatesRan": $GATES_RAN,
+    "scoreAllGates": $SCORE_ALL_JSON,
     "score": $SCORE_JSON,
     "verdict": "$VERDICT"
   },
@@ -4004,7 +4156,7 @@ generate_quality_report() {
     },
     "gate5_tests": {
       "name": "Tests + Coverage",
-      "status": "${GATE_5_STATUS:-PASS}",
+      "status": "${GATE_5_STATUS:-SKIP}",
       "thresholds": { "lines": ${COVERAGE_THRESHOLD}, "functions": null, "branches": null, "statements": null },
       "threshold_source": "${COVERAGE_THRESHOLD_SOURCE}",
       "actual": { "coverage": "${COV_PCT}" },
@@ -4068,7 +4220,7 @@ ENDJSON
   GATES_JSON="${GATES_JSON}\"gate2\":{\"status\":\"${GATE_2_STATUS:-SKIP}\",\"name\":\"Duplicate Code\"},"
   GATES_JSON="${GATES_JSON}\"gate3\":{\"status\":\"${GATE_3_STATUS:-PASS}\",\"name\":\"Complexity\",\"warnings\":${CC_WARNINGS:-0}},"
   GATES_JSON="${GATES_JSON}\"gate4\":{\"status\":\"${GATE_4_STATUS:-PASS}\",\"name\":\"Principles\",\"warnings\":${WARNING_COUNT:-0}},"
-  GATES_JSON="${GATES_JSON}\"gate5\":{\"status\":\"${GATE_5_STATUS:-PASS}\",\"name\":\"Tests+Coverage\",\"coverage\":\"${COV_PCT}\"},"
+  GATES_JSON="${GATES_JSON}\"gate5\":{\"status\":\"${GATE_5_STATUS:-SKIP}\",\"name\":\"Tests+Coverage\",\"coverage\":\"${COV_PCT}\"},"
   GATES_JSON="${GATES_JSON}\"gate6\":{\"status\":\"${GATE_6_STATUS:-SKIP}\",\"name\":\"Architecture+BoyScout\",\"bsBlocked\":${BS_BLOCKED}},"
   GATES_JSON="${GATES_JSON}\"gate7\":{\"status\":\"${GATE_7_STATUS:-PASS}\",\"name\":\"IaC Security\"},"
   GATES_JSON="${GATES_JSON}\"gate8\":{\"status\":\"${GATE_8_STATUS:-PASS}\",\"name\":\"Secret Scanning\"},"
@@ -4089,7 +4241,7 @@ ENDJSON
   printf "  %-45s %s\n" "Gate 2: Duplicate Code" "${GATE_2_STATUS:-SKIP}"
   printf "  %-45s %s (warnings: ${CC_WARNINGS:-0})\n" "Gate 3: Complexity" "${GATE_3_STATUS:-PASS}"
   printf "  %-45s %s (warnings: ${WARNING_COUNT:-0})\n" "Gate 4: Principles" "${GATE_4_STATUS:-PASS}"
-  printf "  %-45s %s (coverage: ${COV_PCT}%%)\n" "Gate 5: Tests + Coverage" "${GATE_5_STATUS:-PASS}"
+  printf "  %-45s %s (coverage: ${COV_PCT}%%)\n" "Gate 5: Tests + Coverage" "${GATE_5_STATUS:-SKIP}"
   printf "  %-45s %s\n" "Gate 6: Architecture + Boy Scout" "${GATE_6_STATUS:-SKIP}"
   printf "  %-45s %s\n" "Gate 7: IaC Security" "${GATE_7_STATUS:-PASS}"
   printf "  %-45s %s\n" "Gate 8: Secret Scanning" "${GATE_8_STATUS:-PASS}"
@@ -4098,7 +4250,10 @@ ENDJSON
   printf "  %-45s %s\n" "Gate 11: Sprint Flow" "${GATE_11_STATUS:-PASS}"
   printf "  %-45s %s\n" "Gate 12: File Hygiene" "${GATE_12_STATUS:-WARN}"
   echo ""
-  echo "  Overall Score: $SCORE/10 | $PASSED_COUNT/$TOTAL_GATES gates passed (effective: $PASSED_COUNT/$EFFECTIVE_TOTAL, skipped: $SKIP_COUNT, verdict: $VERDICT)"
+  # #564: both views in one line. The effective score answers "of the gates that
+  # could run, how many passed"; the all-gates score counts a skip against the
+  # run. Printing only the first let a 1-of-12 run read as 10.0/10.
+  echo "  Overall Score: $SCORE/10 effective | $SCORE_ALL/10 of all gates ($GATES_RAN/$TOTAL_GATES ran, $SKIP_COUNT skipped, verdict: $VERDICT)"
   echo "  Branch status: $REPORT_FILE"
   echo "  Run report: $PERSISTED_REPORT_FILE"
   echo "  History saved: $HISTORY_FILE"

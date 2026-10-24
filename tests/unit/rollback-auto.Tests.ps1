@@ -251,6 +251,7 @@ Describe 'Get-RecoveryJournalTarget（共享日志定位，REQ-019 Step 1）' {
         @($sel.Others).Count | Should -Be 2
     }
 
+    # @test AC-046
     It '两份 created_at 相同的未完成日志 → 判为歧义并原样交回候选清单' {
         $same = (Format-IsoUtc -Value (Get-Date).ToUniversalTime())
         foreach ($n in @('backup-b1', 'backup-b2')) {
@@ -316,6 +317,7 @@ Describe 'Invoke-AutoRollback（REQ-008 退出码与落盘副作用）' {
         (Read-AutoJournalFile -Dir $dir)['completed_at'] | Should -BeNullOrEmpty
     }
 
+    # @test AC-022
     It '回滚组件缺失 → 3（fail-closed，不假装恢复）' {
         $saved = $script:RollbackLibsMissing
         try {
@@ -482,6 +484,7 @@ Describe 'Invoke-AutoRollback（REQ-008 退出码与落盘副作用）' {
         $r.Summary | Should -Be 'consumption_marker_write_failed'
     }
 
+    # @test AC-047
     It 'completed_at 写失败但消费标记写成功 → 仍然 0，并落下 consumed.failed 供下次确认' {
         Mock Complete-RollbackJournal { throw 'atomic replace denied' }
         $dir = New-AutoBackupDir -Name 'backup-marker2'
@@ -495,6 +498,7 @@ Describe 'Invoke-AutoRollback（REQ-008 退出码与落盘副作用）' {
         (Read-AutoJournalFile -Dir $dir)['completed_at'] | Should -BeNullOrEmpty
     }
 
+    # @test AC-007
     It '-Auto 全程不调用 Restore-Computer（AC-007：还原点只是人工选项）' {
         $dir = New-AutoBackupDir -Name 'backup-norestore'
         $f = New-AutoJournal -Dir $dir -CreatedAt (Format-IsoUtc -Value (Get-Date).ToUniversalTime())
@@ -528,6 +532,7 @@ Describe 'Invoke-RollbackJournalConsumption（共享消费协议：AC-046/047/04
         Mock-AutoRestoreSuccess
     }
 
+    # @test AC-047
     It '恢复成功 → completed_at 与 consumed_by_run_id 一并落盘；紧接着的第二次运行不会重复消费（AC-047）' {
         $dir = New-AutoBackupDir -Name 'backup-ac047'
         $f = New-AutoJournal -Dir $dir -CreatedAt (Format-IsoUtc -Value (Get-Date).ToUniversalTime())
@@ -552,6 +557,7 @@ Describe 'Invoke-RollbackJournalConsumption（共享消费协议：AC-046/047/04
         Should -Invoke Invoke-RollbackRestore -Times 1 -Exactly
     }
 
+    # @test AC-091
     It '两份未完成日志：只恢复最新的，较旧那份先写清单再打标记且 reason 恒为 skipped_older_journal（AC-046/079/091）' {
         $now = (Get-Date).ToUniversalTime()
         $oldCreated = Format-IsoUtc -Value $now.AddMinutes(-30)
@@ -629,6 +635,7 @@ Describe 'Invoke-RollbackJournalConsumption（共享消费协议：AC-046/047/04
         (Test-Path -LiteralPath (Join-Path $new 'rollback-consumed.json')) | Should -BeFalse
     }
 
+    # @test AC-078
     It '-AcknowledgeConflicts 下清单写入失败 → 一份标记都不写，返回 persistence_failed（AC-078 禁止「已确认但清单丢失」）' {
         $same = Format-IsoUtc -Value (Get-Date).ToUniversalTime()
         $dirs = @()
@@ -654,6 +661,7 @@ Describe 'Invoke-RollbackJournalConsumption（共享消费协议：AC-046/047/04
         (Test-Path -LiteralPath (Join-Path $script:proj 'output')) | Should -BeFalse
     }
 
+    # @test AC-096
     It 'run_id 不合法的候选：只写候选级清单（candidate_unparseable=true + unrepaired 空数组），不写任何标记（AC-060）' {
         $dir = New-AutoBackupDir -Name 'backup-ac060'
         $f = New-AutoJournal -Dir $dir -CreatedAt (Format-IsoUtc -Value (Get-Date).ToUniversalTime())
@@ -683,6 +691,7 @@ Describe 'Invoke-RollbackJournalConsumption（共享消费协议：AC-046/047/04
         (Test-Path -LiteralPath (Join-Path $dir 'rollback-consumed.json')) | Should -BeFalse
     }
 
+    # @test AC-042
     It '条目全为 not_restorable 不算失败：继续消费并返回 consumed（AC-048：结果不是 14）' {
         Mock Invoke-RollbackRestore {
             return @{
@@ -703,6 +712,7 @@ Describe 'Invoke-RollbackJournalConsumption（共享消费协议：AC-046/047/04
         (Read-AutoJournalFile -Dir $dir)['completed_at'] | Should -Not -BeNullOrEmpty
     }
 
+    # @test AC-091
     It '同时存在较旧候选时：Step 4a 的结论优先，not_restorable 不把它降回成功（AC-048 优先级句）' {
         Mock Invoke-RollbackRestore {
             return @{
