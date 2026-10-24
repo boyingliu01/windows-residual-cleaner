@@ -1,6 +1,7 @@
 # Architecture constraints for the Windows Residual Cleaner monorepo.
-# The PowerShell pipeline (references/scripts) predates this file and is
-# covered by Pester/PSSA gates; these layers govern the TypeScript UI.
+# `layers` governs the TypeScript UI (checked by archlint in Gate 6).
+# `powershell.layers` governs the PowerShell pipeline (checked in Gate 6 by
+# tools/Test-PowerShellArchitecture.ps1).
 layers:
   - name: types
     paths: ["ui/src/types/**"]
@@ -33,3 +34,72 @@ layers:
   - name: server
     paths: ["ui/server/**"]
     allowed_imports: []
+
+# PowerShell layering (2026-10-24).
+#
+# Why this exists: Gate 6 used to print
+#     ℹ️  No PowerShell architecture tooling available
+#     ⏭️  SKIPPED - Architecture validation (no tool for PowerShell)
+# `archlint` genuinely cannot parse PowerShell, but the CONSTRAINT is not about
+# a parser -- "which script may depend on which" is language-agnostic, and this
+# repo's layering already exists implicitly in its code:
+#   * native-invoke.ps1 is the leaf primitive (quote-safe native exe invocation)
+#   * rollback-*.ps1 is the library set the cleaner dot-sources, in a declared order
+#   * run-all.ps1 is the orchestrator that shells out to each step
+#   * scan-*.ps1 are leaves: a scanner must never depend on the cleaner or the
+#     rollback library, or "scan then clean" stops being a one-way pipeline
+# Without a checker, `clean-residuals.ps1` dot-sourcing a scan script, or a scan
+# script importing rollback-backup.ps1, would be caught by nobody.
+#
+# Directions are ONE-WAY: a layer may import only what it lists.
+#
+# EVALUATION ORDER MATTERS: a file belongs to the FIRST layer whose path matches.
+# `ps-rollback-lib` uses the `rollback-*` glob, so the two non-library scripts
+# whose names merely START with "rollback" must be listed earlier.
+powershell:
+  layers:
+    - name: ps-tooling
+      paths: ["tools/*.ps1"]
+      allowed_imports: []
+
+    - name: ps-rollback-entry
+      paths:
+        - "references/scripts/rollback.ps1"
+      # The user-facing rollback CLI drives the library; it is not part of it.
+      allowed_imports: [ps-primitive, ps-rollback-lib, ps-clean]
+
+    - name: ps-primitive
+      paths: ["references/scripts/native-invoke.ps1"]
+      allowed_imports: []
+
+    - name: ps-rollback-lib
+      paths: ["references/scripts/rollback-*.ps1"]
+      # The rollback library may use the primitive and its own members freely.
+      allowed_imports: [ps-primitive, ps-rollback-lib]
+
+    - name: ps-entry
+      paths: ["setup.ps1", "references/scripts/run-all.ps1"]
+      # Entry points are the composition root: they may call anything.
+      allowed_imports: [ps-primitive, ps-rollback-lib, ps-scan, ps-clean, ps-report]
+
+    - name: ps-scan
+      paths:
+        - "references/scripts/scan-residuals.ps1"
+        - "references/scripts/scan-uninstalled.ps1"
+        - "references/scripts/scan-filesystem-residuals.ps1"
+        - "references/scripts/build-installed-index.ps1"
+      # Scanners are leaves: they may use the primitive, never the cleaner or
+      # the rollback library (a scanner that can roll back is no longer a scanner).
+      allowed_imports: [ps-primitive]
+
+    - name: ps-report
+      paths: ["references/scripts/generate-report.ps1"]
+      allowed_imports: [ps-primitive]
+
+    - name: ps-clean
+      paths:
+        - "references/scripts/create-restore-point.ps1"
+        - "references/scripts/clean-residuals.ps1"
+        - "references/scripts/confirm-cleanup.ps1"
+      allowed_imports: [ps-primitive, ps-rollback-lib]
+

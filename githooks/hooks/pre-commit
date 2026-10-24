@@ -3379,10 +3379,6 @@ GATE_6_START=$(gate_start_ms)
 if [ "$PROJECT_LANG" = "documentation-only" ]; then
   echo "     ✅ Skipped (documentation project)."
 
-elif has_project_lang "powershell" 2>/dev/null || [ "$PROJECT_LANG" = "powershell" ]; then
-  echo "     ℹ️  No PowerShell architecture tooling available"
-     echo "     ⏭️  SKIPPED - Architecture validation (no tool for PowerShell)"
-
 else
   run_archlint() (
     cd "$PROJECT_ROOT" || exit 1
@@ -3567,6 +3563,104 @@ else
           # #537: no test files means Java architecture was NOT measured.
           if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
             GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_not_configured"
+          fi
+        fi
+        ;;
+      "powershell")
+        # Downstream hardening 2026-10-24: this language had a dedicated arm that
+        # hard-SKIPped with "No PowerShell architecture tooling available". That
+        # is true of `archlint` (TypeScript import graphs) but false of the
+        # CONSTRAINT: "which script may depend on which" does not need a parser.
+        # This repo's layering already exists in its code -- native-invoke.ps1 as
+        # the leaf primitive, rollback-*.ps1 as the library, run-all.ps1 as the
+        # orchestrator, scan-*.ps1 as leaves -- and nothing checked it, so a
+        # scanner importing the cleaner would have shipped unremarked.
+        #
+        # The layers live in architecture.yaml's `powershell:` block and the
+        # checker in tools/Test-PowerShellArchitecture.ps1. Absent either, this
+        # arm degrades LOUDLY (WARN) rather than silently passing.
+        PS_ARCH_CONFIGURED=0
+        if [ -f "$PROJECT_ROOT/architecture.yaml" ] && grep -q '^powershell:' "$PROJECT_ROOT/architecture.yaml" 2>/dev/null; then
+          PS_ARCH_CONFIGURED=1
+        fi
+        PS_ARCH_TOOL="$PROJECT_ROOT/tools/Test-PowerShellArchitecture.ps1"
+        PS_ARCH_BASELINE="$PROJECT_ROOT/.xp-gate-powershell-arch-baseline.json"
+        if [ "$PS_ARCH_CONFIGURED" -eq 0 ] || [ ! -f "$PS_ARCH_TOOL" ]; then
+          echo "     ⚠️  WARN - PowerShell layering not configured"
+          echo "        (needs architecture.yaml 'powershell:' block + tools/Test-PowerShellArchitecture.ps1)"
+          GATE_6_STATUS="WARN"
+          if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+            GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_not_configured"
+          fi
+        else
+          # Resolve a PowerShell engine LOCALLY -- `_detect_pwsh` lives in
+          # adapters/powershell.sh, which the hook sources inside a SUBSHELL for
+          # Gate 1, so its functions never reach this gate. (Same defect class was
+          # measured in Gate 3: "no PowerShell engine found" on a machine with two
+          # engines installed.) A gate must not rely on another gate's sourcing.
+          _g6_detect_pwsh() {
+            if command -v pwsh >/dev/null 2>&1; then echo pwsh; return 0; fi
+            if command -v powershell.exe >/dev/null 2>&1; then echo powershell.exe; return 0; fi
+            local _c
+            for _c in \
+              "${LOCALAPPDATA:-$HOME/AppData/Local}/Microsoft/WindowsApps/pwsh.exe" \
+              "/c/Program Files/PowerShell/7/pwsh.exe" \
+              "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"; do
+              [ -x "$_c" ] && { echo "$_c"; return 0; }
+            done
+            return 1
+          }
+          PS_ARCH_ENGINE=$(_g6_detect_pwsh 2>/dev/null || true)
+          if [ -z "$PS_ARCH_ENGINE" ]; then
+            echo "     ⚠️  WARN - no PowerShell engine found; layering not verified"
+            GATE_6_STATUS="WARN"
+            if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+              GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="no_powershell_engine"
+            fi
+          else
+            PS_ARCH_EXTRA=""
+            if [ -f "$PS_ARCH_BASELINE" ]; then
+              PS_ARCH_EXTRA="-BaselinePath '$PS_ARCH_BASELINE'"
+            fi
+            PS_ARCH_OUT=$("$PS_ARCH_ENGINE" -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+              -Command "& '$PS_ARCH_TOOL' -ConfigPath '$PROJECT_ROOT/architecture.yaml' -Root '$PROJECT_ROOT' $PS_ARCH_EXTRA" 2>&1)
+            PS_ARCH_EXIT=$?
+            PS_ARCH_VIOLATIONS=$(printf '%s\n' "$PS_ARCH_OUT" | sed -n 's/.*violations=\([0-9]*\).*/\1/p' | tail -1)
+            PS_ARCH_FAILING=$(printf '%s\n' "$PS_ARCH_OUT" | sed -n 's/.*failing=\([0-9]*\).*/\1/p' | tail -1)
+            if printf '%s\n' "$PS_ARCH_OUT" | grep -q '^NO_POWERSHELL_LAYERS'; then
+              echo "     ⚠️  WARN - architecture.yaml has no parsable 'powershell:' layers"
+              GATE_6_STATUS="WARN"
+              if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+                GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="powershell_layers_unparsable"
+              fi
+            elif [ -z "$PS_ARCH_VIOLATIONS" ]; then
+              echo "     ⚠️  WARN - PowerShell layering check produced no parsable result"
+              printf '%s\n' "$PS_ARCH_OUT" | head -8 | sed 's/^/        /'
+              GATE_6_STATUS="WARN"
+              if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+                GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_check_unparsable"
+              fi
+            elif [ "${PS_ARCH_FAILING:-0}" -gt 0 ]; then
+              printf '%s\n' "$PS_ARCH_OUT" | grep '^VIOLATION ' | sed 's/^VIOLATION /        ❌ /'
+              echo ""
+              echo "     ❌ BLOCKED - ${PS_ARCH_FAILING} PowerShell layering violation(s)"
+              echo "     $(printf '%s\n' "$PS_ARCH_OUT" | head -1)"
+              echo "     Fix the dependency, or (if deliberate) record it in"
+              echo "     .xp-gate-powershell-arch-baseline.json with a reason."
+              GATE_6_STATUS="BLOCK"
+              if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+                GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_violations"
+              fi
+              exit 1
+            else
+              if [ "${PS_ARCH_VIOLATIONS:-0}" -gt 0 ]; then
+                printf '%s\n' "$PS_ARCH_OUT" | grep '^WAIVED ' | sed 's/^WAIVED /        ℹ️  (baselined) /'
+              fi
+              printf '%s\n' "$PS_ARCH_OUT" | grep '^STALE_WAIVER ' | sed 's/^STALE_WAIVER /        ⚠️  stale waiver (now clean, remove): /'
+              echo "     ✅ PowerShell architecture validation completed."
+              echo "     $(printf '%s\n' "$PS_ARCH_OUT" | head -1)"
+              GATE_6_STATUS="PASS"
+            fi
           fi
         fi
         ;;

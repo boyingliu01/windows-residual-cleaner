@@ -40,7 +40,30 @@ elif [ "$PROJECT_LANG" = "powershell" ]; then
     # shellcheck disable=SC2034
     GATE_3_REASON="no_powershell_tool"
   else
-    PS_CC_PWSH=$(_detect_pwsh 2>/dev/null || true)
+    # Resolve a PowerShell engine LOCALLY.
+    #
+    # Downstream hardening 2026-10-24: this arm called `_detect_pwsh`, which is
+    # defined in adapters/powershell.sh. But the hook sources that adapter inside
+    # a SUBSHELL for Gate 1
+    #     PS_G1_OUTPUT=$(source "$POWERSHELL_ADAPTER"; run_static_analysis)
+    # so its functions never reach this gate. Measured: Gate 3 printed
+    #     ⚠️  WARN - no PowerShell engine found; complexity not measured
+    # on a machine with pwsh 7 AND PS 5.1 installed -- i.e. the "no engine"
+    # verdict was about bash scoping, not about the engine.
+    # A gate must not depend on another gate having sourced a library first.
+    _gate3_detect_pwsh() {
+      if command -v pwsh >/dev/null 2>&1; then echo pwsh; return 0; fi
+      if command -v powershell.exe >/dev/null 2>&1; then echo powershell.exe; return 0; fi
+      local _c
+      for _c in \
+        "${LOCALAPPDATA:-$HOME/AppData/Local}/Microsoft/WindowsApps/pwsh.exe" \
+        "/c/Program Files/PowerShell/7/pwsh.exe" \
+        "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"; do
+        [ -x "$_c" ] && { echo "$_c"; return 0; }
+      done
+      return 1
+    }
+    PS_CC_PWSH=$(_gate3_detect_pwsh 2>/dev/null || true)
     if [ -z "$PS_CC_PWSH" ]; then
       echo "⚠️  WARN - no PowerShell engine found; complexity not measured"
       GATE_3_STATUS="WARN"
