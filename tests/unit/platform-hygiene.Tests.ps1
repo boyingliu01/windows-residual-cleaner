@@ -734,3 +734,74 @@ Describe 'Platform hygiene: 适配器 stdout 契约（2026-10-24 实测）' {
         $text | Should -Match '\$HOME/bin/semgrep' -Because '实测 semgrep 可能装在手放的 ~/bin 下，必须探测'
     }
 }
+
+Describe 'Platform hygiene: SKILL.md 与代码契约一致（2026-10-24）' {
+    <#
+        SKILL.md 是本仓对外分发的**操作规程**。它停留在 2026-09-08，
+        落后代码一个安全等级（UI 管理员服务）、一整组自动回滚语义（退出码 10–15）、
+        以及 tier-4「改名不是删除」的关键事实。
+
+        这类文档腐化比代码 bug 更危险：代码 bug 有测试拦，文档过时没有。
+        读者照着旧说明书跑会得到与描述不符的行为——而这里的行为是**破坏性**的。
+
+        下面把「文档里最容易再次腐化的四件事」钉成判据。
+    #>
+    BeforeAll {
+        $skillPath = Join-Path $script:Root 'SKILL.md'
+        $script:SkillText = if (Test-Path -LiteralPath $skillPath) { Get-Content -LiteralPath $skillPath -Raw } else { '' }
+    }
+
+    It 'SKILL.md 存在且被 git 跟踪' {
+        $script:SkillText | Should -Not -BeNullOrEmpty -Because 'SKILL.md 是本仓的 agent 规程；缺席意味着对外分发没有说明书'
+    }
+
+    It 'SKILL.md 说明 tier-4 是「改名不是删除」（REQ-002 的真实语义，最易被误传）' {
+        # Remove-ItemRobust 的 tier-4 是 Rename-Item，内容仍在磁盘上，
+        # 靠 MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT) 下次开机才删。
+        # 若文档把它写成「已删除」，就是对用户的磁盘状态说了假话。
+        $script:SkillText | Should -Match 'renamed:' -Because '必须出现 renamed:<新名> 这个 outcome，读者才知道存在「改名」这一态'
+        $script:SkillText | Should -Match '(?i)rename' -Because '必须显式使用 rename/改名 描述 tier-4'
+        $script:SkillText | Should -Match '(?i)not deleted|不是删除|NOT deleted' -Because '必须写明它**不是**删除，而不是只描述成「已处理」'
+    }
+
+    It 'SKILL.md 的退出码表覆盖自动回滚扩展码 10–15' {
+        # 代码侧优先级：14 > 15 > 0 > 13 > 12 > 1 > 11 > 10（Get-CleanupExitCode）。
+        # 只写 0/1/2/3 会让 agent 把「部分失败且回滚未完全成功」(11) 当成 general error。
+        foreach ($code in @('10', '11', '12', '13', '14', '15')) {
+            $script:SkillText | Should -Match "\|\s*``$code``\s*\|" -Because "退出码 $code 是自动回滚语义的一部分，读者必须能在表里查到它"
+        }
+    }
+
+    It 'SKILL.md 记录 UI 服务会以管理员权限执行破坏性操作' {
+        # ui/server/index.cjs:22 与 ui/server/security.cjs:3 的注释都明写
+        # 「spawns admin-privileged, destructive」。这是本仓最需要读者知情的风险面：
+        # 内部开源意味着别人照着说明书启用它。
+        $script:SkillText | Should -Match '(?i)admin' -Because '必须说明该服务以管理员权限执行'
+        $script:SkillText | Should -Match '(?i)loopback|127\.0\.0\.1' -Because '必须写明只绑回环地址，以及为什么不能改'
+        $script:SkillText | Should -Match '(?i)ui/server|local Express server' -Because '必须点名是哪个组件，而不是含糊说「另有一个界面」'
+    }
+
+    It 'SKILL.md 提到的脚本与参数真实存在（文档不能凭空发明接口）' {
+        # 从文档里抽 `-Param` 与 `*.ps1` 引用，逐个对照代码，防止「文档说有这个开关」。
+        $scriptNames = @([regex]::Matches($script:SkillText, '([a-z-]+\.ps1)') |
+            ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+        $scriptNames.Count | Should -BeGreaterThan 0 -Because '文档至少要引用真实的脚本名'
+        foreach ($name in $scriptNames) {
+            $abs = Join-Path $script:Root "references/scripts/$name"
+            (Test-Path -LiteralPath $abs) | Should -BeTrue -Because "SKILL.md 引用了不存在的脚本 $name"
+        }
+        # 关键参数必须真的在对应脚本里声明过。
+        $paramChecks = @(
+            @{ script = 'clean-residuals.ps1'; param = 'NoAutoRollback' },
+            @{ script = 'clean-residuals.ps1'; param = 'AcknowledgeConflicts' },
+            @{ script = 'clean-residuals.ps1'; param = 'ConfirmFile' },
+            @{ script = 'rollback.ps1'; param = 'Auto' },
+            @{ script = 'confirm-cleanup.ps1'; param = 'SelectIds' },
+            @{ script = 'run-all.ps1'; param = 'SkipRestorePoint' }
+        )
+        foreach ($c in $paramChecks) {
+            $body = Get-Content -LiteralPath (Join-Path $script:Root "references/scripts/$($c.script)") -Raw
+            $body | Should -Match "\[(switch|string|string\[\])\]\`$$($c.param)\b" -Because "SKILL.md 提到 -$($c.param)（$($c.script)），但该脚本并未声明这个参数——文档写了一个不存在的开关"
+        }
+    }
+}

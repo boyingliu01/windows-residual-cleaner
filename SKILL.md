@@ -1,6 +1,6 @@
 ---
 name: windows-residual-cleaner
-description: "Scan and clean up residual files, registry entries, ghost services, scheduled tasks, COM extensions, and shell context menu handlers from uninstalled software on Windows. Use when users mention 'cleanup residuals', 'clean uninstalled software', 'registry cleanup', 'ghost services', 'empty directories cleanup', 'system cleanup after uninstall', 'clean up leftover files', or 'remove software traces'. Requires Administrator privileges. Agent-driven workflow: user expresses intent in natural language, agent auto-scans and presents itemized list, user selects specific items to clean, agent executes with mandatory confirmation gates."
+description: "Scan and clean up residual files, registry entries, ghost services, scheduled tasks, COM extensions, and shell context menu handlers from uninstalled software on Windows. Use when users mention 'cleanup residuals', 'clean uninstalled software', 'registry cleanup', 'ghost services', 'empty directories cleanup', 'system cleanup after uninstall', 'clean up leftover files', or 'remove software traces'. Requires Administrator privileges for deletion; scanning alone does not. Agent-driven workflow: user expresses intent in natural language, agent auto-scans and presents itemized list, user selects specific items to clean, agent executes with mandatory confirmation gates and automatic rollback."
 ---
 
 # Windows Residual Cleaner
@@ -8,9 +8,24 @@ description: "Scan and clean up residual files, registry entries, ghost services
 Scan and clean up residuals left by uninstalled software on Windows systems.
 
 ## Compatibility
+
 - **Platform:** Windows 10/11
-- **Requires:** PowerShell 5.1, Administrator privileges
+- **Requires:** PowerShell 5.1 (also runs on PowerShell 7), Administrator privileges **for deletion only**
 - **Execution Mode:** Agent-driven — user expresses intent, agent handles everything, user only confirms which items to clean
+
+## Privilege model (read before running anything)
+
+**Scanning does not require Administrator. Deletion does.** Prefer this two-stage shape:
+
+| Stage | Scripts | Admin needed |
+|-------|---------|--------------|
+| Scan | `run-all.ps1`, `build-installed-index.ps1`, `scan-*.ps1`, `generate-report.ps1` | **No** — these only warn if unelevated |
+| Confirm | `confirm-cleanup.ps1` | No |
+| Delete | `clean-residuals.ps1`, `create-restore-point.ps1`, `run-all.ps1` | **Yes** — they abort with exit code `2` when not elevated |
+
+So: scan from a normal shell, show the user the results, and only re-launch an **elevated**
+session once the user has picked items. Do not run scans as Administrator "to be safe" —
+it widens the window in which an elevated destructor exists for no benefit.
 
 ## Agent-Driven Workflow
 
@@ -115,26 +130,26 @@ Then present DryRun results:
 > - 将删除 3 个注册表项
 > - 将停止并删除 1 个服务
 > - 预计释放 12.5GB
-> 
-> 确认执行实际清理吗？（此操作不可逆，但可通过还原点恢复）"
+>
+> 确认执行实际清理吗？（此操作不可逆，但可自动回滚）"
 
 **Mandatory rule:** Agent MUST NOT skip DryRun. User MUST explicitly confirm after seeing DryRun results.
 
 ### Phase 6: Execute Cleanup
 
-After user confirms DryRun, agent executes:
+After user confirms DryRun, agent executes (in an **elevated** session):
 ```bash
 powershell -ExecutionPolicy Bypass -File "references/scripts/clean-residuals.ps1" -ConfirmFile confirmed-ids.json
 ```
 
-Then report results:
+Then report results, **including rollback status**:
 > "清理完成：
 > - 成功：14 项
-> - 失败：1 项（fs_003 Bonjour mdnsNSP.dll 被服务锁定，已重命名为 ~mdnsNSP.dll.deleted，重启后自动删除）
+> - 失败：1 项（fs_003 Bonjour mdnsNSP.dll 被服务锁定，已改名为 `~mdnsNSP.dll.deleted`，
+>   **文件仍在磁盘上**，重启后自动删除）
 > - 跳过：0 项
 > - 实际释放：11.8GB
->
-> 如需回滚，可使用还原点：backup-2026-05-06-xxx"
+> - 自动回滚：已触发并完全成功（退出码 10）"
 
 ## Safety & Confirmation Gates
 
@@ -152,6 +167,97 @@ Then report results:
 - **Trigger:** DryRun results displayed
 - **Action:** Agent MUST wait for user to confirm actual execution
 - **Skip consequence:** CRITICAL — agent MUST NOT execute real cleanup without this confirmation
+
+## What "deleted" actually means — and what it does not
+
+Deletion goes through a **four-tier fallback** per item. Two of the tiers do **not** delete,
+and the agent MUST report them honestly rather than summarising them as "cleaned":
+
+| Tier | Attempt | Result |
+|------|---------|--------|
+| 1 | Standard delete | `deleted` — gone |
+| 2 | `takeown` + `icacls`, then delete | `deleted` — gone |
+| 3 | `cmd /c rd /s /q` | `deleted` — gone |
+| 4 | **Rename** to `~<name>.deleted` | `renamed:<newname>` — **NOT deleted** |
+
+**Tier 4 is a rename, not a deletion (REQ-002).** The content is still on disk under a new
+name; a `MoveFileEx(...MOVEFILE_DELAY_UNTIL_REBOOT)` is scheduled so Windows removes it on
+next restart. If you report it as "deleted", you have told the user something untrue about
+their disk. Always say: renamed, still occupies space, removed on reboot.
+
+A count summary MUST distinguish `deleted` / `renamed` / `failed` — never fold `renamed`
+into the success count.
+
+Practical caveat, measured: under normal Windows semantics the tier-4 success window is
+nearly empty — if a file is locked hard enough to defeat tiers 1–3, the rename is usually
+rejected too. Treat tier 4 as an honest last attempt, **not** as a guaranteed fallback.
+
+## Automatic rollback
+
+Every cleanup writes a journal before mutating anything. If some items fail, the run
+**automatically rolls back** the changes it already made, and the exit code tells you how
+that went. The agent MUST read the exit code and relay the rollback outcome, not just
+"部分失败".
+
+### Exit codes
+
+| Code | Meaning | What the agent should say |
+|------|---------|---------------------------|
+| `0` | No failures | Done |
+| `1` | General error (bad input, file not found) | Report the specific error |
+| `2` | Permission denied (not elevated) | "需要管理员权限" and offer to re-run elevated |
+| `3` | Required input JSON missing | Tell the user to run the scan first |
+| `10` | Some items failed, **rollback fully succeeded** | Everything was undone; investigation still worth it |
+| `11` | Some items failed, **rollback did NOT fully succeed** | ⚠️ Some changes are still applied — point at `rollback-result.json` |
+| `12` | Some items failed, rollback journal missing/unreadable | ⚠️ Cannot confirm rollback; treat disk state as unknown |
+| `13` | Some items failed, rollback was explicitly skipped (`-NoAutoRollback`) | ⚠️ Changes are permanent; that was the user's choice |
+| `14` | **Previous** cleanup's journal could not be safely consumed — this run **never started** | Nothing was changed this run; previous run needs attention |
+| `15` | Failed to persist the journal / unfixed list / completion marker | ⚠️ Recovery record may be incomplete — treat as unknown |
+
+Priority when several apply: `14 > 15 > 0 > 13 > 12 > 1 > 11 > 10`.
+Codes `14` and `15` are about *bookkeeping integrity*, not about whether the deletions
+worked — do not report them as "cleanup failed".
+
+### Auto-rollback CLI
+
+`rollback.ps1` is the recovery entry point (not merely a report printer):
+
+```bash
+# Print available restore points and registry backups
+powershell -ExecutionPolicy Bypass -File "references/scripts/rollback.ps1"
+
+# Automatically roll back the last cleanup per the journal consumption protocol
+powershell -ExecutionPolicy Bypass -File "references/scripts/rollback.ps1" -Auto
+
+# Human exit for entries flagged as conflicts (external change detected)
+powershell -ExecutionPolicy Bypass -File "references/scripts/rollback.ps1" -Auto -AcknowledgeConflicts
+```
+
+- `-Auto` maps journal outcomes onto the same `0/10–15` vocabulary; an **unknown** outcome
+  maps to `14` (fail closed — a mapping table that was not updated must never declare success).
+- `-AcknowledgeConflicts` is the explicit human exit for entries where the system changed
+  underneath the journal. **Never pass it on the user's behalf without showing them the
+  conflicting evidence first** — that is the whole point of the flag.
+- `-NoAutoRollback` (on `clean-residuals.ps1`) skips *this run's* rollback only. The journal
+  is still written and the next startup still tries to recover. Use it only when the user
+  explicitly asks not to be rolled back.
+
+## Optional: local browser UI
+
+`ui/` contains a React UI plus a **local Express server** (`ui/server/`) that exposes
+`/api/scan`, `/api/confirm`, `/api/cleanup`, `/api/restore-point` and friends.
+
+**Read this before enabling it.** That server **spawns administrator-privileged, destructive
+PowerShell**. It is designed accordingly — bound to loopback only (`127.0.0.1`, default port
+`3456`), with an origin guard, a loopback-only `Host` check (defeats DNS rebinding), and
+strict item-ID validation on `/api/confirm`. None of that makes it safe to expose: loopback
+does **not** stop a browser, so any page the user has open can POST to it. The origin guard
+exists precisely because of that.
+
+- Do **not** change `HOST` away from `127.0.0.1`.
+- Do **not** port-forward it, put it behind a reverse proxy, or run it on a shared machine.
+- It is a convenience wrapper over the same scripts — the CLI flow above is the
+  authoritative path. If you only need cleanup, you never need the server.
 
 ## Natural Language Triggers
 
@@ -173,19 +279,24 @@ If any scan script fails:
 
 If cleanup script fails:
 1. Agent MUST report which items failed and why
-2. Agent MUST mention that successful items are already cleaned
-3. Agent MUST remind user of restore point for rollback
+2. Agent MUST report the **rollback outcome** from the exit code (see table above)
+3. Agent MUST NOT describe `renamed` items as deleted
+4. Agent MUST remind the user of restore point / `rollback.ps1 -Auto` for recovery
 
 ## What User Never Needs to Know
 
 The agent MUST NOT expose these technical details to the user:
-- PowerShell parameters (`-NonInteractive`, `-AutoSelect`, `-SelectIds`)
+- PowerShell parameters (`-NonInteractive`, `-AutoSelect`, `-SelectIds`, `-AcknowledgeConflicts`)
 - File names like `confirm-cleanup.ps1` or `clean-residuals.ps1`
 - Risk level terminology unless explaining item details
 - JSON file names or ID formats (unless user asks)
 - Mode letters (A/B/C/D)
 
 The user only needs to express intent in natural language and confirm selections.
+
+**Exception:** exit-code severity (`11`/`12`/`13`/`15` — "changes are still applied" or "state
+unknown") is a *finding*, not an implementation detail. Translate it into plain language and
+always surface it.
 
 ## Legacy: Direct Script Invocation
 
@@ -206,6 +317,15 @@ powershell -ExecutionPolicy Bypass -File "references/scripts/clean-residuals.ps1
 
 **Important:**
 - Write scripts (`clean-residuals.ps1`, `create-restore-point.ps1`, `run-all.ps1`) abort with exit code 2 when not elevated; read-only scan scripts only warn.
-- Exit codes: `0` success, `1` general error, `2` permission denied, `3` missing input JSON.
+- Exit codes: see the table above (`0/1/2/3` plus the `10–15` rollback codes).
 - Scan scripts depend on each other's output, so invoke them through `run-all.ps1` unless you know why you are calling one directly.
-- `rollback.ps1` prints available restore points and registry backups after a cleanup.
+- `rollback.ps1 -Auto` is the recovery path after a cleanup; run it without `-Auto` to just inspect available restore points and registry backups.
+
+## Known limitations
+
+- `confirm-cleanup.ps1`'s interactive TUI may exit immediately in some embedded terminals
+  (it needs a real console for `Read-Host`). Use `-NonInteractive -SelectIds` instead.
+- Cleaning HKLM values and the machine PATH requires an elevated session and cannot be
+  exercised in ordinary CI; those branches are covered only by administrator-run drills.
+- The drill scripts that create real services/registry objects are **not** distributed with
+  this skill.
