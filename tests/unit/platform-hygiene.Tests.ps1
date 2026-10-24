@@ -462,6 +462,10 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
             # 子项目 node_modules/.bin）落在 adapter-common.sh。它不在原白名单里，
             # 于是补丁被回退时一致性测试不会红——正是本用例要消除的那类盲区。
             @{ live = 'adapters\adapter-common.sh'; vendored = 'githooks\adapters\adapter-common.sh' },
+            # 2026-10-24 加入：Gate 3 的 PowerShell 分支（AST 复杂度 + 棘轮）。
+            # 这一层补丁若被回退，Gate 3 会静默退回「no PowerShell tool」的硬 SKIP，
+            # 报告里只是少一道 PASS —— 没人会注意到复杂度维度又空了。
+            @{ live = 'adapters\gate-3.sh'; vendored = 'githooks\adapters\gate-3.sh' },
             @{ live = 'hooks\pre-commit'; vendored = 'githooks\hooks\pre-commit' }
         )
         foreach ($pair in $pairs) {

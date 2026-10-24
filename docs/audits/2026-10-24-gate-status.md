@@ -190,11 +190,14 @@ sprint 过期这件事是事实，现在它如实显示为：
 
 | 证据 | 命令 | 实测 |
 |------|------|------|
-| 双引擎 Pester 全绿 | `powershell -File .workbuddy/run-pester.ps1 -Engine PS5.1` / `pwsh … -Engine pwsh7` | 760/760（PS 5.1） |
-| 产品源静态分析 0 findings | `Invoke-ScriptAnalyzer -Path references/scripts -Recurse -Settings PSScriptAnalyzerSettings.psd1` | 0 |
+| 双引擎 Pester 全绿 | `powershell -File .workbuddy/run-pester.ps1 -Engine PS5.1` / `pwsh … -Engine pwsh7` | **784/784 双引擎**（2026-10-24 收尾，串行执行） |
+| 产品源静态分析 0 findings | `Invoke-ScriptAnalyzer -Path references/scripts -Recurse -Settings PSScriptAnalyzerSettings.psd1` | 0（含 `setup.ps1` 与 `tools/`） |
+| PowerShell 圈复杂度（AST 实测） | `tools/Measure-PowerShellComplexity.ps1` | 143 函数，max CCN 143，62 条入棘轮基线 |
+| PowerShell 分层 | `tools/Test-PowerShellArchitecture.ps1` | layers=8 edges=14 violations=0 |
 | UI 单测 | `cd ui && npx vitest run` | 71/71 |
 | 根 vitest（Gate 5 的服务端范围） | `npx vitest run` | 22/22 |
 | 类型检查 / lint | `cd ui && npx tsc -b` / `npx eslint .` | 均 0 |
+| Gate 真跑门禁数 | 预提交报告 `overall` | **9/12 ran**（此前 6/12） |
 | 架构 diff | `npx archlint diff … --fail-on high` | 0 |
 | 钩子与 vendored 副本一致 | `platform-hygiene.Tests.ps1`「钩子安装与 vendored 副本一致」 | 3/3 SHA256 MATCH |
 | REQ-ID 清单不腐烂 | 同文件「需求 ID 单一真相源」 | 3/3 |
@@ -214,7 +217,6 @@ sprint 过期这件事是事实，现在它如实显示为：
 ---
 
 ## 5. 一条贯穿全篇的根因：Windows + git-bash 下「PATH 里没有」≠「没安装」
-
 修完 Gate 11 后，同一个缺陷又在 Gate 2、Gate 6 各出现一次，值得单独记：
 
 | 门禁 | 报出的错误 | 实际情况 |
@@ -272,16 +274,107 @@ gate-10.sh / pre-commit，这层补丁被回退时不会变红）。
 
 ---
 
-## 8. 仍然存在的问题（如实记录）
+## 8. Gate 3 / Gate 6 对 PowerShell 的「工具缺失」是错的
 
-1. **Gate 2/3/4/6 对 PowerShell 依旧零覆盖**（#537 仍开）。复杂度与架构两条尤其遗憾：
-   本仓库的 `architecture.yaml` 写得比多数仓库都细，但它目前只约束 `ui/`。
-   Gate 2 的 jscpd 与 Gate 6 的 archlint 现在**能真跑**了，但都只看 TS/JS。
+这是本次最有价值的一类发现：**门禁说「这个语言没有工具」，而真相是「这个工具没找对地方」
+或「这个约束根本不需要那个工具」。**
+
+### 8.1 Gate 3：`lizard` 解析不了 .ps1，但 AST 可以
+
+Gate 3 对 PowerShell 是硬 SKIP：
+
+```
+ℹ️  No PowerShell Clean Code / SOLID tool available
+⏭️  SKIPPED - Complexity (no PowerShell tool)
+```
+
+对 `lizard` 是真的，对**平台**是假的：PowerShell 的 AST 能精确给出判定点数，
+而这正是 lizard 在别的语言里数的同一个量。新增 `tools/Measure-PowerShellComplexity.ps1`。
+
+写它的过程中踩到四个「计数器悄悄数错」的坑，都被测试钉住：
+
+| 现象 | 真因 |
+|------|------|
+| PS 5.1 下整个脚本加载失败：`Unable to find type [...TernaryExpressionAst]` | 类型**字面量**在 PARSE 期解析，而三元表达式是 PS 7+ 独有 |
+| 单函数文件输出 `functions_measured=`（空串） | `Sort-Object` 单结果塌成标量，PS 5.1 下 `$scalar.Count` 是 `$null` 而非 1 |
+| `switch` 少算/多算 | `default` 在 `.Default` 属性上，**不在** `.Clauses` 里；嵌套 `switch` 曾被重复计数 |
+| 基线读到就报 `Unexpected token ''` | `Set-Content -Encoding UTF8` 在 PS 5.1 下**写 BOM**，而消费方是 `JSON.parse` |
+
+最后一条尤其值得记：**给门禁喂一个只有部分解析器能读的输入**，正是本仓 AGENTS.md
+里记着的 BOM 坑，这次轮到门禁自己踩。
+
+存量实测：**139 个函数，最大 CCN 143**，62 个高于 CCN 5。平阈值会拦住每一个后续提交，
+而「重构 62 个函数」不是提交钩子能提的要求——所以改为**棘轮基线**：
+把问题从「这个函数复杂吗」换成「这次提交让复杂度变差了吗」，后者才是提交前门禁能诚实回答的。
+
+工具本身也受这条规则约束：初版辅助函数 CCN 14、6，被自己的门禁拦下，已按职责拆解到 max CCN **4**。
+**没有调阈值放行。**
+
+### 8.2 Gate 6：`archlint` 解析不了 .ps1，但分层约束不需要解析器
+
+Gate 6 对 PowerShell 也是硬 SKIP。同样地，「哪个脚本可以依赖哪个」与语言无关，
+而本仓的分层**已经存在于代码里**（`native-invoke.ps1` 叶子原语、`rollback-*.ps1` 库、
+`run-all.ps1` 编排器、`scan-*.ps1` 叶子）。没人检查，所以方向性错误可以无声合入。
+
+`architecture.yaml` 新增 `powershell:` 块（8 层单向依赖），
+`tools/Test-PowerShellArchitecture.ps1` 抽取依赖边并判方向。实测真实仓库 14 条边、0 违规。
+
+写这个工具时踩到**两次同类错误，都是「0 违规」因为什么都没查到**：
+
+1. **YAML 块列表没解析**（`paths:` 换行后跟 `- "x.ps1"`）→ `ps-scan` / `ps-clean` 两层是空的
+   → 那些文件不属于任何层 → 无约束 → 「无违规」。实测 `edges=1` 而非 14。
+2. **通配符 `rollback-*.ps1` 用 StartsWith 匹配**→ 永不命中 → 回滚库不属于任何层 → 同样退化成
+   「无违规」。
+
+这两条是「检查器假装在工作」的教科书形态：**绿色的原因不是代码合规，而是检查器什么都没看**。
+现在两种 YAML 写法都支持、glob 按文件名匹配且层顺序优先，并能显式输出
+`NO_POWERSHELL_LAYERS`（删掉配置块会变 WARN，不会变绿）。
+
+### 8.3 顺带：一个跨门禁的 bash 作用域缺陷
+
+Gate 3 与 Gate 6 都调 `_detect_pwsh`，而它定义在 `adapters/powershell.sh` 里——
+但钩子在**子 shell** 里 source 那个适配器跑 Gate 1：
+
+```bash
+PS_G1_OUTPUT=$(source "$POWERSHELL_ADAPTER"; run_static_analysis)
+```
+
+所以这个函数从不到达那两个门禁。实测 Gate 3 在装着 pwsh 7 **和** PS 5.1 的机器上打印：
+
+```
+⚠️  WARN - no PowerShell engine found; complexity not measured
+```
+
+**「找不到引擎」其实是 bash 作用域问题。** 特点是：单看任何一个门禁都像环境问题，
+只有真跑整条链才暴露。两者已改为各自本地探测，不再依赖「别人先 source 过某个库」。
+
+### 8.4 效果
+
+| | 修前 | 修后 |
+|---|---|---|
+| 真跑门禁 | 6/12 | **9/12** |
+| `of all gates` | 5.0/10 | **7.5/10** |
+| Gate 3 | SKIP（无工具） | SKIP（无改动 .ps1）/ PASS（有改动，棘轮） |
+| Gate 6 | SKIP（无工具） | **PASS**（layers=8 edges=14 violations=0） |
+
+分数上升不是因为评分口径变了，而是因为**三道此前空转的门禁开始真的检查东西**。
+
+---
+
+## 9. 仍然存在的问题（如实记录）
+
+1. **Gate 2/4 对 PowerShell 仍零覆盖**（#537 仍开，已收窄）。
+   - Gate 2 的 `jscpd` 现在**能真跑**了，但它不支持 `.ps1`，所以 PowerShell 侧仍是
+     `no tool for PowerShell`。本仓的 PowerShell 重复代码目前无人检查。
+   - Gate 4（Clean Code + SOLID）对 PowerShell 仍 SKIP。
+   - ~~Gate 3~~ **已解决**：AST 实测 + 棘轮（见 §8.1）。
+   - ~~Gate 6~~ **已解决**：`architecture.yaml` 的 `powershell:` 分层 + 检查器（见 §8.2）。
 2. **Hook 覆写是持续风险**（#583）。下游只能靠一致性测试发现，靠手工重打补丁恢复。
    本次重打补丁时因为插入点算错，一度产生 `syntax error near unexpected token ';;'`——
    **语法错的 hook 比没有 hook 更糟**（它会在某个 gate 之后静默停住全部门禁，参见 #579）。
    因此每次重打后都必须 `bash -n` + 重跑一致性测试，这两步不能省。
-   本次新增 `adapter-common.sh` 到白名单后，一致性测试覆盖 4 个文件。
+   一致性测试现覆盖 **5 个文件**（`pre-commit` + `powershell.sh` + `gate-10.sh` +
+   `gate-3.sh` + `adapter-common.sh`）。
 3. **99 个 spec id 没有任何高置信测试证据**（详见 `.workbuddy/alignment-report.md`）。
    其中相当一部分只能由 UI 侧的 71 个 vitest 用例或管理员演练覆盖（AGENTS.md 已把
    `clean-residuals.ps1` 的 HKLM/PATH 写入分支划给管理员环境集成演练）。
