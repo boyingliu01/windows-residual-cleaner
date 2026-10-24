@@ -1,0 +1,380 @@
+#!/usr/bin/env bash
+
+# Common adapter functions for language detection and routing
+
+# OS detection: returns linux/macos/windows/unknown
+# Uses uname -s (POSIX) as primary, ${OSTYPE-} as fallback
+detect_os_env() {
+    local os
+    os=$(uname -s 2>/dev/null || echo "unknown")
+    case "$os" in
+        Linux*)     echo "linux";;
+        Darwin*)    echo "macos";;
+        MINGW*|MSYS*|CYGWIN*) echo "windows";;
+        *)
+            # Fallback: OSTYPE (bash built-in, not always available)
+            if [ -n "${OSTYPE-}" ]; then
+                case "${OSTYPE-}" in
+                    linux*)     echo "linux";;
+                    darwin*)    echo "macos";;
+                    msys*|cygwin*) echo "windows";;
+                    *)          echo "unknown";;
+                esac
+            else
+                echo "unknown"
+            fi
+            ;;
+    esac
+}
+
+# Git exports repository-local variables to hooks. Child test processes must
+# not inherit them, or nested git repositories modify the caller's repository.
+run_without_git_context() (
+  unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS
+  unset GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE
+  unset GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE
+  unset GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX
+  unset GIT_SHALLOW_FILE GIT_COMMON_DIR
+  "$@"
+)
+
+detect_project_lang() {
+  if [ -f "tsconfig.json" ]; then
+    echo "typescript"
+  elif [ -f "pyproject.toml" ] || [ -f "requirements.txt" ] || [ -f "setup.py" ]; then
+    echo "python"
+  elif [ -f "go.mod" ]; then
+    echo "go"
+  elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+    if [ -n "$(find . -name "*.kt" -type f | sed -n '1p; 1q')" ]; then
+      echo "kotlin"
+    else
+      echo "java"
+    fi
+  elif [ -f "pom.xml" ]; then
+    echo "java"
+  elif [ -f "pubspec.yaml" ]; then
+    if grep -q "flutter:" "pubspec.yaml" 2>/dev/null || [ -f ".metadata" ]; then
+      echo "flutter"
+    else
+      echo "dart"
+    fi
+  elif [ -n "$(find . -name "*.ps1" -type f | sed -n '1p; 1q')" ]; then
+    echo "powershell"
+  elif [ -f "Package.swift" ]; then
+    echo "swift"
+  elif [ -f "CMakeLists.txt" ] || [ -n "$(find . -name "*.cpp" -o -name "*.cc" -type f | sed -n '1p; 1q')" ]; then
+    echo "cpp"
+  elif [ -n "$(find . -name "*.m" -o -name "*.mm" -type f | sed -n '1p; 1q')" ]; then
+    echo "objectivec"
+  elif [ -n "$(find . -name "*.sh" -type f | sed -n '1p; 1q')" ]; then
+    echo "shell"
+  elif [ -n "$(find . -name "*.ps1" -type f -not -path "./.git/*" | sed -n '1p; 1q')" ]; then
+    echo "powershell"
+  else
+    if [ -n "$(find . -name "*.ts" -o -name "*.tsx" -type f | sed -n '1p; 1q')" ]; then
+      echo "typescript"
+    elif [ -n "$(find . -name "*.py" -type f | sed -n '1p; 1q')" ]; then
+      echo "python"
+    elif [ -n "$(find . -name "*.go" -type f | sed -n '1p; 1q')" ]; then
+      echo "go"
+    elif [ -n "$(find . -name "*.kt" -type f | sed -n '1p; 1q')" ]; then
+      echo "kotlin"
+    elif [ -n "$(find . -name "*.java" -type f | sed -n '1p; 1q')" ]; then
+      echo "java"
+    elif [ -n "$(find . -name "*.dart" -type f | sed -n '1p; 1q')" ]; then
+      if grep -q "flutter:" "pubspec.yaml" 2>/dev/null || [ -f ".flutter" ]; then
+        echo "flutter"
+      else
+        echo "dart"
+      fi
+    elif [ -n "$(find . -name "*.swift" -type f | sed -n '1p; 1q')" ]; then
+      echo "swift"
+    elif [ -n "$(find . -name "*.cpp" -o -name "*.cc" -o -name "*.c" -o -name "*.h" -type f | sed -n '1p; 1q')" ]; then
+      echo "cpp"
+    elif [ -n "$(find . -name "*.m" -o -name "*.mm" -type f | sed -n '1p; 1q')" ]; then
+      echo "objectivec"
+    elif [ -n "$(find . -name "*.sh" -type f | sed -n '1p; 1q')" ]; then
+      echo "shell"
+    elif [ -n "$(find . -name "*.ps1" -type f -not -path "./.git/*" | sed -n '1p; 1q')" ]; then
+      echo "powershell"
+    else
+      echo "unknown"
+    fi
+  fi
+}
+
+route_to_adapter() {
+  local action="$1"
+  local lang
+  lang=$(detect_project_lang)
+  
+  local adapter_file=""
+
+  # 3-tier resolution matching pre-commit ADAPTER_DIR logic
+  # Tier 1: Global flat layout (~/.config/xp-gate/adapters/lang.sh)
+  if [ -f "$HOME/.config/xp-gate/adapters/${lang}.sh" ]; then
+    adapter_file="$HOME/.config/xp-gate/adapters/${lang}.sh"
+  # Tier 2: Project nested layout (githooks/adapters/lang.sh)
+  elif [ -f "githooks/adapters/${lang}.sh" ]; then
+    adapter_file="githooks/adapters/${lang}.sh"
+  elif [ -f "./githooks/adapters/${lang}.sh" ]; then
+    adapter_file="./githooks/adapters/${lang}.sh"
+  fi
+
+  if [ -n "$adapter_file" ]; then
+    # shellcheck source=./githooks/adapters/lang.sh
+    source "$adapter_file"
+    
+    # Execute the requested action
+    case "$action" in
+      "static_analysis") run_static_analysis ;;
+      "lint") run_lint ;;
+      "tests") run_tests ;;
+      "coverage") run_coverage ;;
+      *) return 1 ;;
+    esac
+  else
+    echo "No adapter found for language: $lang (searched: ~/.config/xp-gate/adapters/, githooks/adapters/)"
+    return 1
+  fi
+}
+
+check_if_tool_available() {
+  local tool_name="$1"
+  
+  # Check if command exists
+  if command -v "$tool_name" >/dev/null 2>&1; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+require_tool() {
+  local tool_name="$1"
+  local gate_name="${2:-Gate}"
+  local install_hint="${3:-}"
+
+  if command -v "$tool_name" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v npx >/dev/null 2>&1 && npx --no-install "$tool_name" --version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Downstream hardening 2026-10-24: the two probes above only see THIS shell's
+  # PATH plus the npx root resolved from the cwd. On Windows + git-bash that
+  # misses two common shapes, and in both the tool IS installed:
+  #
+  #  1. npm GLOBAL install -> %APPDATA%/npm (or ~/.npm-global/bin), which
+  #     git-bash does not inherit from the caller. Measured: jscpd@5.2.0 and
+  #     @archlinter/cli@0.16.0 both installed globally, both reported
+  #     "not available" / "not installed" by the hook.
+  #  2. Per-subproject node_modules: this repo keeps the UI toolchain in
+  #     ui/package.json, so jscpd lives in ui/node_modules/.bin -- and
+  #     `npx --no-install` resolves from the CWD (repo root), where there is no
+  #     jscpd. The tool is installed on purpose, in a documented place.
+  #
+  # "Tool unavailable = BLOCK, not SKIP" stays the policy; what changes is that
+  # the gate no longer calls a tool unavailable merely because it is one
+  # directory over from where the probe looked.
+  local _cand_dir _cand
+  for _cand_dir in \
+    "${APPDATA:-}/npm" \
+    "$HOME/AppData/Roaming/npm" \
+    "$HOME/.npm-global/bin" \
+    "$HOME/.local/bin" \
+    "/usr/local/bin" \
+    "$PWD/node_modules/.bin" \
+    "$PWD/ui/node_modules/.bin" \
+    "$PWD/server/node_modules/.bin" \
+    "$PWD/app/node_modules/.bin" \
+    "$PWD/web/node_modules/.bin"; do
+    [ -n "$_cand_dir" ] || continue
+    if [ -x "$_cand_dir/$tool_name" ]; then
+      PATH="$_cand_dir:$PATH"
+      export PATH
+      return 0
+    fi
+  done
+
+  echo "❌ BLOCKED - Required tool '$tool_name' not available for $gate_name"
+  if [ -n "$install_hint" ]; then
+    echo "   Install: $install_hint"
+  fi
+  echo "   Per QUALITY-GATES-CODE-OF-CONDUCT.md: tool unavailable = BLOCK, not SKIP"
+  echo "   (searched: PATH, npx, \$APPDATA/npm, ~/.npm-global/bin, ~/.local/bin, ./node_modules/.bin, ./ui/node_modules/.bin)"
+  return 1
+}
+
+# Detect if project has IaC files (Terraform, Kubernetes, Docker)
+detect_iac_project() {
+  local has_iac=false
+  
+  # Check for Terraform files
+  if [ -n "$(find . -maxdepth 2 -name "*.tf" -not -path "./.git/*" 2>/dev/null | sed -n '1p; 1q')" ]; then
+    has_iac=true
+  fi
+  
+  # Check for Kubernetes manifests (YAML with apiVersion/kind)
+  if [ -n "$(find . -maxdepth 2 \( -name "*.yaml" -o -name "*.yml" \) -not -path "./.git/*" 2>/dev/null | sed -n '1p; 1q')" ]; then
+    local yaml_file=$(find . -maxdepth 2 \( -name "*.yaml" -o -name "*.yml" \) -not -path "./.git/*" 2>/dev/null | sed -n '1p; 1q')
+    if grep -qE "^(apiVersion|kind):" "$yaml_file" 2>/dev/null; then
+      has_iac=true
+    fi
+  fi
+  
+  # Check for Dockerfiles
+  if [ -n "$(find . -maxdepth 2 -name "Dockerfile" -o -name "*.dockerfile" -not -path "./.git/*" 2>/dev/null | sed -n '1p; 1q')" ]; then
+    has_iac=true
+  fi
+  
+  if [ "$has_iac" = true ]; then
+    echo "iac"
+  else
+    echo ""
+  fi
+}
+
+# Stryker 9.x config files (new format, takes priority)
+detect_mutation_testable() {
+  # Check if @stryker-mutator/core is installed — no config file required.
+  # The StrykerRunner passes --mutate via CLI flags, so stryker can run
+  # without any config file present.
+  if [ -f "package.json" ] && grep -qE '"@stryker-mutator[^"]*"' package.json 2>/dev/null; then
+    return 0
+  fi
+  if command -v npx >/dev/null 2>&1 && npx --no-install stryker --version >/dev/null 2>&1; then
+    return 0
+  fi
+  # Legacy config files (backwards compatibility — deprecated)
+  if [ -f "stryker.conf.json" ] || [ -f "stryker.prepush.conf.json" ] || \
+     [ -f "stryker.config.mjs" ] || [ -f "stryker.config.js" ] || \
+     [ -f "stryker.config.cjs" ] || [ -f "stryker.config.json" ]; then
+    return 0
+  fi
+  return 1
+}
+# Echo the pytest-xdist parallel arguments when xdist is importable, or an
+# empty string with a stderr warning when it is not (#516). NEVER fails and
+# never blocks: serial semantics are the safe fallback, the warning only tells
+# the user why Gate 5 is slow. `-n auto` uses every core; `--dist loadfile`
+# groups tests per file to avoid cross-file shared state (module-level
+# fixtures, shared sqlite) racing under parallel workers — measured on a
+# 2555-test project: 30-45min serial -> 2m23s parallel with zero flaky runs.
+# Callers must invoke unquoted and unset: `pytest $(python_xdist_args) ...`
+# (SC2086-intentional: the value is a multi-word argument list).
+python_xdist_args() {
+  if python -c "import xdist" >/dev/null 2>&1; then
+    printf '%s' "-n auto --dist loadfile"
+    return 0
+  fi
+  echo "⚠ pytest-xdist not installed — Gate 5 falls back to SERIAL (may be 10x slower). Install: pip install pytest-xdist" >&2
+  return 0
+}
+# Detect a usable Python mutation engine (#410).
+#
+# Two engines, probed in preference order:
+#   1. pytest-gremlins — mutation switching (no fork), natively cross-platform,
+#      requires Python >= 3.11. Preferred wherever it is installed.
+#   2. mutmut — fork()-based, so on Windows it is ONLY runnable under WSL.
+#
+# The original implementation returned success as soon as `mutmut --version`
+# worked, which on native Windows produced a structural deadlock: `mutmut run`
+# exits 1 with "please use the WSL", so every push was blocked by a check that
+# could never pass — while uninstalling mutmut flipped the gate to SKIP. The
+# platform branch below is what removes that deadlock; it never blocks, it only
+# decides whether Gate M runs or skips.
+detect_python_mutation_testable() {
+  # Engine 1: pytest-gremlins (cross-platform, no fork).
+  if command -v python >/dev/null 2>&1 && python -c "import pytest_gremlins" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Determine whether mutmut can actually RUN here, not merely whether it is
+  # installed — that distinction is the whole point of this function on Windows.
+  local _uname_s
+  _uname_s="$(uname -s 2>/dev/null || echo unknown)"
+  case "$_uname_s" in
+    MINGW*|MSYS*|CYGWIN*)
+      # Native Windows: mutmut is unusable without WSL.
+      if command -v wsl >/dev/null 2>&1 && wsl mutmut --version >/dev/null 2>&1; then
+        return 0
+      fi
+      echo "⚠ Gate M (Python): mutmut cannot run on native Windows (fork()-based) and no WSL mutmut found — SKIP. Install pytest-gremlins instead: pip install pytest-gremlins (needs Python >= 3.11)." >&2
+      return 1
+      ;;
+  esac
+
+  # Unix: mutmut is fine natively.
+  if command -v mutmut >/dev/null 2>&1; then
+    return 0
+  fi
+  # Check for pip-installed mutmut in current venv
+  if command -v pip >/dev/null 2>&1 || command -v pip3 >/dev/null 2>&1; then
+    if pip show mutmut >/dev/null 2>&1; then
+      return 0
+    fi
+    if pip3 show mutmut >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  return 1
+}
+# Detect if a Go project has gomutants installed and configured
+detect_go_mutation_testable() {
+  # Check for gomutants CLI
+  if command -v gomutants >/dev/null 2>&1; then
+    return 0
+  fi
+  # Check GOPATH/bin/gomutants if go.mod exists (default GOPATH via go env when unset)
+  if [ -f "go.mod" ]; then
+    local go_gopath="${GOPATH:-$(go env GOPATH 2>/dev/null)}"
+    if [ -n "$go_gopath" ] && [ -x "$go_gopath/bin/gomutants" ]; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# Check if any changed file matches any of the given regex patterns.
+# Usage: any_changed_files_match "\.ts$" "\.py$"
+# Returns 0 (true) if at least one changed file matches any pattern, 1 (false) otherwise.
+any_changed_files_match() {
+  if [ -z "${CHANGED_FILES:-}" ]; then
+    return 1
+  fi
+  for pattern in "$@"; do
+    if echo "$CHANGED_FILES" | grep -qE "$pattern" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Detect if a Java/Kotlin project has PITest (pitest-maven or pitest-gradle) configured
+detect_pitest_testable() {
+  # Check for Maven + pitest-maven plugin
+  if command -v mvn >/dev/null 2>&1 && [ -f "pom.xml" ]; then
+    if grep -q "pitest-maven" pom.xml 2>/dev/null; then
+      return 0
+    fi
+  fi
+  # Check for Gradle + pitest plugin
+  if [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+    local gradle_cmd=""
+    if [ -f "gradlew" ] && [ -x "gradlew" ]; then
+      gradle_cmd="./gradlew"
+    elif command -v gradle >/dev/null 2>&1; then
+      gradle_cmd="gradle"
+    fi
+    if [ -n "$gradle_cmd" ]; then
+      if grep -qE "info\.solidsoft\.pitest|info\.solidsoft\.gradle\.pitest" build.gradle build.gradle.kts 2>/dev/null; then
+        return 0
+      fi
+    fi
+  fi
+  return 1
+}

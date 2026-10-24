@@ -312,11 +312,35 @@ run_lint() {
 # Timeout guard for Pester runs.
 # A hanging Pester test (e.g. a test that dot-sources a script whose body performs
 # WMI/registry/scheduled-task scans) would otherwise block `git commit` forever.
-# Default 300s, override via XP_GATE_POWERSHELL_TEST_TIMEOUT_S.
+#
+# Downstream hardening 2026-10-24: the default was 300s for BOTH the plain test
+# run and the coverage run, but they are not comparable workloads. Measured on
+# this repo (762 tests): the plain run takes ~285s and the INSTRUMENTED run is
+# slower still, so the coverage run was killed at 300s every time and the gate
+# reported "Pester coverage TIMED OUT (may be hanging)" -- a timeout that looked
+# like a hung test but was really "the budget was too small for a healthy run".
+# A gate whose default budget cannot fit a passing run will block every commit
+# for reasons that have nothing to do with the commit.
+#
+# Two budgets now:
+#   * plain run    : XP_GATE_POWERSHELL_TEST_TIMEOUT_S    (default 900s)
+#   * coverage run : XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S (default 1800s)
+# Callers keep the explicit override; the timeout is a backstop for a genuinely
+# hung test, not a performance budget.
 _pester_timeout() {
-  local default_s="${XP_GATE_POWERSHELL_TEST_TIMEOUT_S:-300}"
+  local default_s="${XP_GATE_POWERSHELL_TEST_TIMEOUT_S:-900}"
   # Prefer GNU timeout (Git Bash / Linux). On Windows where `timeout` resolves to
   # the native timeout.exe, fall back to running without a hard timeout.
+  if command -v timeout >/dev/null 2>&1 && timeout --version 2>/dev/null | grep -qi "coreutils"; then
+    timeout "${default_s}s" "$@"
+  else
+    "$@"
+  fi
+}
+
+# Separate, larger budget for the instrumented coverage run (see _pester_timeout).
+_pester_coverage_timeout() {
+  local default_s="${XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S:-1800}"
   if command -v timeout >/dev/null 2>&1 && timeout --version 2>/dev/null | grep -qi "coreutils"; then
     timeout "${default_s}s" "$@"
   else
@@ -455,7 +479,7 @@ run_coverage() {
     # is the deprecated Pester 4 parameter set and fails outright on Pester 5.x
     # ("cannot resolve parameter set"). Using it silently produced no coverage.xml,
     # which the pre-commit hook then reported as an unparseable/zero result.
-    _pester_timeout "$PWSH" "${POWERSHELL_ARGS[@]}" "
+    _pester_coverage_timeout "$PWSH" "${POWERSHELL_ARGS[@]}" "
       \$cfg = New-PesterConfiguration
       \$cfg.Run.Path = $test_paths
       \$cfg.CodeCoverage.Enabled = \$true
@@ -470,7 +494,9 @@ run_coverage() {
     " 2>&1
     local cov_exit=$?
     if [ "$cov_exit" = "124" ]; then
-      echo "⚠️  Pester coverage TIMED OUT after ${XP_GATE_POWERSHELL_TEST_TIMEOUT_S:-300}s (may be hanging)."
+      echo "⚠️  Pester coverage TIMED OUT after ${XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S:-1800}s (may be hanging)."
+      echo "    The instrumented run is slower than the plain test run; raise"
+      echo "    XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S if the suite legitimately needs longer."
       return 1
     fi
     return $cov_exit

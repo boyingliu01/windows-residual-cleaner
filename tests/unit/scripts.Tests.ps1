@@ -1,4 +1,4 @@
-﻿# Pester Unit Tests for Windows Residual Cleaner Scripts (Pester 3.x Compatible)
+# Pester Unit Tests for Windows Residual Cleaner Scripts (Pester 3.x Compatible)
 # Tests pure functions that don't require admin privileges
 #
 # 管理员会话（如 windows runner）下「非管理员契约」用例不可观测，跳过。
@@ -655,7 +655,9 @@ Describe 'confirm-cleanup.ps1 display helpers' {
 Describe 'Remove-ItemRobust (clean-residuals.ps1)' {
     BeforeAll {
         $global:_rirScript = "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
-        $global:_rirRoot = "$PSScriptRoot\..\..\wrc-robust-fixture"
+        # 同 _arbRoot（2026-10-24）：fixture 不再建在仓根。它在 `git status` 里会以
+        # 未跟踪目录出现，测试被中断时会被误纳入提交。
+        $global:_rirRoot = Join-Path $env:TEMP ('wrc-robust-fixture-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
         . $global:_rirScript
         if (-not ('WrcRirLock' -as [type])) {
             Add-Type -TypeDefinition @"
@@ -951,7 +953,13 @@ Describe 'clean-residuals.ps1 safety guards (fail-closed, static + subprocess)' 
 Describe 'clean-residuals.ps1 auto-rollback chain (real failure integration)' {
     BeforeAll {
         $global:_arbScript = "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
-        $global:_arbRoot = "$PSScriptRoot\..\..\wrc-arb-fixture"
+        # 2026-10-24: fixture 建在仓根，混进来后会在 `git status` 里以未跟踪目录
+        # 出现（本次实测：测试被中断时 AfterAll 没跑到，`wrc-arb-fixture/locked/
+        # inner.dat` 就被 pre-commit 当成待提交文件加入了索引）。它不匹配
+        # `.gitignore` 的 `.wrc-*` 规则（少了前导点），于是既没被忽略、也没人打算提交。
+        # 改到系统临时目录：中断时最多留个临时目录，永远不会污染仓库工作区，
+        # 也与本文件其它 fixture（$env:TEMP 下）保持一致。
+        $global:_arbRoot = Join-Path $env:TEMP ('wrc-arb-fixture-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
         $global:_arbWl = Join-Path $global:_arbRoot 'whitelist-empty.json'
         $global:_arbRegPs = 'HKCU:\Software\WRC-ARB-Fixture'
         if (-not ('WrcRirLock' -as [type])) {

@@ -126,17 +126,63 @@ Overall Score: 10.0/10 | verdict: PASS
   因「无受支持文件」而 SKIP 是正确的。semgrep 1.171.0 就位后，含 `.ps1` 的提交会真扫描。
 - Gate 12（工作区卫生）正常。
 
-### Gate 11（Sprint Flow）—— 假 PASS，上游缺陷
+### Gate 11（Sprint Flow）—— 从「永远恰好跳到 PASS」到三种状态可区分
 
-现场：`.sprint-state/` 被 gitignore、sprint 起始日期已过 21–22 天（阈值 14 天）、
-`sprint-gate.sh --pre-commit` 返回 `allow` → hook 映射成 **PASS**。
+这一条比最初判断的更有意思：**存在两个独立缺陷，而且它们互相掩盖**。
 
-`allow` 在这里的语义其实是**「这道门不适用」**（过期 / 相位未到），与「检查通过」不可区分。
-后果不是「少查了一道」，而是**一道什么都没查的门把总分抬高了**（`PASSED_COUNT` 加一）。
+#### 缺陷 A：JSON 解析器够不着，门禁被降级成「什么都没读」
 
-已提交上游 **#584**（要求 `sprint-gate.sh` 的决策携带理由，把「不适用」映射到 SKIP/DEGRADED）。
-**绕行**：本仓库不伪造 `.sprint-state/` 产物来「让门禁通过」——那正好是本次要消除的行为；
-在报告里按事实读作「Gate 11: 未检查」。
+`sprint-gate.sh` 需要 `jq` 或 `node` 才能解析 `.sprint-state/sprint-state.json`。
+`jq` 本机没装，`node` 装在 `C:\Program Files\nodejs`，但 **git-bash 不继承**调用方
+在 Windows 侧追加的 `PATH` 条目。于是实测输出是：
+
+```
+{"decision":"skip","warning":"sprint-state.json is not valid JSON or no JSON parser available (install jq or node), allowing commit"}
+```
+
+**恰好在本仓库，这个降级路径给出的 `skip` 是正确的**——所以缺陷 A 单独存在时
+不会被注意到，它是一种「用错误理由得到正确结果」的假绿。
+
+#### 缺陷 B：`allow` 不区分「验证通过」与「读不到所以放行」
+
+把 `node` 摆到门禁能看见的位置后，真实输出变成：
+
+```
+{"decision":"allow","message":"delphi-review APPROVED, sprint phase 6 validated (sprint open 21 day(s), staleness threshold 14)"}
+```
+
+也就是说 sprint 状态**是**有效的（`phase=6`、delphi `APPROVED`），只是已开 21 天
+超过 14 天阈值——而 `sprint-gate.sh` 对过期 sprint 的处理是**照样 allow**。
+它把「过期」写进了 message，但 `decision` 字段仍然是 `allow`，于是 hook 映射成 **PASS**。
+
+两种形态的共性：`decision` 只有三态，**「验证过并通过」与「没法验证但放行」不可区分**。
+
+#### 下游修法（vendored + live 双写）
+
+1. **让解析器够得着**：Gate 11 调用 `sprint-gate.sh` 前探测标准安装位置
+   （`/c/Program Files/nodejs`、`/c/Program Files (x86)/nodejs`、`$HOME/node_modules/.bin`、
+   `/usr/bin`、`/usr/local/bin`）并前置到该子进程的 `PATH`。这样「没有解析器」才真的
+   意味着「整机没有」，而不是「这个 shell 的 PATH 上没有」。
+2. **区分降级与通过**：从 `sprint-gate.sh` 自己的措辞里识别降级
+   （`no JSON parser` / `not valid JSON` / `install jq`），命中时把
+   `GATE_11_STATUS` 置为 **WARN** 并打印
+   `⚠️ DEGRADED - Gate 11: Sprint Flow (allowed without verifying: …)`，
+   **不再计入 PASS**（因此不进 `PASSED_COUNT`，也不抬高 `score`）。
+3. `*`（无法识别的 decision）也从 PASS 改为 **WARN**——一个没人能解析的裁决
+   不是「检查过」的证据。
+
+#### 绕行 vs 如实
+
+本仓库**不**伪造 `.sprint-state/` 产物来「让门禁通过」（那正是本次要消除的行为）。
+sprint 过期这件事是事实，现在它如实显示为：
+
+```
+✅ PASSED - Gate 11: Sprint Flow (delphi-review APPROVED, sprint phase 6 validated (sprint open 21 day(s), staleness threshold 14))
+```
+
+——「验证通过」与「已开 21 天」同时可见，读者能自己判断该不该收尾这个 sprint。
+
+已提交上游 **#584**（`decision` 需要携带理由，把「不适用/降级」映射到 SKIP/DEGRADED）。
 
 ---
 
@@ -167,14 +213,75 @@ Overall Score: 10.0/10 | verdict: PASS
 
 ---
 
-## 5. 仍然存在的问题（如实记录）
+## 5. 一条贯穿全篇的根因：Windows + git-bash 下「PATH 里没有」≠「没安装」
+
+修完 Gate 11 后，同一个缺陷又在 Gate 2、Gate 6 各出现一次，值得单独记：
+
+| 门禁 | 报出的错误 | 实际情况 |
+|------|-----------|---------|
+| Gate 11 | `decision: skip` + "no JSON parser available (install jq or node)" | `node` 装在 `C:\Program Files\nodejs`，只是没进 git-bash 的 PATH |
+| Gate 6 | `❌ BLOCKED - archlint not installed` | `@archlinter/cli@0.16.0` 全局装好，npm 全局 bin（`%APPDATA%/npm`）不在 PATH |
+| Gate 6 | `❌ BLOCKED - Architecture violations detected` | 其实是 npm shim 的 `exec: node: not found`（exit 127）被当成违规 |
+| Gate 2 | `❌ BLOCKED - Required tool 'jscpd' not available` | `jscpd@5.2.0` 装在 `ui/node_modules/.bin`，而 `npx --no-install` 从仓库根解析 |
+
+四种形态、三个门禁，同一个根因：**工具链探测只查了「当前 shell 的 PATH」**，
+而 Windows 上 npm 全局 bin 与子项目 `node_modules/.bin` 都不在那里面。
+更糟的是后果形态各异——有的是 BLOCK（拦住），有的是「降级后放行」（假绿），
+还有的是把工具链损坏读成代码缺陷。
+
+修法收敛到两处（不是逐个打补丁）：
+1. `hooks/pre-commit` 启动段的 `_ensure_node_toolchain_path()`：把 node 目录与 npm
+   全局 bin **追加**到 PATH（仅缺席时追加，调用方 precedence 不变）。所有 shell out
+   到 node 工具的门禁一次性受益，含 npm shim 里的 `exec node ...`。
+2. `adapters/adapter-common.sh` 的 `require_tool()`：探测清单加入 `%APPDATA%/npm`、
+   `~/.npm-global/bin`、`~/.local/bin` 与子项目 `node_modules/.bin`；BLOCKED 行
+   现在会列出搜索过的全部位置。「工具缺失 = BLOCK 而非 SKIP」的政策**未改**。
+
+`adapter-common.sh` 一并纳入 vendored 一致性白名单（原来只有 powershell.sh /
+gate-10.sh / pre-commit，这层补丁被回退时不会变红）。
+
+## 6. 覆盖率超时预算：一个「健康套件被预算杀掉」的缺陷
+
+覆盖率运行与普通测试运行**共用** `XP_GATE_POWERSHELL_TEST_TIMEOUT_S`（默认 300s）。
+本仓库 762 个用例的普通运行约 285s，**插桩运行更慢**，于是覆盖率每次都在 300s 被杀：
+
+```
+⚠️  Pester coverage TIMED OUT after 300s (may be hanging).
+❌ BLOCKED - Coverage check FAILED
+```
+
+这条错误的误导性是重点：它说「测试可能挂住」，而真相是**预算不够**。
+排查时先去找挂住的测试会一无所获（实测套件 762/762 全绿、EXIT=0）。
+
+修法：拆成两个预算——普通运行 900s、覆盖率运行 1800s
+（`XP_GATE_POWERSHELL_TEST_TIMEOUT_S` / `XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S`），
+`run_coverage` 改用 `_pester_coverage_timeout`。超时是**挂住测试的兜底**，不是性能预算。
+`platform-hygiene` 新增两条用例：覆盖率预算必须存在且 ≥ 普通预算、且 `run_coverage`
+必须真的用了它（否则「加了独立预算」会变成没人调用的死代码）。
+
+## 7. 两条被截断的错误信息
+
+`run_tests` 与 `run_coverage` 的输出都用 `head -50` / `head -30` 截断，而失败信息在**尾部**：
+
+- Gate 5 报 `❌ BLOCKED - Tests FAILED` 时，用户看不到是哪个测试失败、也看不到退出码
+  （实测真因是 vendored/live 钩子哈希不一致——而这条恰好是我刚加的一致性用例抓到的）。
+- 覆盖率 BLOCK 时同理，真因（TIMED OUT）被截掉了。
+
+两处都已补打印 `exit code` 与「runner 输出的尾部」。**一条说不出原因的 BLOCK
+只能靠猜**，而本次两次都被截断信息耽误了排查。
+
+---
+
+## 8. 仍然存在的问题（如实记录）
 
 1. **Gate 2/3/4/6 对 PowerShell 依旧零覆盖**（#537 仍开）。复杂度与架构两条尤其遗憾：
    本仓库的 `architecture.yaml` 写得比多数仓库都细，但它目前只约束 `ui/`。
+   Gate 2 的 jscpd 与 Gate 6 的 archlint 现在**能真跑**了，但都只看 TS/JS。
 2. **Hook 覆写是持续风险**（#583）。下游只能靠一致性测试发现，靠手工重打补丁恢复。
    本次重打补丁时因为插入点算错，一度产生 `syntax error near unexpected token ';;'`——
    **语法错的 hook 比没有 hook 更糟**（它会在某个 gate 之后静默停住全部门禁，参见 #579）。
    因此每次重打后都必须 `bash -n` + 重跑一致性测试，这两步不能省。
+   本次新增 `adapter-common.sh` 到白名单后，一致性测试覆盖 4 个文件。
 3. **99 个 spec id 没有任何高置信测试证据**（详见 `.workbuddy/alignment-report.md`）。
    其中相当一部分只能由 UI 侧的 71 个 vitest 用例或管理员演练覆盖（AGENTS.md 已把
    `clean-residuals.ps1` 的 HKLM/PATH 写入分支划给管理员环境集成演练）。
@@ -184,3 +291,5 @@ Overall Score: 10.0/10 | verdict: PASS
    「analysis-paths 覆盖全部 tracked 产品源」用例守。
 5. `docs/audits/2026-10-16-gate-status.md` 里「Gate 5 对 PowerShell 空转」的结论**本次已证伪**，
    该文档已在相关条目上标注更正指向本文。
+6. **sprint 已开 21 天**（阈值 14）。Gate 11 现在会如实把这件事印在 PASS 那一行里，
+   但「是否收尾这个 sprint」是人做的决定，门禁只负责呈现，不代做决定。

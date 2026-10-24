@@ -57,6 +57,20 @@ tests-run.log
 # They live only on the drill machine; cloners get nothing here.
 wrc-drill/
 
+# Root-level test fixtures. Several Pester suites build scratch fixtures beside
+# the repo root (`wrc-robust-fixture`, `wrc-arb-fixture`, `wrc-guard-fixture`,
+# `wrc-svc-fixture`, `wrc-*-report.json`, ...). They are cleaned up in AfterAll,
+# but an INTERRUPTED run leaves them behind, and nothing ignored them: measured
+# 2026-10-24, a killed run left `wrc-arb-fixture/locked/inner.dat` and the
+# pre-commit hook treated it as a staged file for the commit. Fixtures are never
+# source: ignoring the whole family stops a crashed run from polluting a commit.
+# (The suites themselves should prefer $env:TEMP; this is the backstop.)
+/wrc-*-fixture/
+/wrc-*-projroot/
+/wrc-*-report.json
+/wrc-*-confirm.json
+/wrc-no-whitelist.json
+
 # TypeScript incremental build caches (regenerated; stale copies poison tsc -b)
 *.tsbuildinfo
 

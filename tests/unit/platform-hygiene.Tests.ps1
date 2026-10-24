@@ -458,6 +458,10 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
         $pairs = @(
             @{ live = 'adapters\powershell.sh'; vendored = 'githooks\adapters\powershell.sh' },
             @{ live = 'adapters\gate-10.sh'; vendored = 'githooks\adapters\gate-10.sh' },
+            # 2026-10-24 加入：require_tool 的 PATH 探测补丁（npm 全局 bin /
+            # 子项目 node_modules/.bin）落在 adapter-common.sh。它不在原白名单里，
+            # 于是补丁被回退时一致性测试不会红——正是本用例要消除的那类盲区。
+            @{ live = 'adapters\adapter-common.sh'; vendored = 'githooks\adapters\adapter-common.sh' },
             @{ live = 'hooks\pre-commit'; vendored = 'githooks\hooks\pre-commit' }
         )
         foreach ($pair in $pairs) {
@@ -620,8 +624,7 @@ Describe 'Platform hygiene: 适配器 stdout 契约（2026-10-24 实测）' {
         $leaks -join ' | ' | Should -Be '' -Because "stdout 混入非 .ps1 的提示行：这些行会被当作路径塞进 Pester 的 CodeCoverage.Path，导致覆盖率产物变成空文档。漏出的行：$($leaks -join ' | ')"
     }
 
-    It '发现的产品源恰好 18 个（17 脚本 + setup.ps1，权威口径）' {
-        if (-not $script:Bash) {
+    It '发现的产品源恰好 18 个（17 脚本 + setup.ps1，权威口径）' {        if (-not $script:Bash) {
             Set-ItResult -Inconclusive -Because 'bash 不可用'
             return
         }
@@ -638,5 +641,40 @@ Describe 'Platform hygiene: 适配器 stdout 契约（2026-10-24 实测）' {
         $product.Count | Should -Be 18 -Because "发现到的产品源是 $($product.Count) 个（清单：$($product -join ', ')）——权威口径是 18 个，数量不符时先查是不是演练目录/本地脚本混进了分母"
         @($product | Where-Object { $_ -match 'wrc-drill|\.workbuddy|backup-' }).Count |
             Should -Be 0 -Because '演练目录/本地产物不得进入覆盖率分母（prune-dirs 的职责）'
+    }
+
+    It '覆盖率运行有独立的、不小于普通测试运行的单次超时预算（2026-10-24 实测）' {
+        $liveAdapter = Join-Path $env:USERPROFILE '.config\xp-gate\adapters\powershell.sh'
+        if (-not (Test-Path -LiteralPath $liveAdapter)) {
+            Set-ItResult -Inconclusive -Because '用户级 xp-gate 未安装'
+            return
+        }
+        # 真实缺陷（2026-10-24 实测）：覆盖率运行与普通测试运行共用 300s 预算。
+        # 本仓库 762 个用例的普通运行就要约 285s，**插桩运行更慢**，于是覆盖率
+        # 每次都在 300s 被杀 → 门禁报 "Pester coverage TIMED OUT (may be hanging)"
+        # → 「预算不够」被说成「测试挂住」，且**每一个**代码提交都被拦。
+        # 实测错误信息的误导性正是重点：它让人去找挂住的测试，而真正的问题在预算。
+        $text = Get-Content -LiteralPath $liveAdapter -Raw
+        $coverageMatch = [regex]::Match($text, 'XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S:-(\d+)')
+        $testMatch = [regex]::Match($text, 'XP_GATE_POWERSHELL_TEST_TIMEOUT_S:-(\d+)')
+        $coverageMatch.Success | Should -BeTrue -Because '覆盖率超时预算必须显式存在（XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S），否则退回普通测试预算——正是本次缺陷'
+        $testMatch.Success | Should -BeTrue -Because '普通测试超时预算必须显式存在'
+        $coverageDefault = [int]$coverageMatch.Groups[1].Value
+        $testDefault = [int]$testMatch.Groups[1].Value
+        $coverageDefault | Should -BeGreaterOrEqual $testDefault -Because "插桩运行比普通运行慢，覆盖率预算（${coverageDefault}s）不得小于普通测试预算（${testDefault}s）——否则健康的套件会被预算杀掉"
+        # 300s 是被实测证明不够的下限；钉死「明显更大」防止有人改回去。
+        $coverageDefault | Should -BeGreaterThan 300 -Because '实测 762 用例的插桩运行超过 300s；覆盖率预算必须显著高于曾经出问题的 300s'
+    }
+
+    It '覆盖率运行用的是覆盖率预算，而不是普通测试预算' {
+        if (-not (Test-Path -LiteralPath (Join-Path $script:Root 'githooks/adapters/powershell.sh'))) {
+            Set-ItResult -Inconclusive -Because 'vendored 适配器缺失'
+            return
+        }
+        $adapter = Get-Content -LiteralPath (Join-Path $script:Root 'githooks/adapters/powershell.sh') -Raw
+        # run_coverage 里必须调用 _pester_coverage_timeout；用错成 _pester_timeout
+        # 会让「加了独立预算」变成没人用到的死代码（本次缺陷的下一层形态）。
+        $adapter | Should -Match '_pester_coverage_timeout\s+"\$PWSH"' -Because 'run_coverage 必须用覆盖率的专用超时包装；用普通 _pester_timeout 时独立预算形同不存在'
+        $adapter | Should -Match 'CodeCoverage\.Enabled' -Because '覆盖率运行必须真的开启 CodeCoverage'
     }
 }
