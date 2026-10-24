@@ -6,6 +6,20 @@
 # violations against this committed snapshot (regenerate: archlint snapshot -o)
 !.architecture-baseline.json
 
+# Gate 3 PowerShell complexity ratchet baseline — tracked.
+#
+# CI run 40100344167 caught this: the file was `.gitignore`d by the blanket
+# `*.json` rule above, so it existed on every developer machine but in NO clone
+# and NOT in CI. `tests/unit/complexity-tool.Tests.ps1` asserts it is present,
+# so the suite passed locally and failed in CI on the same commit -- the classic
+# "works on my machine" shape, except the machine held an artifact that git
+# never carried. Without it Gate 3's ratchet has no baseline and downgrades to
+# SKIP, i.e. the PowerShell complexity dimension silently disappears on a fresh
+# clone. Every `*.json` that a gate DEPENDS ON must be un-ignored explicitly;
+# the blanket rule is there for runtime output, not for committed configuration.
+# (Regenerate: tools/Update-ComplexityBaseline.ps1)
+!.xp-gate-powershell-ccn-baseline.json
+
 # UI manifests/configs — tracked so the app is buildable from a clone
 !ui/package.json
 !ui/package-lock.json

@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     Guard tests for tools/Measure-PowerShellComplexity.ps1 (Gate 3's PowerShell arm).
@@ -83,6 +83,22 @@ Describe 'Measure-PowerShellComplexity (Gate 3 PowerShell arm)' {
             if (-not (Test-Path -LiteralPath $abs)) { $missing += [string]$e.file }
         }
         $missing | Should -BeNullOrEmpty -Because "基线引用了不存在的文件：$($missing -join ', ')（文件改名/删除后必须重跑 tools/Update-ComplexityBaseline.ps1）"
+    }
+
+    It 'ratchet 基线被 git 跟踪（否则 clone/CI 上不存在，门禁静默退回 SKIP）' {
+        # 2026-10-24 CI run 40100344167 实测：`.gitignore` 的 `*.json` 兜底规则把
+        # .xp-gate-powershell-ccn-baseline.json 一起忽略了。于是它存在于**每台开发机**
+        # 上，却不在**任何 clone** 里、也不在 CI 里。本文件的「基线入库」用例因此
+        # 本地绿、CI 红——同一份提交两种结果，差别只在「本机留着 git 没带走的产物」。
+        #
+        # 上面那条用例只断言文件「存在」。存在 ≠ 入库：真正的契约是**新 clone 里也有**，
+        # 而唯一可靠的判据是 `git ls-files`。这正是本条要钉住的东西。
+        $git = Get-Command git -ErrorAction SilentlyContinue
+        if (-not $git) { Set-ItResult -Skipped -Because 'git 不在 PATH 上，无法判定跟踪状态'; return }
+        $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+        $tracked = & git -C $root ls-files --error-unmatch '.xp-gate-powershell-ccn-baseline.json' 2>$null
+        $LASTEXITCODE | Should -Be 0 -Because "基线必须被 git 跟踪，否则新 clone/CI 上不存在，Gate 3 的棘轮退化为 SKIP，PowerShell 复杂度维度静默消失。若被 .gitignore 挡住，请加 '!.xp-gate-powershell-ccn-baseline.json'"
+        $tracked | Should -Not -BeNullOrEmpty
     }
 
     It '无分支函数的 CCN 恰为 1' {
