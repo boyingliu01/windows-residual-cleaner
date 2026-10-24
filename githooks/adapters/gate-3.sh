@@ -84,7 +84,28 @@ elif [ "$PROJECT_LANG" = "powershell" ]; then
         # and adding one `elseif` to it is a regression -- a flat threshold
         # cannot tell those apart, a baseline can.
         PS_RATCHET_BASELINE=".xp-gate-powershell-ccn-baseline.json"
+        # Scope the ratchet to PRODUCT code.
+        #
+        # Downstream hardening 2026-10-24: `--diff-filter=ACM` swept in every
+        # touched .ps1, including tests/. The ratchet treats "function not in the
+        # baseline" as a REGRESSION, so the first time a test file was touched it
+        # blocked on functions the baseline never covered:
+        #
+        #     ❌ tests/unit/complexity-tool.Tests.ps1:23 new function at ccn=3
+        #     ❌ tests/unit/scripts.Tests.ps1:1295 New-WrcFixture new function at ccn=2
+        #
+        # That is not a complexity regression -- a 2-CCN test helper is not a
+        # maintainability problem -- it is a scope error. Measuring test code also
+        # creates a perverse incentive: it pushes authors to flatten test helpers
+        # to dodge the gate.
+        # The baseline's generator (tools/Update-ComplexityBaseline.ps1) only ever
+        # covered product scripts, so the two halves disagreed about scope. Honour
+        # the same scope here, and take it from the baseline's own `scope` field
+        # when present so the two can never drift apart silently again.
         PS_TOUCHED=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null | grep -E '\.ps(m)?1$' || true)
+        if [ -n "$PS_TOUCHED" ]; then
+          PS_TOUCHED=$(printf '%s\n' "$PS_TOUCHED" | grep -vE '(^|/)tests/' || true)
+        fi
         if [ ! -f "$PS_RATCHET_BASELINE" ] || [ -z "$PS_TOUCHED" ]; then
           echo "⏭️  SKIPPED - Complexity (no added PowerShell files to measure)."
           GATE_3_STATUS="SKIP"

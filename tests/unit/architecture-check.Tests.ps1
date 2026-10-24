@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Guard tests for tools/Test-PowerShellArchitecture.ps1 (Gate 6 PowerShell arm).
