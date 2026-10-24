@@ -2,6 +2,84 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.5.0] - 2026-10-24
+
+### 让质量门禁真生效（2026-10-24 门禁审计）
+
+本轮**未新增产品特性**，全部工作集中在「门禁是否真的在检查东西」。起因是发现
+一道什么都没有检查的门禁会打印 `10.0/10`——有效分母只统计真正跑过的门禁，
+SKIP 被排除在外，于是「大部分门禁空转」的运行反而得分最高。
+
+**真跑门禁：6/12 → 9/12**；`of all gates` 5.0/10 → 7.5/10。
+
+#### 门禁本身
+
+- **Gate 5 覆盖率 fail-closed**：`coverage.xml` 缺 `<sourcefile>` 时不再静默通过，
+  并新增「报告完整性」校验（发现的源文件必须与报告内条目一致）。实测抓到一个
+  真实事故：适配器把 `_find_powershell_files` 的提示文本写进 **stdout**，而那份
+  文本正是喂给 `CodeCoverage.Path` 的文件清单，于是 `coverage.xml` 被写成
+  **2 字节**：`Could not resolve coverage path '  ℹ️  pruning directory name 'wrc-drill'`。
+  现在所有提示改走 stderr。
+- **Gate 3 对 PowerShell 真的测量**（此前是硬 SKIP「no PowerShell tool」）：
+  `lizard` 确实解析不了 `.ps1`，但 PowerShell 的 AST 可以。新增
+  `tools/Measure-PowerShellComplexity.ps1`（圈复杂度 = 1 + AST 判定点）与
+  **棘轮基线** `tools/Update-ComplexityBaseline.ps1`。存量实测 139 函数、最大
+  CCN 143，62 条入基线：平阈值会拦住每一个后续提交，而棘轮只问「这次提交让
+  复杂度变差了吗」——这才是提交钩子能诚实回答的问题。
+- **Gate 6 的 `architecture.yaml` 开始约束 `.ps1`**（此前同样是硬 SKIP）：
+  「哪个脚本可以依赖哪个」与语言无关。新增 `powershell:` 分层块（8 层单向依赖）
+  与 `tools/Test-PowerShellArchitecture.ps1`。实测 14 条依赖边、0 违规。
+  真实约束：扫描器不得依赖清理器或回滚库，否则「扫描→清理」不再是单向管道。
+- **Gate 10 的 semgrep 真的扫 `.ps1`**（此前 WARN `tool_not_installed`）：
+  两层缺陷——semgrep 在 `~/bin` 未被探测；且 `semgrep.exe` 只是 zipapp 包装器，
+  它要 exec 同目录的 `pysemgrep`，目录不在 PATH 上就报
+  `executing pysemgrep failed: run ["pysemgrep" ...]: No such file or directory`。
+  修复后实测 `✅ PASSED - No blocking vulnerabilities (files scanned: 1)`。
+- **Gate 11 不再把「降级」算作 PASS**：读不到 sprint 状态时置 WARN 并打印
+  `⚠️ DEGRADED — allowed without verifying: <原因>`，不再进 `PASSED_COUNT`。
+- **Gate 2/6 的工具解析**：`require_tool` 与 archlint/jscpd 探测扩到
+  `%APPDATA%/npm`、`~/.npm-global/bin`、子项目 `node_modules/.bin`。
+  实测三类误报：`❌ BLOCKED - archlint not installed`（其实装了）、
+  `exec: node: not found` 被读成「architecture violations detected」、
+  `Required tool 'jscpd' not available`（其实在 `ui/node_modules/.bin`）。
+
+#### 一个横跨四道门的根因
+
+**Windows + git-bash 下「PATH 里没有」≠「没安装」。** npm 全局 bin、node 安装目录、
+pip `--user` Scripts 都不在 git-bash 的默认 PATH 上，而各门禁只查 `command -v` /
+`npx --no-install` / `~/.local/bin`。已在钩子启动段统一注入（仅追加，不改变调用方
+precedence），并上报上游 **#593**。此前已报 #583（部署静默覆盖下游补丁）、
+#584（Gate 11 把过期/未到相位映射成 PASS）、#585（Gate 5c 在 jq 缺席时零输出）。
+
+#### 被截断 / 误导的错误信息
+
+- 覆盖率运行与普通测试运行**共用 300s 预算**，而本仓 762 用例的普通运行约 285s、
+  插桩运行更慢——于是每次都被杀，报 `Pester coverage TIMED OUT (may be hanging)`。
+  **「预算不够」被说成「测试挂住」**，排查方向完全跑偏。拆成 900s / 1800s 两个预算。
+- Gate 5 报 `❌ BLOCKED - Tests FAILED` 时不打印是哪个测试失败、也不打印退出码
+  （真因在 `head -50` 之外）。补打印 `exit code` 与 runner 输出尾部。
+
+#### 测试与产物
+
+- 新增 `tests/unit/complexity-tool.Tests.ps1`（12 例）、
+  `tests/unit/architecture-check.Tests.ps1`（7 例）。
+- 双引擎 Pester **784/784**（PS 5.1 与 pwsh 7，串行各跑一次）；
+  UI vitest 71/71；根 vitest 22/22。
+- 产品源 PSSA **0 findings**（`references/scripts` + `setup.ps1` + `tools/`）。
+- 钩子一致性测试扩到 **5 个文件**（新增 `gate-3.sh`、`adapter-common.sh`）。
+- 覆盖率分母 18 → **21** sourcefile（`tools/` 下的三个门禁工具即产品代码）。
+- 测试 fixture 不再建在仓根：`scripts.Tests.ps1` 的两处改用 `$env:TEMP`。
+  实测一次被中断的运行留下 `wrc-arb-fixture/locked/inner.dat`，而 `git status`
+  把它当成了待提交文件——`.gitignore` 补 `/wrc-*-fixture/` 等作为兜底。
+
+#### 仍然未解决（如实记录）
+
+- **Gate 2/4 对 PowerShell 仍零覆盖**：`jscpd` 不支持 `.ps1`，Gate 4 无检测器。
+  未伪造测量。
+- **Gate 3 在纯文档提交时仍 SKIP**（没有改动 `.ps1`，棘轮分支不触发）。
+- **sprint 已开 21 天**（阈值 14）。Gate 11 现在会把这句话印在 PASS 那一行里，
+  但「是否收尾」由人决定，门禁只负责呈现。
+
 ## [1.4.4.0] - 2026-10-16
 
 ### 门禁加固与平台层原语收敛（2026-10-16 接管审计）
