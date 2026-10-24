@@ -446,6 +446,37 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
         $prune | Should -Contain 'wrc-drill' -Because 'wrc-drill 是本机管理员演练脚手架（会创建真实系统对象，2026-10-20 起已移出 git 跟踪、仅存本地），必须留在三处分母之外'
     }
 
+    It '非 ASCII 的 .ps1 一律带 UTF-8 BOM（CI 编码守卫的本地等价物）' {
+        # CI run 40100344167 / 40102096196 连续两次因此报红，而**本地从未拦过**：
+        # 这条守卫只存在于 .github/workflows/ci.yml。PSScriptAnalyzer 虽有
+        # PSUseBOMForUnicodeEncodedFile，但 Gate 1 的分析范围收敛在
+        # `.xp-gate-powershell-analysis-paths`（产品源），**tests/ 不在其中**，
+        # 所以这条规则从未在本地对测试文件生效。
+        #
+        # 后果：开发者跑完双引擎 Pester、vitest、PSSA、覆盖率全绿，推送后 CI 红。
+        # 「门禁只在 CI 生效的那一半，等于本地没有。」本用例把那半边补到本地。
+        #
+        # 实测触发方式极隐蔽：编辑工具整文件重写 `.ps1` 会**丢掉原有 BOM**，
+        # 即使 diff 只显示改了几行断言。本用例因此必须覆盖 tests/ 与 tools/。
+        $scope = @(Get-ChildItem -LiteralPath $script:Root -Recurse -Filter '*.ps1' -File |
+            Where-Object { $_.FullName -notmatch '\\node_modules\\|\\\.git\\' } |
+            Where-Object {
+                $rel = $_.FullName.Substring($script:Root.Length).TrimStart('\', '/')
+                # 与 CI 守卫同样的排除面：gitignored 的本机脚手架没有跨机器契约。
+                $rel -notmatch '^(\.workbuddy|\.delphi-work|\.qoder|\.sprint-state|\.worktrees|\.xp-gate|wrc-drill)[\\/]'
+            })
+        $offenders = @()
+        foreach ($f in $scope) {
+            $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+            $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+            if ($hasBom) { continue }
+            $hasNonAscii = $false
+            foreach ($b in $bytes) { if ($b -gt 0x7F) { $hasNonAscii = $true; break } }
+            if ($hasNonAscii) { $offenders += $f.FullName.Substring($script:Root.Length).TrimStart('\', '/') }
+        }
+        $offenders | Should -BeNullOrEmpty -Because "以下 .ps1 含非 ASCII 却缺 UTF-8 BOM：$($offenders -join ', ')。PS 5.1 会按系统 ANSI 码页读取无 BOM 文件，中文变乱码甚至解析失败；CI 编码守卫会直接拒绝"
+    }
+
     It '钩子安装与 vendored 副本一致（被回退/删除时变红，杜绝静默降级）' {
         # R6 Round-2 稳落地 BLOCKING CANDIDATE 的落实：2026-10-17 实测一个外部
         # xp-gate 维护进程把 batch-3 硬化文件整体回退为 legacy（保留旧 mtime，

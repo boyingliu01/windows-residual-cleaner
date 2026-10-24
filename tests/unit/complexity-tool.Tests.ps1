@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Guard tests for tools/Measure-PowerShellComplexity.ps1 (Gate 3's PowerShell arm).
