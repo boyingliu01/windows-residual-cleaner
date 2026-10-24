@@ -27,3 +27,4 @@
 # prune/analysis toolchain) together when introducing `.psm1` modules.
 references/scripts
 setup.ps1
+tools
