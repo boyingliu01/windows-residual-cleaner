@@ -29,11 +29,60 @@ GATE_10_REASON=""
 GATE_10_SCANNED_FILES=0
 
 # Semgrep availability check
-SEMGREP_CMD=""
+#
+# Downstream hardening 2026-10-24: two separate failures, both "installed but
+# the gate could not see it":
+#
+#  1. Only PATH and ~/.local/bin were probed. On Windows, pip `--user` scripts
+#     land in %APPDATA%/Python/PythonNNN/Scripts, and hand-placed tools often sit
+#     in ~/bin -- neither is on git-bash's PATH. Measured here: semgrep.exe at
+#     C:\Users\<user>\bin\semgrep.exe, `command -v` found it in an interactive
+#     shell, Gate 10 still said "semgrep not installed".
+#  2. semgrep.exe is only a zipapp WRAPPER: it execs `pysemgrep`, which is a
+#     separate executable in the SAME pip Scripts dir. Resolving semgrep.exe is
+#     therefore not enough -- if that dir is not on PATH, semgrep dies with
+#     `executing pysemgrep failed: run ["pysemgrep" ...]: No such file or
+#     directory`. The wrapper must have its own directory on PATH.
+#
+# Fix both: find the wrapper, then prepend its directory (and the pip Scripts
+# dir) to PATH for the remainder of this gate.
+_semgrep_dir=""
 if command -v semgrep >/dev/null 2>&1; then
   SEMGREP_CMD="semgrep"
+  _semgrep_dir=$(dirname "$(command -v semgrep)")
 elif [ -f "$HOME/.local/bin/semgrep" ]; then
   SEMGREP_CMD="$HOME/.local/bin/semgrep"
+  _semgrep_dir="$HOME/.local/bin"
+else
+  for _sg in \
+    "$HOME/bin/semgrep" \
+    "$HOME/bin/semgrep.exe" \
+    "$HOME/AppData/Roaming/Python/Scripts/semgrep.exe"; do
+    if [ -x "$_sg" ]; then SEMGREP_CMD="$_sg"; _semgrep_dir=$(dirname "$_sg"); break; fi
+  done
+  if [ -z "$SEMGREP_CMD" ]; then
+    # pip --user installs versioned Scripts dirs; glob them rather than guess.
+    _sg_glob=$(ls -1d "$HOME/AppData/Roaming/Python"/Python3*/Scripts/semgrep.exe 2>/dev/null | head -1)
+    if [ -n "$_sg_glob" ] && [ -x "$_sg_glob" ]; then
+      SEMGREP_CMD="$_sg_glob"
+      _semgrep_dir=$(dirname "$_sg_glob")
+    fi
+  fi
+fi
+
+# The wrapper needs pysemgrep reachable. Add every plausible pip Scripts dir.
+for _ps in "$HOME/AppData/Roaming/Python"/Python3*/Scripts "$HOME/AppData/Roaming/Python/Scripts"; do
+  [ -d "$_ps" ] || continue
+  case ":$PATH:" in
+    *":$_ps:"*) ;;
+    *) PATH="$_ps:$PATH"; export PATH ;;
+  esac
+done
+if [ -n "$_semgrep_dir" ]; then
+  case ":$PATH:" in
+    *":$_semgrep_dir:"*) ;;
+    *) PATH="$_semgrep_dir:$PATH"; export PATH ;;
+  esac
 fi
 
 if [ -z "$SEMGREP_CMD" ]; then

@@ -677,4 +677,22 @@ Describe 'Platform hygiene: 适配器 stdout 契约（2026-10-24 实测）' {
         $adapter | Should -Match '_pester_coverage_timeout\s+"\$PWSH"' -Because 'run_coverage 必须用覆盖率的专用超时包装；用普通 _pester_timeout 时独立预算形同不存在'
         $adapter | Should -Match 'CodeCoverage\.Enabled' -Because '覆盖率运行必须真的开启 CodeCoverage'
     }
+
+    It 'Gate 10 的 semgrep 探测覆盖了「包装器 + pysemgrep 同目录」两种形态' {
+        $vendored = Join-Path $script:Root 'githooks/adapters/gate-10.sh'
+        if (-not (Test-Path -LiteralPath $vendored)) {
+            Set-ItResult -Inconclusive -Because 'vendored gate-10.sh 缺失'
+            return
+        }
+        # 真实缺陷（2026-10-24 实测）：`semgrep.exe` 只是 zipapp 包装器，内部
+        # exec `pysemgrep`（另一个可执行文件，在同一 pip Scripts 目录）。
+        # 只解析到包装器而该目录不在 PATH 上时，semgrep 报
+        #   executing pysemgrep failed: run ["pysemgrep" ...]: No such file or directory
+        # 于是 Gate 10 在「工具其实装好了」的情况下 WARN 跳过——而它是唯一会扫
+        # .ps1 的安全门禁。
+        $text = Get-Content -LiteralPath $vendored -Raw
+        $text | Should -Match 'pysemgrep' -Because 'gate-10.sh 的注释必须记下「包装器需要 pysemgrep 在同目录」这条实测根因，否则下一个维护者会把它「简化」掉'
+        $text | Should -Match 'AppData/Roaming/Python' -Because 'pip --user 的 Scripts 目录必须进探测/注入范围：pysemgrep 就在那里'
+        $text | Should -Match '\$HOME/bin/semgrep' -Because '实测 semgrep 可能装在手放的 ~/bin 下，必须探测'
+    }
 }
