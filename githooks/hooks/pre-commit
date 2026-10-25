@@ -285,6 +285,79 @@ _ensure_node_toolchain_path() {
 }
 _ensure_node_toolchain_path
 
+# ---------------------------------------------------------------------------
+# Python on PATH (for pip-installed scanner shims).
+#
+# Observed 2026-10-25: Gate 7 reported "IaC files detected but no scanning tools
+# available" -> BLOCKED on a machine where checkov 3.3.30 works fine from cmd.
+# Two independent reasons, both silent:
+#
+#   1. checkov's POSIX shim is `exec python "…/Scripts/checkov" "$@"`, but the
+#      hook shell has `python` nowhere on PATH (only py.exe from Windows), so
+#      `command -v checkov` succeeds and then the tool dies at exec time.
+#   2. The global bin dir holding it was D:\npm, not %APPDATA%\npm.
+#
+# Fix the general cause rather than the symptom: make Windows' own PATH entries
+# reachable from this shell, and probe Python's install locations explicitly.
+# git-bash does not inherit Windows PATH additions (only a handful of dirs), so a
+# tool the user "obviously has" is invisible here -- that class of bug has now
+# produced three separate gate failures (#536, #593, and this one).
+_ensure_python_tooling_path() {
+  local _dirs=() _d
+  # Windows PATH entries, translated to /x/... form.
+  #
+  # `cmd.exe /c echo %PATH%` does NOT give the Windows PATH here -- git-bash hands
+  # the child its own shrunken PATH, so it echoed 3-7 entries instead of the full
+  # list. The reliable source is ORIGINAL_PATH, which MSYS2 sets to the inherited
+  # Windows PATH before it rewrites PATH (measured: 3002 chars vs 7 entries).
+  local _winpath_entry _posix _winlist
+  _winlist="${ORIGINAL_PATH:-}"
+  if [ -z "$_winlist" ]; then
+    _winlist=$(cmd.exe /c 'echo %PATH%' 2>/dev/null | tr -d '\r' | tr ';' ':')
+  fi
+  local _oldifs="$IFS"
+  IFS=':'
+  for _winpath_entry in $_winlist; do
+    [ -n "$_winpath_entry" ] || continue
+    # C:\foo\bar -> /c/foo/bar  (also tolerate an entry already in /c/... form)
+    case "$_winpath_entry" in
+      [A-Za-z]:[\\/]*) _posix=$(printf '%s' "$_winpath_entry" | sed -e 's|\\|/|g' -e 's|^\([A-Za-z]\):|/\L\1|') ;;
+      /*) _posix="$_winpath_entry" ;;
+      *) continue ;;
+    esac
+    [ -d "$_posix" ] || continue
+    _dirs[${#_dirs[@]}]="$_posix"
+  done
+  IFS="$_oldifs"
+  # Python interpreter locations: the shims exec `python`, so `python` itself
+  # must resolve. py.exe alone is not enough (measured: checkov's shim is
+  # `exec python ...`, and only py.exe was on PATH).
+  for _d in \
+    "/c/Program Files/Python312" \
+    "/c/Program Files/Python311" \
+    "/c/Program Files/Python310" \
+    "$HOME/AppData/Local/Programs/Python/Python312" \
+    "$HOME/AppData/Local/Programs/Python/Python311" \
+    "$HOME/AppData/Local/Programs/Python/Python310"; do
+    [ -d "$_d" ] || continue
+    if [ -x "$_d/python.exe" ]; then
+      _dirs[${#_dirs[@]}]="$_d"
+    fi
+  done
+  local _suffix="" _p
+  for _d in ${_dirs[@]+"${_dirs[@]}"}; do
+    case ":$PATH:" in
+      *":$_d:"*) continue ;;
+    esac
+    _suffix="${_suffix:+$_suffix:}$_d"
+  done
+  if [ -n "$_suffix" ]; then
+    PATH="$PATH:$_suffix"
+    export PATH
+  fi
+}
+_ensure_python_tooling_path
+
 # Ensure pipe failures propagate exit codes through | head/tail/grep
 set -o pipefail
 

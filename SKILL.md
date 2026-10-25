@@ -1,4 +1,4 @@
----
+﻿---
 name: windows-residual-cleaner
 description: "Scan and clean up residual files, registry entries, ghost services, scheduled tasks, COM extensions, and shell context menu handlers from uninstalled software on Windows. Use when users mention 'cleanup residuals', 'clean uninstalled software', 'registry cleanup', 'ghost services', 'empty directories cleanup', 'system cleanup after uninstall', 'clean up leftover files', or 'remove software traces'. Requires Administrator privileges for deletion; scanning alone does not. Agent-driven workflow: user expresses intent in natural language, agent auto-scans and presents itemized list, user selects specific items to clean, agent executes with mandatory confirmation gates and automatic rollback."
 ---
@@ -15,17 +15,28 @@ Scan and clean up residuals left by uninstalled software on Windows systems.
 
 ## Privilege model (read before running anything)
 
-**Scanning does not require Administrator. Deletion does.** Prefer this two-stage shape:
+**The orchestrator requires Administrator; the individual read-only scans do not.**
+
+This distinction matters because the common guidance ("scan first, elevate later") only
+works if you call the scan scripts individually — `run-all.ps1` gates on admin
+**unconditionally**, before it even looks at `-SkipRestorePoint`, because step 1 of the
+pipeline creates a restore point.
 
 | Stage | Scripts | Admin needed |
 |-------|---------|--------------|
-| Scan | `run-all.ps1`, `build-installed-index.ps1`, `scan-*.ps1`, `generate-report.ps1` | **No** — these only warn if unelevated |
+| Full pipeline | `run-all.ps1` | **Yes** — aborts with exit code `2` otherwise. `-SkipRestorePoint` does **not** bypass this |
+| Individual scans | `build-installed-index.ps1`, `scan-uninstalled.ps1`, `scan-filesystem-residuals.ps1`, `scan-residuals.ps1`, `generate-report.ps1` | **No** — these only `Write-Warning` when unelevated |
 | Confirm | `confirm-cleanup.ps1` | No |
-| Delete | `clean-residuals.ps1`, `create-restore-point.ps1`, `run-all.ps1` | **Yes** — they abort with exit code `2` when not elevated |
+| Delete | `clean-residuals.ps1`, `create-restore-point.ps1` | **Yes** — abort with exit code `2` |
 
-So: scan from a normal shell, show the user the results, and only re-launch an **elevated**
-session once the user has picked items. Do not run scans as Administrator "to be safe" —
-it widens the window in which an elevated destructor exists for no benefit.
+So the honest shape is:
+
+- **Normal use:** run `run-all.ps1` **elevated** — you want the restore point, and that is the
+  single strongest safety net available. Elevation here is expected, not incidental.
+- **Preview without elevating:** call the individual `scan-*.ps1` scripts in order, then
+  `generate-report.ps1`. Results are equivalent for reporting; you simply will not have a
+  restore point, so do **not** proceed to deletion from this session — re-run elevated.
+
 
 ## Agent-Driven Workflow
 
@@ -313,7 +324,23 @@ powershell -ExecutionPolicy Bypass -File "references/scripts/confirm-cleanup.ps1
 powershell -ExecutionPolicy Bypass -File "references/scripts/clean-residuals.ps1" -ConfirmFile confirmed-ids.json -DryRun
 ```
 
-**Output convention:** All JSON files output to skill root directory (`windows-residual-cleaner/`).
+**Output convention:** All JSON artifacts (`installed-software-index.json`, `final-report.json`,
+`confirmed-ids.json`, `cleanup-log.json`, `backup-*`) are written to the **package root** —
+i.e. two levels above `references/scripts/`, because every script resolves its default paths as
+`$PSScriptRoot\..\..`.
+
+This makes the layout load-bearing: **the scripts must stay at `<root>/references/scripts/`.**
+If an installer flattens them into a single directory, `..\..` escapes the package and outputs
+land in the parent — possibly another application's folder. If you must relocate them, pass
+`-ReportPath` / `-OutputPath` / `-ConfirmFile` explicitly rather than moving
+the tree.
+
+Run commands from the package root so the documented relative paths resolve:
+
+```bash
+cd windows-residual-cleaner
+powershell -ExecutionPolicy Bypass -File "references/scripts/run-all.ps1"
+```
 
 **Important:**
 - Write scripts (`clean-residuals.ps1`, `create-restore-point.ps1`, `run-all.ps1`) abort with exit code 2 when not elevated; read-only scan scripts only warn.

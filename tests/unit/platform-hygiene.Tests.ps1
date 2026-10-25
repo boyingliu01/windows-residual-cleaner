@@ -671,12 +671,12 @@ Describe 'Platform hygiene: 适配器 stdout 契约（2026-10-24 实测）' {
         $script = & $script:Bash -lc "cd '$($script:Root -replace '\\','/')' && source '$($liveAdapter -replace '\\','/')' && _find_powershell_files '*.ps1' 2>/dev/null"
         $product = @($script | Where-Object { $_ -match '\.ps1$' -and $_ -notmatch '\.Tests\.ps1$' })
         # AGENTS.md「coverage.xml 的口径与污染」：权威口径 = references/scripts 17
-        # 脚本 + setup.ps1 + tools/ 下 3 个门禁工具脚本 = 21 sourcefile。
+        # 脚本 + setup.ps1 + tools/ 下 4 个门禁工具脚本 = 22 sourcefile。
         # 数量变了要么是新脚本没入列的缺陷，要么是文档没跟上——两种都需要人看一眼，
         # 所以这里钉死。（2026-10-24：tools/Measure-PowerShellComplexity.ps1、
         # tools/Update-ComplexityBaseline.ps1、tools/Test-PowerShellArchitecture.ps1
-        # 入库后由 18 变为 21。）
-        $product.Count | Should -Be 21 -Because "发现到的产品源是 $($product.Count) 个（清单：$($product -join ', ')）——权威口径是 21 个（17 脚本 + setup.ps1 + 3 个 tools 门禁工具），数量不符时先查是不是演练目录/本地脚本混进了分母，或者新脚本没被算进来"
+        # 入库后由 18 变为 21；tools/New-SkillPackage.ps1 入库后变为 22。）
+        $product.Count | Should -Be 22 -Because "发现到的产品源是 $($product.Count) 个（清单：$($product -join ', ')）——权威口径是 22 个（17 脚本 + setup.ps1 + 4 个 tools 门禁工具），数量不符时先查是不是演练目录/本地脚本混进了分母，或者新脚本没被算进来"
         @($product | Where-Object { $_ -match 'wrc-drill|\.workbuddy|backup-' }).Count |
             Should -Be 0 -Because '演练目录/本地产物不得进入覆盖率分母（prune-dirs 的职责）'
     }

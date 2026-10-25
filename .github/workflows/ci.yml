@@ -152,6 +152,57 @@ jobs:
           path: coverage-ci.xml
           if-no-files-found: ignore
 
+  package:
+    # Builds the distributable skill package and asserts the CLI/UI split holds.
+    #
+    # Why this is a separate job rather than a step in `powershell`: the split is a
+    # RELEASE property, not a test property. `ui/server` spawns admin-privileged
+    # destructive PowerShell, so "the cleaner package does not contain it" has to be
+    # enforced on every push -- otherwise the first time anyone notices a bad split
+    # is after it has been handed to colleagues.
+    #
+    # Runs on ONE engine only: the packager calls Remove-Item/Copy-Item and its
+    # behaviour does not vary by engine, and the cross-engine Pester matrix above
+    # already covers the scripts it copies.
+    name: Skill package (CLI/UI split)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build packages
+        run: ./tools/New-SkillPackage.ps1 -OutputRoot ./dist
+
+      - name: Assert the skill package excludes the privileged server
+        # Fail-closed: if this list ever has to be relaxed, that is a design change
+        # requiring review, not a CI tweak.
+        run: |
+          $skill = './dist/windows-residual-cleaner-skill'
+          if (-not (Test-Path "$skill/references/scripts/run-all.ps1")) {
+            throw 'skill package is missing the pipeline (packaging step produced nothing)'
+          }
+          $forbidden = @('ui', 'ui/server', 'tests', 'tools', 'githooks', 'node_modules')
+          $leaks = @($forbidden | Where-Object { Test-Path (Join-Path $skill $_) })
+          if ($leaks.Count -gt 0) {
+            throw "skill package leaked privileged/dev directories: $($leaks -join ', ')"
+          }
+          $scriptCount = @(Get-ChildItem "$skill/references/scripts" -Filter *.ps1 -File).Count
+          if ($scriptCount -ne 17) {
+            throw "expected 17 pipeline scripts in the skill package, found $scriptCount"
+          }
+          Write-Output "skill package OK: 17 scripts, no ui/ or dev infra"
+
+      - name: Upload skill package
+        uses: actions/upload-artifact@v7
+        with:
+          name: skill-package
+          path: dist/windows-residual-cleaner-skill/
+          if-no-files-found: error
+          retention-days: 30
+
   ui:
     name: UI (tsc + eslint + vitest)
     runs-on: ubuntu-latest
