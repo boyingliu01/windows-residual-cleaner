@@ -2,6 +2,96 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.6.0] - 2026-10-25
+
+### skill 可以内部开源了：先评估，再修文档，最后物理拆包
+
+上一轮把门禁做真之后，本次回到「这个项目自带的东西能不能交给别人用」。
+结论从「不能原样发」变成「可以发」，路径是三步：**评估 → 修文档 → 拆包**。
+
+#### 评估（`docs/audits/2026-10-24-skill-open-source-assessment.md`）
+
+值得发的不是清理脚本，而是**流程契约**：三道确认闸门、`Danger` 项结构上不可选、
+`renamed:` 不被记成删除成功。
+
+不能原样发的理由同样具体：`SKILL.md` 最后更新停在 **2026-09-08**，此后代码增加了
+整套自动回滚语义、UI 服务、以及门禁加固——文档落后代码**一个安全等级**。
+
+#### 三项 P0（安全相关）
+
+- **补上「本地 HTTP 服务 + 管理员权限」这个风险面。** 原文里 `server`/`http`/
+  `localhost` 出现 **0 次**，而 `ui/server/` 会拉起管理员权限的破坏性 PowerShell
+  （`index.cjs:22`、`security.cjs:3` 的注释都写明了）。内部开源意味着别人照着
+  说明书启用它。现写明组件名、默认端口 `3456`、只绑回环、`HOST` 不得改、
+  不得端口转发，以及「**回环挡不住浏览器，任何开着的页面都能 POST**」。
+- **权限模型改成如实的两段式。** 原文只有一句 `Requires Administrator privileges`。
+- **写明 tier-4 是改名不是删除。** `Remove-ItemRobust` 的 tier-4 是 `Rename-Item`
+  → `~<name>.deleted`，内容**仍在磁盘上**，靠 `MoveFileEx(...MOVEFILE_DELAY_UNTIL_REBOOT)`
+  下次开机才删。原文只有一个未解释的示例。现新增四层降级表 + 明确写
+  「Tier 4 is a rename, not a deletion」，并要求计数摘要区分
+  `deleted`/`renamed`/`failed`。
+
+#### 三项 P1
+
+- 退出码表补全 `10–15` 与优先级 `14 > 15 > 0 > 13 > 12 > 1 > 11 > 10`，
+  每行附「agent 应该怎么说」；特别标出 `14`/`15` 是**记账完整性**问题、不是删除失败。
+- `rollback.ps1` 从「打印还原点」恢复为完整恢复入口（`-Auto`、`-AcknowledgeConflicts`），
+  并写明**不得替用户传 `-AcknowledgeConflicts`**。
+- `-NoAutoRollback` 的精确语义（只跳过本轮，日志照写、下次启动仍尝试恢复）。
+
+#### 拆包（`tools/New-SkillPackage.ps1`）
+
+仓库里混着三样受众不同的东西：CLI 管线、**会拉起管理员权限破坏性脚本**的 UI 服务、
+维护者的门禁设施。打成一个「skill」发的后果是：**只想要 CLI 的人会静默获得一个本地
+监听服务。** 之前只写在文档里「请忽略 ui/」，而文档不会失败。
+
+`Include` 用**白名单**而非黑名单——黑名单下「新增一个顶层目录」会自动进包，
+而「新目录恰好是特权服务」正是要防的事。复制后再**独立复检**一次 `ui`/`tests`/`tools`/
+`githooks` 是否混入，白名单写错也漏不出去。
+
+产出：`windows-residual-cleaner-skill`（22 文件 / 0.38 MB）与
+`windows-residual-cleaner-full`（169 文件 / 3.29 MB）。实测 skill 包
+`references/scripts` 恰好 **17** 个脚本，五个只读扫描脚本在**未提权**下逐个跑通。
+
+CI 新增 `package` job：每次 push 构建并断言分离成立，产物作为 artifact 上传。
+**分离是发布属性，不该等到交到同事手上才发现。**
+
+#### 新增 `docs/agent-workflow-pattern.md`
+
+抽象掉清理领域细节，留下真正可复用的五个构件：三道闸门（且 G2 产出必须是持久化实体）、
+把「不可碰」做成数据结构、诚实产物（多路径语义差异进返回类型而非日志）、
+失败之后是一等公民、危险面随组件声明。附 9 条自检清单。
+
+#### 拆包时发现的文档错误（又一处「文档比代码乐观」）
+
+把 skill 包拉到独立目录实跑 `run-all.ps1`，直接退出码 2，而上一版权限表刚写
+「扫描不需要管理员」。真因：`run-all.ps1:35` 在考虑 `-SkipRestorePoint` **之前**
+就无条件 `Test-AdminPrivilege -Mandatory`。**`-SkipRestorePoint` 不解除管理员要求**
+——反直觉，已写明并加测试钉住。
+
+顺带写清产物落点约束：所有 JSON 落在**包根**（脚本用 `$PSScriptRoot\..\..`），
+所以 `references/scripts/` 的相对深度是**载荷性**的；安装器若把脚本拍平，
+`..\..` 会逃出包外写进别人的目录。
+
+#### 门禁侧（xp-gate）
+
+- 新问题提交上游：**#596**（Gate 7 报「no scanning tools」但 checkov 3.3.30 可用）、
+  **#597**（3 个适配器的 `adapter-common.sh` source 路径错误，被 `2>/dev/null || true`
+  静默吞掉）。
+- #596 的根因是三层静默：checkov 的 shim 是 `exec python` 而 git-bash 无 `python`；
+  git-bash 的 `$PATH` 只有 7 条且 `cmd /c echo %PATH%` 只返回 3 条，
+  **`ORIGINAL_PATH`**（3002 字符）才是完整来源；适配器 source 路径错误被吞。
+- 本地绕过：hook 工具链初始化增加 python/`ORIGINAL_PATH` 探测。
+  live↔vendored 五对 SHA256 全部 MATCH。
+
+#### 仍然未解决（如实记录）
+
+- Gate 2 `jscpd` 解析不了 `.ps1`；Gate 4 无 PowerShell 检测器；Gate 9 `tsc` 不适用。
+- `confirm-cleanup.ps1` 的 `Read-Host` TUI 在部分内嵌终端会闪退，需真实控制台。
+- HKLM/PATH 写入分支只能在管理员演练中覆盖。
+- `docs/agent-workflow-pattern.md` 与 skill 包里 `SKILL.md` 有意保留一部分重复叙述
+  （一份是抽象模式、一份是具体规程），暂未抽出共同来源。
+
 ## [1.4.5.0] - 2026-10-24
 
 ### 让质量门禁真生效（2026-10-24 门禁审计）
