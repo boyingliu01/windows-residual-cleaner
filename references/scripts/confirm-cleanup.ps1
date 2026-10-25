@@ -112,6 +112,37 @@ function Get-PageRange {
     return @($startIdx, $endIdx)
 }
 
+function Get-SelectionTally {
+    <#
+    .SYNOPSIS
+        统计当前已选条目：按风险分级计数，并给出确认的 id 列表。
+
+    .DESCRIPTION
+        Main 的两条确认路径（非交互式选择、交互式确认）此前各自内联了一段
+        逐字相同的统计循环 —— 唯一的差别是外层缩进。重复的后果不是「难看」，
+        而是**两条路径可能悄悄分叉**：其中一条改了风险分级口径，另一条不改，
+        用户看到的摘要就与实际写入的 confirmed-ids.json 不一致。
+
+        抽成纯函数（只读 $script: 状态，不写文件、不 break），两条路径共用同一口径。
+    #>
+    $counts = @{ safe = 0; caution = 0; danger = 0 }
+    $confirmedIds = @()
+    foreach ($item in $script:sorted) {
+        if ($script:selectedIds[$item.id]) {
+            $confirmedIds += $item.id
+            # 未知 risk 不计入任何一档：宁可摘要数字加起来小于总数（人能看出来），
+            # 也不要把未知风险悄悄并进 safe。
+            if ($counts.ContainsKey([string]$item.risk)) { $counts[[string]$item.risk]++ }
+        }
+    }
+    return [pscustomobject]@{
+        Safe         = $counts.safe
+        Caution      = $counts.caution
+        Danger       = $counts.danger
+        ConfirmedIds = $confirmedIds
+    }
+}
+
 function Main {
     # ADR-001: Main 通过 [ref] 回传退出码，绝不调用 exit，也绝不 `return <code>`。
     # 原因见 docs/decisions/ADR-001：exit 会杀死测试宿主致整份套件静默塌掉；
@@ -246,20 +277,11 @@ function Main {
             return
         }
 
-        $safeCount = 0
-        $cautionCount = 0
-        $dangerCount = 0
-        $confirmedIds = @()
-        foreach ($item in $script:sorted) {
-            if ($script:selectedIds[$item.id]) {
-                $confirmedIds += $item.id
-                switch ($item.risk) {
-                    'safe'    { $safeCount++ }
-                    'caution' { $cautionCount++ }
-                    'danger'  { $dangerCount++ }
-                }
-            }
-        }
+        $tally = Get-SelectionTally
+        $safeCount = $tally.Safe
+        $cautionCount = $tally.Caution
+        $dangerCount = $tally.Danger
+        $confirmedIds = $tally.ConfirmedIds
 
         Write-Output "=== Non-interactive selection summary ==="
         Write-Output "  Safe:    $safeCount 项"
@@ -430,20 +452,11 @@ function Main {
         }
     }
 
-    $safeCount = 0
-    $cautionCount = 0
-    $dangerCount = 0
-    $confirmedIds = @()
-    foreach ($item in $script:sorted) {
-        if ($script:selectedIds[$item.id]) {
-            $confirmedIds += $item.id
-            switch ($item.risk) {
-                'safe'    { $safeCount++ }
-                'caution' { $cautionCount++ }
-                'danger'  { $dangerCount++ }
-            }
-        }
-    }
+    $tally = Get-SelectionTally
+    $safeCount = $tally.Safe
+    $cautionCount = $tally.Caution
+    $dangerCount = $tally.Danger
+    $confirmedIds = $tally.ConfirmedIds
 
     Write-Output ""
     Write-Output "=== 确认摘要 ==="

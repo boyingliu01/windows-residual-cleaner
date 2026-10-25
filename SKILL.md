@@ -1,4 +1,4 @@
-﻿---
+---
 name: windows-residual-cleaner
 description: "Scan and clean up residual files, registry entries, ghost services, scheduled tasks, COM extensions, and shell context menu handlers from uninstalled software on Windows. Use when users mention 'cleanup residuals', 'clean uninstalled software', 'registry cleanup', 'ghost services', 'empty directories cleanup', 'system cleanup after uninstall', 'clean up leftover files', or 'remove software traces'. Requires Administrator privileges for deletion; scanning alone does not. Agent-driven workflow: user expresses intent in natural language, agent auto-scans and presents itemized list, user selects specific items to clean, agent executes with mandatory confirmation gates and automatic rollback."
 ---
@@ -212,20 +212,21 @@ that went. The agent MUST read the exit code and relay the rollback outcome, not
 
 ### Exit codes
 
+<!-- BEGIN GENERATED: exit-codes -->
 | Code | Meaning | What the agent should say |
 |------|---------|---------------------------|
-| `0` | No failures | Done |
-| `1` | General error (bad input, file not found) | Report the specific error |
-| `2` | Permission denied (not elevated) | "需要管理员权限" and offer to re-run elevated |
-| `3` | Required input JSON missing | Tell the user to run the scan first |
-| `10` | Some items failed, **rollback fully succeeded** | Everything was undone; investigation still worth it |
-| `11` | Some items failed, **rollback did NOT fully succeed** | ⚠️ Some changes are still applied — point at `rollback-result.json` |
-| `12` | Some items failed, rollback journal missing/unreadable | ⚠️ Cannot confirm rollback; treat disk state as unknown |
-| `13` | Some items failed, rollback was explicitly skipped (`-NoAutoRollback`) | ⚠️ Changes are permanent; that was the user's choice |
-| `14` | **Previous** cleanup's journal could not be safely consumed — this run **never started** | Nothing was changed this run; previous run needs attention |
-| `15` | Failed to persist the journal / unfixed list / completion marker | ⚠️ Recovery record may be incomplete — treat as unknown |
+| `2` | Permission denied (not elevated) — deletion needs Administrator. | Tell the user Administrator is required; offer to re-run elevated. |
+| `1` | Required input JSON missing — run the scan first. / 部分失败但本轮没有任何已变更记录（REQ-020「未执行到回滚即失败」） | Report the specific error. |
+| `3` | Required input JSON missing — run the scan first. | Tell the user to run the scan first. |
+| `14` | 上一轮日志未能安全消费（本轮未开始即中止）—— 判定点在本轮任何写入之前 | Nothing was changed this run; the *previous* run needs attention. |
+| `15` | 本轮持久化写入失败（日志落盘 / 未修复清单 / 完成或消费标记） | ⚠️ Recovery record may be incomplete — treat as unknown. |
+| `13` | 部分失败且 -NoAutoRollback | ⚠️ Changes are permanent — that was the user's explicit choice. |
+| `12` | 部分失败但回滚日志缺失/不可读 | ⚠️ Cannot confirm rollback; treat disk state as unknown. |
+| `11` | 部分失败且回滚未完全成功（存在 restore_failed） | ⚠️ Some changes are still applied — point at `rollback-result.json`. |
+| `10` | 部分失败且回滚完全成功 | Everything was undone. Investigation is still worth it. |
+| `0` | 没有失败 | Done. |
+<!-- END GENERATED: exit-codes -->
 
-Priority when several apply: `14 > 15 > 0 > 13 > 12 > 1 > 11 > 10`.
 Codes `14` and `15` are about *bookkeeping integrity*, not about whether the deletions
 worked — do not report them as "cleanup failed".
 

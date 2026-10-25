@@ -1,7 +1,7 @@
 {
     "note":  "PowerShell cyclomatic-complexity ratchet baseline (Gate 3). Regenerate with tools/Update-ComplexityBaseline.ps1. Entries may only go DOWN: a commit that raises any function\u0027s CCN above its recorded value is blocked.",
     "threshold":  5,
-    "measured":  "139",
+    "measured":  "140",
     "entries":  [
                     {
                         "file":  "references/scripts/clean-residuals.ps1",
@@ -12,8 +12,8 @@
                     {
                         "file":  "references/scripts/confirm-cleanup.ps1",
                         "function":  "Main",
-                        "line":  115,
-                        "ccn":  76
+                        "line":  146,
+                        "ccn":  66
                     },
                     {
                         "file":  "references/scripts/rollback-journal.ps1",
@@ -263,26 +263,20 @@
                     },
                     {
                         "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Open-RegistryKeyForRead",
-                        "line":  186,
+                        "function":  "Test-RegStructureIdentical",
+                        "line":  164,
                         "ccn":  7
                     },
                     {
                         "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Test-RegStructureIdentical",
-                        "line":  164,
+                        "function":  "Open-RegistryKeyForRead",
+                        "line":  186,
                         "ccn":  7
                     },
                     {
                         "file":  "references/scripts/rollback-journal.ps1",
                         "function":  "Read-RollbackJournal",
                         "line":  261,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "ConvertTo-RollbackJournal",
-                        "line":  302,
                         "ccn":  7
                     },
                     {
@@ -301,6 +295,12 @@
                         "file":  "references/scripts/rollback-journal.ps1",
                         "function":  "Get-NormalizedRegKeyPath",
                         "line":  683,
+                        "ccn":  7
+                    },
+                    {
+                        "file":  "references/scripts/rollback-journal.ps1",
+                        "function":  "ConvertTo-RollbackJournal",
+                        "line":  302,
                         "ccn":  7
                     },
                     {
@@ -347,14 +347,14 @@
                     },
                     {
                         "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Add-RollbackJournalEntry",
-                        "line":  132,
+                        "function":  "Test-CompletionMarkerSuppressed",
+                        "line":  323,
                         "ccn":  6
                     },
                     {
                         "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Test-CompletionMarkerSuppressed",
-                        "line":  323,
+                        "function":  "Add-RollbackJournalEntry",
+                        "line":  132,
                         "ccn":  6
                     },
                     {

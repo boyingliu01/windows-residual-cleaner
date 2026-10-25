@@ -687,7 +687,7 @@ It 'Works against real registry data' {
   `_find_powershell_files` 的 prune 列表覆盖 xp-gate 脚手架 dot 目录
   （`.worktrees/.workbuddy/.sprint-state/.delphi-work/.qoder/.vscode/.idea/.xp-gate`），
   项目专属目录经 `.xp-gate-powershell-prune-dirs`（本仓含 `wrc-drill`）注入；
-  实测发现结果 = 20 个测试文件 + **18 个产品源文件**（17 脚本 + setup.ps1），wrc-drill
+  实测发现结果 = 20 个测试文件 + **23 个产品源文件**（17 脚本 + setup.ps1 + 5 个 tools 门禁工具），wrc-drill
   不再进测试发现与覆盖率分母。Gate 1 的 PSSA 经 `.xp-gate-powershell-analysis-paths`
   收敛到产品范围（references/scripts + setup.ps1），Pester 测试文件按 Pester 执行模型
   产生的数百条规则误报不再进入门禁判据（328 条清单见审计文档；同规则、收范围，
@@ -777,14 +777,16 @@ if ($MyInvocation.InvocationName -ne '.') {
 **自动回滚扩展码（10–15，`clean-residuals.ps1`）**：由纯函数 `Get-CleanupExitCode`
 （`rollback-producer.ps1`）统一判定，优先级 `14 > 15 > 0 > 13 > 12 > 1 > 11 > 10`：
 
+<!-- BEGIN GENERATED: exit-codes -->
 | 退出码 | 含义 |
 |--------|------|
-| 10 | 部分失败且自动回滚**完全成功** |
-| 11 | 部分失败且回滚未完全成功（存在 `restore_failed`） |
+| 14 | 上一轮日志未能安全消费（本轮未开始即中止）—— 判定点在本轮任何写入之前 |
+| 15 | 本轮持久化写入失败（日志落盘 / 未修复清单 / 完成或消费标记） |
+| 13 | 部分失败且 -NoAutoRollback |
 | 12 | 部分失败但回滚日志缺失/不可读 |
-| 13 | 部分失败且显式 `-NoAutoRollback` |
-| 14 | 上一轮日志未能安全消费，本轮**未开始**即中止（判定在本轮任何写入之前） |
-| 15 | 本轮持久化写入失败（日志落盘 / 未修复清单 / 完成或消费标记）——**终态** |
+| 11 | 部分失败且回滚未完全成功（存在 restore_failed） |
+| 10 | 部分失败且回滚完全成功 |
+<!-- END GENERATED: exit-codes -->
 
 「部分失败但本轮没有任何已变更记录」= 1，排在 11/10 **之前**：此时恢复端一条都不会动，
 把 0 条恢复当成「回滚完全成功」会虚报保护效果。权限(2)/输入(1)/依赖(3) 由更早的分支直接返回。
