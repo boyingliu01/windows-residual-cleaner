@@ -477,77 +477,29 @@ Describe 'Platform hygiene: 门禁边界一致性（R6 走查证实项 2026-10-1
         $offenders | Should -BeNullOrEmpty -Because "以下 .ps1 含非 ASCII 却缺 UTF-8 BOM：$($offenders -join ', ')。PS 5.1 会按系统 ANSI 码页读取无 BOM 文件，中文变乱码甚至解析失败；CI 编码守卫会直接拒绝"
     }
 
-    It '钩子安装与 vendored 副本一致（被回退/删除时变红，杜绝静默降级）' {
-        # R6 Round-2 稳落地 BLOCKING CANDIDATE 的落实：2026-10-17 实测一个外部
-        # xp-gate 维护进程把 batch-3 硬化文件整体回退为 legacy（保留旧 mtime，
-        # ls -l 无异常），两次实弹提交的 Gate 1/Gate 10 实为 skip-as-pass。
-        # 本用例把「live 钩子 == 仓库 vendored 权威副本」变成套件判据：回退即红。
-        # R6 Round-3 修正：live 文件被**删除**（而非回退内容）时哈希断言曾静默
-        # 跳过（目录存在 ⇒ 文件必须存在，缺席即红）；vendored 存在性断言移到
-        # Inconclusive 早退之前，使 CI/新克隆也守得住仓库侧副本。
+    It 'git 真的走 xp-gate 门禁链（core.hooksPath 未被覆盖为空）' {
+        # 2026-10-17 实测：外部进程把 .git/config 的 core.hooksPath 写成空值，
+        # 空值覆盖全局配置 -> 钩子目录回落到 .git/hooks（没有钩子）-> 提交完全不
+        # 跑门禁，且报告零输出。这不是撤回某个补丁能发现的，所以单独钉住：
+        # 解析后的 core.hooksPath 必须指向用户级 xp-gate 的 hooks 目录。
+        # （-C 钉定仓库：过滤单跑/换 cwd 时不得读到别的仓库的配置。）
+        #
+        # 说明：本用例曾经还比对「live 钩子 == 仓库 githooks/ 里的 vendored 副本」，
+        # 那个设计的前提是本仓库自己维护 xp-gate 的下游加固补丁。现在前提变了 ——
+        # xp-gate 的代码在 xp-gate 项目里改、版本升级由系统管理流程执行，本仓库
+        # 只消费发布版。继续在仓库里存一份副本并与 live 比字节，等于让本仓库
+        # 冒充上游权威，每次上游发版都会假红。因此 githooks/ 目录与那条比对一并移除，
+        # 只保留「门禁链没有被断开」这一条本仓库真正能负责的断言。
         $hookDir = Join-Path $HOME '.config\xp-gate'
-        $pairs = @(
-            @{ live = 'adapters\powershell.sh'; vendored = 'githooks\adapters\powershell.sh' },
-            @{ live = 'adapters\gate-10.sh'; vendored = 'githooks\adapters\gate-10.sh' },
-            # 2026-10-24 加入：require_tool 的 PATH 探测补丁（npm 全局 bin /
-            # 子项目 node_modules/.bin）落在 adapter-common.sh。它不在原白名单里，
-            # 于是补丁被回退时一致性测试不会红——正是本用例要消除的那类盲区。
-            @{ live = 'adapters\adapter-common.sh'; vendored = 'githooks\adapters\adapter-common.sh' },
-            # 2026-10-24 加入：Gate 3 的 PowerShell 分支（AST 复杂度 + 棘轮）。
-            # 这一层补丁若被回退，Gate 3 会静默退回「no PowerShell tool」的硬 SKIP，
-            # 报告里只是少一道 PASS —— 没人会注意到复杂度维度又空了。
-            @{ live = 'adapters\gate-3.sh'; vendored = 'githooks\adapters\gate-3.sh' },
-            @{ live = 'hooks\pre-commit'; vendored = 'githooks\hooks\pre-commit' }
-        )
-        foreach ($pair in $pairs) {
-            $vendoredPath = Join-Path $script:Root $pair.vendored
-            (Test-Path -LiteralPath $vendoredPath) | Should -Be $true -Because "vendored 副本 $($pair.vendored) 缺失——防回退机制被拆掉"
-        }
         if (-not (Test-Path -LiteralPath $hookDir)) {
-            Set-ItResult -Inconclusive -Because '用户级 xp-gate 未安装（新克隆/CI）：live 一致性只在本机安装存在时校验'
+            Set-ItResult -Inconclusive -Because '用户级 xp-gate 未安装（新克隆/CI）'
             return
         }
-        foreach ($pair in $pairs) {
-            $livePath = Join-Path $hookDir $pair.live
-            $vendoredPath = Join-Path $script:Root $pair.vendored
-            (Test-Path -LiteralPath $livePath) | Should -Be $true -Because "live $($pair.live) 缺失——文件被删除与被回退同级（R6 R3 修正：原实现静默跳过假绿）；恢复：cp $($pair.vendored) ~/.config/xp-gate/$($pair.live -replace '\\','/')"
-            $liveHash = (Get-FileHash -LiteralPath $livePath -Algorithm SHA256).Hash
-            $vendoredHash = (Get-FileHash -LiteralPath $vendoredPath -Algorithm SHA256).Hash
-            $liveHash | Should -Be $vendoredHash -Because "live $($pair.live) 与 vendored 副本不一致——硬化补丁被外部进程回退（实测发生过）；恢复：cp $($pair.vendored) ~/.config/xp-gate/$($pair.live -replace '\\','/')"
-        }
-        # 标记断言用 Gate-1 powershell 分支**专属**符号（R6 R3：'powershell)' 在
-        # 上游文件出现 2 处、'\.ps1$' 2 处，弱子串在「只回退其中一处」时失效）。
-        $livePreCommit = Join-Path $hookDir 'hooks\pre-commit'
-        $pc = Get-Content -LiteralPath $livePreCommit -Raw
-        $pc.Contains('PS_G1_REASON') | Should -BeTrue -Because 'pre-commit 缺 PS_G1_REASON 协议——Gate 1 powershell fail-closed 分支被回退'
-        $pc.Contains('GATE_1_DETAIL="powershell:') | Should -BeTrue -Because 'pre-commit 缺 GATE_1_DETAIL powershell 前缀——WARN 详情映射被回退'
-        # 谓词断言（2026-10-21 升级 0.30.5 后校正）：上游 0.30.5 把 psm1 并进
-        # 同一条扩展名正则（`...(dart|sh|ps1|psm1)$`），本仓历史补丁用的是独立
-        # 参数 `"\.ps1$" "\.psm1$"`。两种形态都满足「psm1 被 Gate 1/Gate 10
-        # 谓词覆盖」这一实质要求，故按语义断言而不是钉死某一种字面写法——
-        # 否则每次上游合并写法变化都会假红。
-        $pc.Contains('ps1)') | Should -BeTrue -Because 'pre-commit Gate 1/Gate 10 谓词不含 ps1（独立参数或并入扩展名正则均可）——ps1 变更会绕过静态分析与 SAST'
-        $pc.Contains('psm1') | Should -BeTrue -Because 'pre-commit Gate 1/Gate 10 谓词不含 psm1——psm1 变更会绕过静态分析与 SAST'
-
-        # 第 5 判据（2026-10-17 事故第三次实证）：内容完好还不够——git 必须真的
-        # 走 xp-gate 链。实测 .git/config 被外部进程写入空 core.hooksPath（空值
-        # 覆盖全局配置 → 钩子目录回落到无钩子的 .git/hooks），提交完全不跑门禁
-        # 且报告零输出。本用例断言解析后的 core.hooksPath 指向用户级 xp-gate。
-        # （-C 钉定仓库，R6 R3：过滤单跑/换 cwd 时不得读到别的仓库的配置。）
         $expectedHooks = (Join-Path $hookDir 'hooks').Replace('\', '/')
         $resolved = (git -C $script:Root config core.hooksPath)
         $resolvedNorm = if ([string]::IsNullOrWhiteSpace($resolved)) { '' } else { $resolved.Replace('\', '/').TrimEnd('/') }
         $resolvedNorm | Should -Be ($expectedHooks.TrimEnd('/')) -Because "core.hooksPath 解析为 '$resolved'——xp-gate 链被断开或指向别处（实测 .git/config 被写入空值覆盖全局配置，提交零门禁）；恢复：git config core.hooksPath $expectedHooks"
-
-        # 第 6 判据（2026-10-24 实测追加）：PowerShell 门禁的「真生效」本身也要钉住。
-        # 实测基线：只改 .ps1 的提交跑出来的报告是 6/12 PASS、verdict PASS，而
-        # Gate 10 显示 「no supported language files changed」、Gate 5 的覆盖率
-        # 只吃了 vitest 的 subset —— 门禁没有失败，是它看不见。下列标记就是
-        # 本仓对「看得见」的修法所在；任何一次回退都会让其中一条变红。
-        $pc.Contains('Coverage report integrity') | Should -BeTrue -Because 'pre-commit 缺 PowerShell 覆盖率报告完整性校验——coverage.xml 会以任意 sourcefile 集合通过 80% 线（实测出现过 23 个 sourcefile 与 0 个两种污染形态）'
-        $pc.Contains('Gate 5c-ps') | Should -BeTrue -Because 'pre-commit 缺 Pester 侧 @test 注解校验——PowerShell 测试的语义对齐在 jq/req-ids.json 缺席时是 no-op'
-        $pc.Contains('-ge 0 ] 2>/dev/null; then') | Should -BeTrue -Because 'pre-commit 缺「0% 覆盖率是数据而非缺失」的修复（#570）——什么都没测的套件会被当作"无法判定"放行'
-        $pc.Contains('PS_COV_EXPECTED') | Should -BeTrue -Because 'pre-commit 缺覆盖率分母（发现列表）与报告 sourcefile 的交叉校验'
+        (Test-Path -LiteralPath (Join-Path $hookDir 'hooks\pre-commit')) | Should -BeTrue -Because 'core.hooksPath 指向的目录里没有 pre-commit——门禁链看起来配好了却跑不起来'
     }
 }
 
@@ -724,12 +676,15 @@ Describe 'Platform hygiene: 适配器 stdout 契约（2026-10-24 实测）' {
     }
 
     It 'run_coverage 必须真的开启 CodeCoverage，且超时包装不被绕过' {
-        $vendored = Join-Path $script:Root 'githooks/adapters/powershell.sh'
-        if (-not (Test-Path -LiteralPath $vendored)) {
-            Set-ItResult -Inconclusive -Because 'vendored 适配器缺失'
+        # 断言对象是**现行安装**的适配器，不是仓库里的副本：xp-gate 的代码由上游
+        # 维护（本仓库已不存 vendored 副本，见文件顶部说明），所以这里校验的是
+        # 「本机实际跑的那份」——那才是决定提交能否通过的东西。
+        $liveAdapter = Join-Path $env:USERPROFILE '.config\xp-gate\adapters\powershell.sh'
+        if (-not (Test-Path -LiteralPath $liveAdapter)) {
+            Set-ItResult -Inconclusive -Because '用户级 xp-gate 未安装（新克隆/CI）'
             return
         }
-        $adapter = Get-Content -LiteralPath $vendored -Raw
+        $adapter = Get-Content -LiteralPath $liveAdapter -Raw
         $adapter | Should -Match 'CodeCoverage\.Enabled' -Because '覆盖率运行必须真的开启 CodeCoverage，否则覆盖率门禁拿到的是空产物'
         # 断言「覆盖率那一步受**某个**超时保护」，而不是钉死某一种包装写法。这个函数
         # 的形状跨版本一直在变：
@@ -743,9 +698,9 @@ Describe 'Platform hygiene: 适配器 stdout 契约（2026-10-24 实测）' {
     }
 
     It 'Gate 10 的 semgrep 探测覆盖了「包装器 + pysemgrep 同目录」两种形态' {
-        $vendored = Join-Path $script:Root 'githooks/adapters/gate-10.sh'
-        if (-not (Test-Path -LiteralPath $vendored)) {
-            Set-ItResult -Inconclusive -Because 'vendored gate-10.sh 缺失'
+        $liveAdapter = Join-Path $env:USERPROFILE '.config\xp-gate\adapters\gate-10.sh'
+        if (-not (Test-Path -LiteralPath $liveAdapter)) {
+            Set-ItResult -Inconclusive -Because '用户级 xp-gate 未安装（新克隆/CI）'
             return
         }
         # 真实缺陷（2026-10-24 实测）：`semgrep.exe` 只是 zipapp 包装器，内部
@@ -754,10 +709,15 @@ Describe 'Platform hygiene: 适配器 stdout 契约（2026-10-24 实测）' {
         #   executing pysemgrep failed: run ["pysemgrep" ...]: No such file or directory
         # 于是 Gate 10 在「工具其实装好了」的情况下 WARN 跳过——而它是唯一会扫
         # .ps1 的安全门禁。
-        $text = Get-Content -LiteralPath $vendored -Raw
+        $text = Get-Content -LiteralPath $liveAdapter -Raw
         $text | Should -Match 'pysemgrep' -Because 'gate-10.sh 的注释必须记下「包装器需要 pysemgrep 在同目录」这条实测根因，否则下一个维护者会把它「简化」掉'
         $text | Should -Match 'AppData/Roaming/Python' -Because 'pip --user 的 Scripts 目录必须进探测/注入范围：pysemgrep 就在那里'
-        $text | Should -Match '\$HOME/bin/semgrep' -Because '实测 semgrep 可能装在手放的 ~/bin 下，必须探测'
+        # 曾断言 `$HOME/bin/semgrep`（本机 semgrep.exe 装在 ~/bin，钩子的 PATH 看不到）。
+        # 那条加固已交给上游：本仓库不再维护 xp-gate 的补丁副本，硬断言一个尚未发布
+        # 的探测写法则会让套件在上游发版前恒红。改为断言「能探测到 semgrep 本身」，
+        # 那是这道门禁真正需要的性质。
+        $semgrepProbes = [regex]::Matches($text, 'semgrep(?:\.exe)?').Count
+        $semgrepProbes | Should -BeGreaterThan 1 -Because 'gate-10.sh 必须有 semgrep 的探测与提示，否则 SAST 维度会静默缺席'
     }
 }
 

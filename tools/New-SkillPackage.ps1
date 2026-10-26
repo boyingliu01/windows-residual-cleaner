@@ -10,7 +10,7 @@
                                                      wants to clean residuals
       2. a local Express server   (ui/server/)   -- privileged and destructive,
                                                      must NOT travel with (1)
-      3. quality-gate / dev infra (tools/, tests/, githooks/, .xp-gate*) --
+      3. quality-gate / dev infra (tools/, tests/, .xp-gate*)      --
                                                      irrelevant to consumers, and
                                                      large
 
@@ -68,7 +68,7 @@ $packages = @(
     @{
         Name        = 'windows-residual-cleaner-full'
         Description = 'Full repository (maintainers only): UI server, tests, gate tooling.'
-        Include     = @('SKILL.md', 'VERSION', 'LICENSE', 'references', 'ui', 'tools', 'tests', 'githooks',
+        Include     = @('SKILL.md', 'VERSION', 'LICENSE', 'references', 'ui', 'tools', 'tests',
                         'setup.ps1', 'architecture.yaml', 'PSScriptAnalyzerSettings.psd1', 'package.json',
                         'vitest.config.ts', 'specification.yaml', 'README.md', 'AGENTS.md', 'CHANGELOG.md',
                         'docs', '.xp-gate-powershell-analysis-paths', '.xp-gate-powershell-coverage-ignore',
@@ -79,7 +79,7 @@ $packages = @(
 
 # Directories that must never appear in the *skill* package. Checked after copy
 # so a future edit to `Include` cannot quietly reintroduce them.
-$forbiddenInSkill = @('ui', 'ui/server', 'tests', 'tools', 'githooks')
+$forbiddenInSkill = @('ui', 'ui/server', 'tests', 'tools')
 
 function Copy-PackageContent {
     # Named "Copy-*" rather than "New-*"/"Set-*": PowerShell's approved-verb rules

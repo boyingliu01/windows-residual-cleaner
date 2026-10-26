@@ -302,7 +302,23 @@ $drifted = @($results | Where-Object { $_.Changed })
 if ($Check) {
     if ($drifted.Count -gt 0) {
         Write-Output '退出码表与代码不一致（用 tools/Update-DocTables.ps1 重新生成）：'
-        $drifted | ForEach-Object { Write-Output "  OUT OF DATE: $($_.Path)" }
+        foreach ($d in $drifted) {
+            Write-Output "  OUT OF DATE: $($d.Path)"
+            # Print WHERE it differs, not just that it does. Without this, a drift that
+            # reproduces only on one machine (CI vs local) is undebuggable from the log:
+            # the first CI failure for this generator said "all three OUT OF DATE" and
+            # nothing about why, so the next step was guesswork about line endings.
+            # Showing the first differing line and both sides turns that into a fact.
+            $origLines = $d.Original -split "`r?`n"
+            $newLines = $d.Updated -split "`r?`n"
+            $i = 0
+            while ($i -lt $origLines.Count -and $i -lt $newLines.Count -and $origLines[$i] -ceq $newLines[$i]) { $i++ }
+            Write-Output ("    首个差异在第 {0} 行；长度 原={1}/新={2}；CRLF 原={3}/新={4}" -f `
+                    ($i + 1), $origLines.Count, $newLines.Count, `
+                    ([regex]::Matches($d.Original, "`r`n").Count), ([regex]::Matches($d.Updated, "`r`n").Count))
+            if ($i -lt $origLines.Count) { Write-Output ("    文档现有: " + $origLines[$i]) }
+            if ($i -lt $newLines.Count) { Write-Output ("    生成结果: " + $newLines[$i]) }
+        }
         exit 1
     }
     Write-Output "退出码表与代码一致（$($rows.Count) 条，优先级 $priority）"

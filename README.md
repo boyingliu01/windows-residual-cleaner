@@ -148,14 +148,17 @@ tests in `tests/unit/platform-hygiene.Tests.ps1` (门禁边界一致性):
 - `.xp-gate-powershell-coverage-ignore` — intentionally **empty**: per-artifact
   subtraction from the coverage denominator is not allowed.
 
-The hardened hook files themselves are **vendored in-repo** under
-[`githooks/`](githooks/README.md) (adapters + a consistency test): on 2026-10-17
-an external xp-gate maintenance process was observed silently reverting the
-user-level hook files to legacy versions (preserving old mtimes), which turned
-Gate 1 / Gate 10 into skip-as-pass for PowerShell commits. The
-platform-hygiene suite hash-compares the live install against the vendored
-copies and fails (turns red) if they drift — see `githooks/README.md` for the
-restore procedure (`cp githooks/adapters/*.sh ~/.config/xp-gate/adapters/`).
+xp-gate itself is **not** vendored here. Its hooks, adapters and code live in the
+xp-gate project and are installed/upgraded through the system-management flow —
+this repo only consumes the released version. (An earlier layout kept a hardened
+copy under `githooks/` plus a hash comparison against the live install; that
+design assumed this repo maintained downstream patches to xp-gate, which it no
+longer does. Keeping it meant every upstream release turned the suite red for a
+reason that had nothing to do with this repo. The one thing this repo *can* be
+responsible for is that the gate chain is still wired up, and
+`tests/unit/platform-hygiene.Tests.ps1` still asserts exactly that:
+`core.hooksPath` resolves to the xp-gate hooks directory and a `pre-commit`
+script exists there.)
 
 ## License
 

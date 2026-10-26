@@ -603,6 +603,22 @@ It 'Works against real registry data' {
 
 ## 已知限制
 
+- **xp-gate 的代码不在本仓维护（2026-10-26 决定，取代早期的 `githooks/` vendored 方案）**：
+  钩子、适配器与门禁逻辑一律归 xp-gate 项目；本机安装的版本升级由系统管理流程执行。
+  本仓**只消费发布版**，不存副本、不打下游补丁、不做「live == 仓库副本」的字节比对。
+  早期（2026-10-17 起）确实 vendored 过一份加固副本并配了一致性哈希断言，前提是「本仓
+  维护 xp-gate 的下游加固」。这个前提在 2026-10-24～26 的多次上游升级中被反复证伪：
+  每次发版都整体重写 `~/.config/xp-gate/`，仓库副本随之失配，套件变红的原因与仓库质量
+  无关——正是「本地验证失去意义」的那类假红。因此 `githooks/` 目录与那条比对已删除。
+  保留下来的是本仓**真正能负责**的那一条：`core.hooksPath` 必须解析到 xp-gate 的 hooks
+  目录、该目录里有 `pre-commit`（`tests/unit/platform-hygiene.Tests.ps1`）。它守的是
+  「门禁链被断开」（实测过 `.git/config` 被写入空 `core.hooksPath` → 提交零门禁零输出），
+  不是「某个补丁还在不在」。
+- **门禁适配器相关的断言读取 live 安装**：`powershell.sh` 的覆盖率/超时形态、
+  `gate-10.sh` 的 semgrep 探测，断言对象都是 `~/.config/xp-gate/adapters/*`——
+  即「本机实际跑的那份」。未安装时用例 Inconclusive。这类断言只应写**性质**
+  （「覆盖率那一步受超时保护」「能探测到 semgrep」），不钉具体参数排列：0.31.1→0.31.4
+  期间该函数形状变了三次，钉死任一写法都会让升级本身变成红。
 - **根目录 `package.json` / `package-lock.json` 现在**入库**了（2026-10-24 更正）**：此前的
   「有意 local-only、已 gitignore、不进仓」结论**没有落地**——`.gitignore` 里从来只有
   `node_modules/` 与 `*.json` 的 un-ignore 列表，而根 `package.json` 恰好落在 `*.json`

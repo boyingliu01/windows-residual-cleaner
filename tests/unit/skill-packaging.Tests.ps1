@@ -69,7 +69,10 @@ Describe 'Skill packaging: CLI 与 UI 的分离（2026-10-24）' {
     }
 
     It 'skill 包不含测试/门禁/开发基础设施' {
-        foreach ($d in @('tests', 'tools', 'githooks', 'node_modules')) {
+        # githooks 曾在此列表里：那时仓库还存着一份 xp-gate 的 vendored 副本。
+        # 该目录已随「xp-gate 代码归上游维护」的决定删除，留着这一项只会让断言
+        # 对一个不存在的路径永远为真——看起来守着什么，其实什么都没守。
+        foreach ($d in @('tests', 'tools', 'node_modules')) {
             (Test-Path -LiteralPath (Join-Path $script:SkillPkg $d)) | Should -BeFalse -Because "skill 包是给使用者的，$d 是给维护者的；混进去既增大体积也扩大攻击面"
         }
     }
