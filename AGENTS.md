@@ -813,6 +813,15 @@ It 'Works against real registry data' {
   真实门禁照旧拦人，白跑一轮。守卫：`tests/unit/complexity-tool.Tests.ps1` 有一条用例
   一次钉住这四个前提。基线含本机绝对路径是可接受的（CI 不跑 xp-gate 的 pre-commit），
   换机器重跑生成器即重写前缀。**不要**为此改动 xp-gate 或 `~/.config/xp-gate/`。
+
+  > **连带后果：CI 上不能用「绝对路径存在」来校验基线。** 基线写的是**作者机器**的前缀
+  > （`D:\Study\...`），而 CI 跑在 `D:\a\windows-residual-cleaner\...`——直接断言那条
+  > 绝对路径存在，会在 CI 上对**每一条**都失败（2026-10-26 实测：CI run 40356891173
+  > 的红就是这条，`Tests Passed: 804, Failed: 1`，而本地 812 全绿）。
+  > `tests/unit/complexity-tool.Tests.ps1` 因此按**仓库相对尾段**校验：把绝对前缀剥到
+  > `references\scripts\` / `tools\` / `setup.ps1` 之一，再拼当前 checkout 检查存在性。
+  > 它守的不变式是「没有死条目」（文件改名/删除没同步基线），与「本机路径能否解析」无关。
+  > 已用脚本把 168 条全改成 CI 前缀验证过：0 条无法解析。
 - **coverage.xml 的口径与污染（2026-10-16 走查实测）**：引用覆盖率数字前先核对产物：
   (1) 本地包装脚本的 `CoveragePercent`（如 80.40%）是 **Pester 命令口径**；
   (2) JaCoCo `coverage.xml` 的 LINE counter 是**行口径**，两者不可互引；Gate 5 读的是后者。

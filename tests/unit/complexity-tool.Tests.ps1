@@ -74,21 +74,42 @@ Describe 'Measure-PowerShellComplexity (Gate 3 PowerShell arm)' {
     }
 
     It 'ratchet 基线里的每条都对应真实存在的文件（防止重构后留下死条目）' {
+        # The invariant this guards is "no entry names a file that no longer exists",
+        # NOT "the entry's literal string resolves on this machine".
+        #
+        # The baseline necessarily stores ABSOLUTE paths (gate-3.sh's norm() is a no-op
+        # on Windows — see the next It block, and xp-gate issue #633), so the written
+        # prefix is the *author's* checkout, e.g. D:\Study\LLM\windows-residual-cleaner.
+        # On a CI runner the repo lives at D:\a\windows-residual-cleaner\... — asserting
+        # the literal absolute path exists would fail there for every entry, which says
+        # nothing about the repo and everything about which machine ran the test.
+        #
+        # So: strip any absolute prefix back to a repo-relative tail, then check that
+        # tail exists under the current checkout. That catches the real defect (a file
+        # renamed or deleted while its entry lingers) and is machine-independent.
         $baselinePath = Join-Path $PSScriptRoot '..\..\.xp-gate-powershell-ccn-baseline.json'
         Test-Path -LiteralPath $baselinePath | Should -BeTrue
         $doc = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
-        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path.TrimEnd('\')
         $missing = @()
         foreach ($e in @($doc.entries)) {
-            # 基线的 `file` 现在是**绝对原生路径**（反斜杠），这是 gate-3.sh 的匹配要求，
-            # 不是风格选择：它的 norm() 在 Windows 上是空操作（L179 的 /\\\\/ 在 bash
-            # 单引号里变成匹配「两个连续反斜杠」的正则），所以基线必须和门禁测量输出
-            # 拼写一致。这里同时接受相对路径，以免基线格式再变时用例变成假红。
-            $raw = [string]$e.file
-            $abs = if ([System.IO.Path]::IsPathRooted($raw)) { $raw } else { Join-Path $repoRoot ($raw -replace '/', '\') }
-            if (-not (Test-Path -LiteralPath $abs)) { $missing += $raw }
+            $rel = ([string]$e.file).Replace('/', '\')
+            # Re-anchor an absolute path by its repo-relative tail: the entry must end
+            # with "<sep>references\scripts\..." / "<sep>tools\..." / "<sep>setup.ps1",
+            # i.e. one of the analysis-path roots. Use the longest matching root.
+            if ([System.IO.Path]::IsPathRooted($rel)) {
+                $matched = $false
+                foreach ($root in @('references\scripts', 'tools', 'setup.ps1')) {
+                    $idx = $rel.IndexOf('\' + $root + '\')
+                    if ($idx -ge 0) { $rel = $rel.Substring($idx + 1); $matched = $true; break }
+                    if ($rel.EndsWith('\' + $root)) { $rel = $root; $matched = $true; break }
+                }
+                if (-not $matched) { $missing += "$($e.file)  (no analysis-path root in path)"; continue }
+            }
+            $abs = Join-Path $repoRoot $rel
+            if (-not (Test-Path -LiteralPath $abs)) { $missing += "$($e.file)  -> $rel" }
         }
-        $missing | Should -BeNullOrEmpty -Because "基线引用了不存在的文件：$($missing -join ', ')（文件改名/删除后必须重跑 tools/Update-ComplexityBaseline.ps1）"
+        $missing | Should -BeNullOrEmpty -Because "基线引用了不存在的文件：$($missing -join '; ')（文件改名/删除后必须重跑 tools/Update-ComplexityBaseline.ps1）"
     }
 
     It '基线生成器写出的 form 与门禁的比较口径一致（三个「known 恒空」缺陷的回归守卫）' {
