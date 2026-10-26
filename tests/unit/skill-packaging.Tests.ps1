@@ -21,6 +21,25 @@ Describe 'Skill packaging: CLI 与 UI 的分离（2026-10-24）' {
     BeforeAll {
         $script:Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
         $script:Tool = Join-Path $script:Root 'tools/New-SkillPackage.ps1'
+
+        # Write UTF-8 WITH a BOM regardless of engine: PS 5.1's `-Encoding UTF8` emits
+        # one, pwsh 7's does not, and this suite runs on both. The probe fixture below
+        # carries Chinese text, so a BOM-less copy would trip the repo's own
+        # "non-ASCII .ps1 needs a BOM" guard while it exists.
+        function Write-Utf8BomFile {
+            param([string]$Path, [string]$Content)
+            [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding($true)))
+        }
+
+        # The probe below is created inside tools/ and removed in a `finally`. That was
+        # NOT enough: measured 2026-10-26, a probe survived a whole run and then failed
+        # the repo's "non-ASCII .ps1 needs a BOM" guard *and* the product-source count on
+        # the very next gate invocation. A `finally` only runs if the It block reaches it;
+        # an exception during discovery/BeforeAll, a killed run, or a Stop preference
+        # leaves the file behind. So cleanup is belt-and-braces: AfterAll removes it
+        # unconditionally, and the assertion below proves the fixture set the suite
+        # depends on is back to its committed state.
+        $script:ProbePath = Join-Path $script:Root 'tools/_tampered-pkg-probe.ps1'
         $script:OutRoot = Join-Path $env:TEMP ('wrc-pkg-test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
         & $script:Tool -OutputRoot $script:OutRoot *> $null
         $script:SkillPkg = Join-Path $script:OutRoot 'windows-residual-cleaner-skill'
@@ -28,6 +47,10 @@ Describe 'Skill packaging: CLI 与 UI 的分离（2026-10-24）' {
     }
 
     AfterAll {
+        # Unconditional: see the note on $script:ProbePath in BeforeAll.
+        if ($script:ProbePath) {
+            Remove-Item -LiteralPath $script:ProbePath -Force -ErrorAction SilentlyContinue
+        }
         if ($script:OutRoot -and (Test-Path -LiteralPath $script:OutRoot)) {
             Remove-Item -LiteralPath $script:OutRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -77,8 +100,27 @@ Describe 'Skill packaging: CLI 与 UI 的分离（2026-10-24）' {
                 "Include     = @('SKILL.md', 'VERSION', 'LICENSE', 'references')",
                 "Include     = @('SKILL.md', 'VERSION', 'LICENSE', 'references', 'ui')")
             $tampered | Should -Not -Be $text -Because '用例本身要能篡改到 Include 行；改不到说明脚本结构变了，需要更新此用例'
-            $tamperedPath = Join-Path $script:Root 'tools/_tampered-pkg-probe.ps1'
-            Set-Content -LiteralPath $tamperedPath -Value $tampered -Encoding UTF8
+            # The probe has to sit next to the real repo root: the tool computes
+            # `$repoRoot = $PSScriptRoot/..` and copies SKILL.md/references from it, and
+            # the ui/ veto fires only AFTER that copy. Writing it anywhere else makes the
+            # tool fail on an empty package -- the test would then pass for the wrong
+            # reason (wrong exception, guard never exercised).
+            #
+            # But writing a `.ps1` into `tools/` is not free: that directory is part of the
+            # product-source tree, and the adapter's discovery feeds the coverage
+            # denominator, Gate 1's analysis scope and the product-source count. Measured
+            # 2026-10-25: while this test ran, discovery saw 24 files instead of 23. So the
+            # probe exists only for the duration of one invocation and is removed in
+            # `finally`; the one test that counts product sources excludes this exact name
+            # rather than counting a directory that another test temporarily writes to.
+            # Write it WITH a UTF-8 BOM. The probe contains Chinese error text, and the
+            # repo's own "non-ASCII .ps1 must carry a BOM" guard scans the tree -- so a
+            # BOM-less probe makes that guard fail for as long as the file exists. That
+            # is the same class of bug as the count inflation: a fixture that violates an
+            # invariant the suite asserts. `-Encoding UTF8` in PS 5.1 does emit a BOM, but
+            # pwsh 7's does NOT, and this suite runs on both engines.
+            $tamperedPath = $script:ProbePath
+            Write-Utf8BomFile -Path $tamperedPath -Content $tampered
             try {
                 { & $tamperedPath -OutputRoot $probeRoot *> $null } | Should -Throw '*必须分离*' -Because 'skill 包一旦含 ui/ 就必须中止，而不是打出来'
             }

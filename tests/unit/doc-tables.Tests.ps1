@@ -49,6 +49,20 @@ Describe 'Doc tables: 退出码表单一事实来源（2026-10-25）' {
         $LASTEXITCODE | Should -Be 0 -Because "退出码表漂移：$($out -join ' | ')"
     }
 
+    It '生成块的换行符与所在文档一致（否则干净 checkout 上的 -Check 会假红）' {
+        # 2026-10-25 CI 实测：仓库里这三份 .md 存的是 LF，但生成器当时用 CRLF 拼块。
+        # 本机工作树恰好是 CRLF 所以本地绿，CI 干净检出是 LF → 三份文档全报 OUT OF DATE。
+        # 断言「块内不含 CRLF 与文档自身不一致的情况」，让这类检出差异当场变红。
+        foreach ($path in @($script:SkillPath, $script:PatternPath, $script:AgentsPath)) {
+            $text = Get-Content -LiteralPath $path -Raw
+            $block = Get-MarkedBlock -Path $path -Begin '<!-- BEGIN GENERATED: exit-codes -->' -End '<!-- END GENERATED: exit-codes -->'
+            $block | Should -Not -BeNullOrEmpty -Because "$([System.IO.Path]::GetFileName($path)) 的生成块应当非空"
+            $docHasCrlf = $text.Contains("`r`n")
+            $blockHasCrlf = $block.Contains("`r`n")
+            $blockHasCrlf | Should -Be $docHasCrlf -Because "$([System.IO.Path]::GetFileName($path))：文档换行=$(if ($docHasCrlf) {'CRLF'} else {'LF'})，生成块换行=$(if ($blockHasCrlf) {'CRLF'} else {'LF'})——生成器必须沿用目标文档的换行符，否则本机与 CI 的 -Check 结论会相反"
+        }
+    }
+
     It 'SKILL.md 与 pattern 文档都带生成块标记' {
         # 标记是把两份文档绑到同一个事实来源的**唯一机制**。
         # 删掉标记 = 悄悄退回手工维护，而那正是这次要消除的东西。

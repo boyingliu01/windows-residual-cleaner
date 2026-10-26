@@ -20,49 +20,82 @@ if [ "$PROJECT_LANG" = "documentation-only" ]; then
   GATE_3_REASON="documentation_project"
 
 elif [ "$PROJECT_LANG" = "powershell" ]; then
-  # Downstream hardening 2026-10-24: this arm used to be a hard SKIP with
-  # "no PowerShell tool available". That was true of lizard (it cannot parse
-  # .ps1) but NOT of the platform: PowerShell's own AST gives an exact decision
-  # count, which is the same quantity lizard measures for other languages.
-  # A PowerShell-primary repo therefore had a permanently unmeasured quality
-  # dimension while the score implied coverage (#537).
+  # #537/#598: this arm used to be a hard SKIP with "no PowerShell tool". That
+  # was true of lizard (it cannot parse .ps1) but NOT of the platform:
+  # PowerShell's own AST gives an exact decision-point count, which is the same
+  # quantity lizard measures for other languages. A PowerShell-primary repo
+  # therefore had a permanently unmeasured quality dimension while the score
+  # implied full coverage.
   #
-  # The measurement lives in the repo (tools/Measure-PowerShellComplexity.ps1)
-  # because the hook cannot know a project's refactor history; the adapter only
-  # runs it and translates the verdict.
-  PS_CC_SCRIPT="tools/Measure-PowerShellComplexity.ps1"
+  # The measurement lives in lib/Measure-PowerShellComplexity.ps1 because the
+  # hook cannot know a project's refactor history; the adapter only runs it and
+  # translates the verdict.
+  #
+  # The threshold resolution is duplicated from the lizard arm on purpose: the
+  # arms are read independently of each other, and a shared helper here would
+  # make the PowerShell path depend on the code path it replaces.
+  _gate3_ps_threshold() {
+    local default=5 val
+    if [ -f ".xp-gate/ccn-threshold" ]; then
+      val=$(sed -n '1s/[[:space:]]*$//p' ".xp-gate/ccn-threshold" 2>/dev/null || true)
+      case "$val" in
+        ''|*[!0-9]*) echo "WARN - invalid .xp-gate/ccn-threshold value '${val}' (expected a positive integer), falling back to ${default}" >&2 ;;
+        0) echo "WARN - invalid .xp-gate/ccn-threshold value '0' (expected a positive integer), falling back to ${default}" >&2 ;;
+        *) echo "$val"; return 0 ;;
+      esac
+    fi
+    val=${XP_GATE_CCN_THRESHOLD:-}
+    case "$val" in
+      '') echo "$default" ;;
+      *[!0-9]*) echo "WARN - invalid XP_GATE_CCN_THRESHOLD value '${val}' (expected a positive integer), falling back to ${default}" >&2; echo "$default" ;;
+      0) echo "WARN - invalid XP_GATE_CCN_THRESHOLD value '0' (expected a positive integer), falling back to ${default}" >&2; echo "$default" ;;
+      *) echo "$val" ;;
+    esac
+  }
+
+  # Resolve a PowerShell engine LOCALLY.
+  #
+  # This arm must NOT call _detect_pwsh, which is defined in
+  # adapters/powershell.sh: the hook sources that adapter inside a SUBSHELL for
+  # Gate 1 --
+  #     PS_G1_OUTPUT=$(source "$POWERSHELL_ADAPTER"; run_static_analysis)
+  # -- so its functions never reach this gate. Depending on it printed
+  # "no PowerShell engine found" on a machine with both pwsh 7 AND PS 5.1
+  # installed, i.e. the verdict was about bash scoping, not about the engine.
+  # A gate must not depend on another gate having sourced a library first.
+  _gate3_detect_pwsh() {
+    if command -v pwsh >/dev/null 2>&1; then echo pwsh; return 0; fi
+    if command -v powershell.exe >/dev/null 2>&1; then echo powershell.exe; return 0; fi
+    local _c
+    for _c in \
+      "${LOCALAPPDATA:-$HOME/AppData/Local}/Microsoft/WindowsApps/pwsh.exe" \
+      "/c/Program Files/PowerShell/7/pwsh.exe" \
+      "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"; do
+      [ -x "$_c" ] && { echo "$_c"; return 0; }
+    done
+    return 1
+  }
+
+  PS_CC_SCRIPT="${AUDIT_SCRIPT_DIR}/lib/Measure-PowerShellComplexity.ps1"
   if [ ! -f "$PS_CC_SCRIPT" ]; then
     echo "ℹ️  No PowerShell complexity tool available"
-    echo "     (add tools/Measure-PowerShellComplexity.ps1 to enable AST-based CCN)"
+    echo "     (expected at lib/Measure-PowerShellComplexity.ps1)"
     echo "⏭️  SKIPPED - Complexity (no PowerShell tool)"
     GATE_3_STATUS="SKIP"
     # Consumed by the sourcing parent (pre-commit report JSON), not here.
     # shellcheck disable=SC2034
     GATE_3_REASON="no_powershell_tool"
   else
-    # Resolve a PowerShell engine LOCALLY.
-    #
-    # Downstream hardening 2026-10-24: this arm called `_detect_pwsh`, which is
-    # defined in adapters/powershell.sh. But the hook sources that adapter inside
-    # a SUBSHELL for Gate 1
-    #     PS_G1_OUTPUT=$(source "$POWERSHELL_ADAPTER"; run_static_analysis)
-    # so its functions never reach this gate. Measured: Gate 3 printed
-    #     ⚠️  WARN - no PowerShell engine found; complexity not measured
-    # on a machine with pwsh 7 AND PS 5.1 installed -- i.e. the "no engine"
-    # verdict was about bash scoping, not about the engine.
-    # A gate must not depend on another gate having sourced a library first.
-    _gate3_detect_pwsh() {
-      if command -v pwsh >/dev/null 2>&1; then echo pwsh; return 0; fi
-      if command -v powershell.exe >/dev/null 2>&1; then echo powershell.exe; return 0; fi
-      local _c
-      for _c in \
-        "${LOCALAPPDATA:-$HOME/AppData/Local}/Microsoft/WindowsApps/pwsh.exe" \
-        "/c/Program Files/PowerShell/7/pwsh.exe" \
-        "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"; do
-        [ -x "$_c" ] && { echo "$_c"; return 0; }
-      done
-      return 1
-    }
+    # #581: pwsh.exe is a NATIVE binary and cannot open the POSIX path this hook
+    # holds (`/c/Users/...` or `/tmp/...`). Handed one unchanged it resolves the
+    # leading `/` to `<current drive>:\`, silently measures zero files, and the
+    # gate then reports "no functions" -- an environment fault reported as a
+    # verdict about the repository. Convert the script path once, here.
+    PS_CC_SCRIPT_NATIVE="$PS_CC_SCRIPT"
+    if command -v to_native_path >/dev/null 2>&1; then
+      PS_CC_SCRIPT_NATIVE=$(to_native_path "$PS_CC_SCRIPT" 2>/dev/null || echo "$PS_CC_SCRIPT")
+    fi
+    PS_CC_SCRIPT="$PS_CC_SCRIPT_NATIVE"
     PS_CC_PWSH=$(_gate3_detect_pwsh 2>/dev/null || true)
     if [ -z "$PS_CC_PWSH" ]; then
       echo "⚠️  WARN - no PowerShell engine found; complexity not measured"
@@ -71,42 +104,17 @@ elif [ "$PROJECT_LANG" = "powershell" ]; then
       # shellcheck disable=SC2034
       GATE_3_REASON="no_powershell_engine"
     else
-      # Freshly added files only: this arm has no baseline concept, so it judges
-      # each file's functions against the threshold. A file that is merely being
-      # touched keeps its history (that is what .ccn-baseline.json is for on the
-      # lizard path); here we deliberately measure only ADDED files so the arm
-      # can never retroactively block a cleanup commit.
+      PS_CC_THRESHOLD=$(_gate3_ps_threshold)
       PS_ADDED=$(git diff --cached --name-only --diff-filter=A 2>/dev/null | grep -E '\.ps(m)?1$' || true)
+      PS_BASELINE=".xp-gate-powershell-ccn-baseline.json"
+
       if [ -z "$PS_ADDED" ]; then
         # No added files, but modified ones can still get MORE complex. That is
-        # the actual regression this dimension exists to catch: refactoring a
-        # 140-CCN function into two 80-CCN functions is a 20-point improvement,
-        # and adding one `elseif` to it is a regression -- a flat threshold
-        # cannot tell those apart, a baseline can.
-        PS_RATCHET_BASELINE=".xp-gate-powershell-ccn-baseline.json"
-        # Scope the ratchet to PRODUCT code.
-        #
-        # Downstream hardening 2026-10-24: `--diff-filter=ACM` swept in every
-        # touched .ps1, including tests/. The ratchet treats "function not in the
-        # baseline" as a REGRESSION, so the first time a test file was touched it
-        # blocked on functions the baseline never covered:
-        #
-        #     ❌ tests/unit/complexity-tool.Tests.ps1:23 new function at ccn=3
-        #     ❌ tests/unit/scripts.Tests.ps1:1295 New-WrcFixture new function at ccn=2
-        #
-        # That is not a complexity regression -- a 2-CCN test helper is not a
-        # maintainability problem -- it is a scope error. Measuring test code also
-        # creates a perverse incentive: it pushes authors to flatten test helpers
-        # to dodge the gate.
-        # The baseline's generator (tools/Update-ComplexityBaseline.ps1) only ever
-        # covered product scripts, so the two halves disagreed about scope. Honour
-        # the same scope here, and take it from the baseline's own `scope` field
-        # when present so the two can never drift apart silently again.
+        # what the ratchet baseline is for; without a baseline there is nothing
+        # to compare, and silently passing would be the #584 failure mode.
         PS_TOUCHED=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null | grep -E '\.ps(m)?1$' || true)
-        if [ -n "$PS_TOUCHED" ]; then
-          PS_TOUCHED=$(printf '%s\n' "$PS_TOUCHED" | grep -vE '(^|/)tests/' || true)
-        fi
-        if [ ! -f "$PS_RATCHET_BASELINE" ] || [ -z "$PS_TOUCHED" ]; then
+        PS_TOUCHED=$(printf '%s\n' "$PS_TOUCHED" | grep -vE '(^|/)tests/' || true)
+        if [ -z "$PS_TOUCHED" ] || [ ! -f "$PS_BASELINE" ]; then
           echo "⏭️  SKIPPED - Complexity (no added PowerShell files to measure)."
           GATE_3_STATUS="SKIP"
           # Consumed by the sourcing parent (pre-commit report JSON), not here.
@@ -115,8 +123,18 @@ elif [ "$PROJECT_LANG" = "powershell" ]; then
         else
           PS_CC_ARGS=()
           for _f in $PS_TOUCHED; do PS_CC_ARGS[${#PS_CC_ARGS[@]}]="'$_f'"; done
+
+          # #598: the ratchet branch must use the SAME threshold as the baseline
+          # collector. -Threshold 1 used to make every function with CCN >= 2
+          # print OVER, so a brand-new well-factored function (CCN 2-4, below the
+          # real threshold) was diffed against a baseline that can never contain
+          # it and reported as a "regression": the gate blocked exactly the shape
+          # it exists to encourage. -List additionally emits the full population,
+          # so the comparison covers functions that are below the threshold on
+          # both sides.
           PS_CC_OUT=$("$PS_CC_PWSH" -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-            -Command "& './$PS_CC_SCRIPT' -Path @($(IFS=','; echo "${PS_CC_ARGS[*]}")) -Threshold 1" 2>&1 || true)
+            -Command "& '$PS_CC_SCRIPT' -Path @($(IFS=','; echo "${PS_CC_ARGS[*]}")) -Threshold ${PS_CC_THRESHOLD} -List" 2>&1 || true)
+
           PS_CC_MEASURED=$(printf '%s\n' "$PS_CC_OUT" | sed -n 's/^functions_measured=//p' | tail -1)
           if [ -z "$PS_CC_MEASURED" ] || [ "${PS_CC_MEASURED:-0}" -eq 0 ]; then
             echo "⏭️  SKIPPED - Complexity (no functions in changed PowerShell files)."
@@ -125,122 +143,157 @@ elif [ "$PROJECT_LANG" = "powershell" ]; then
             # shellcheck disable=SC2034
             GATE_3_REASON="no_functions_found"
           else
-            # Compare against the baseline with node when available (jq may be
-            # absent on Windows) -- a bash+jq-only ratchet would itself become a
-            # silent SKIP on the very platform this repo targets.
             PS_CC_NODE=""
             if command -v node >/dev/null 2>&1; then PS_CC_NODE="node"; fi
             if [ -z "$PS_CC_NODE" ]; then
               echo "ℹ️  node unavailable — complexity measured (${PS_CC_MEASURED} function(s)) but ratchet not compared"
               echo "✅ PASSED - PowerShell complexity measured (ratchet unavailable)."
-              GATE_3_STATUS="PASS"
               GATE_3_DETAIL="mode=measured_no_ratchet"
             else
+              # Compare every measured function against the baseline. A function
+              # absent from the baseline is NEW: it is only a regression if it is
+              # above the threshold, which is exactly what the old -Threshold 1
+              # comparison got wrong. An unreadable baseline is ERR, not a pass.
               PS_CC_VERDICT=$(printf '%s\n' "$PS_CC_OUT" | "$PS_CC_NODE" -e '
                 let raw = "";
-                process.stdin.on("data", d => raw += d).on("end", () => {
+                process.stdin.on("data", (c) => { raw += c; });
+                process.stdin.on("end", () => {
                   const fs = require("fs");
-                  const basePath = process.argv[1];
-                  let base = { entries: [] };
+                  const fsPath = process.argv[1];
+                  const threshold = Number(process.argv[2]);
+                  let baseline;
                   try {
-                    // Strip a UTF-8 BOM before parsing: JSON.parse throws on it,
-                    // and a baseline committed from PowerShell 5.1 used to carry
-                    // one. A BOM must never turn a configured gate into "unreadable".
-                    base = JSON.parse(fs.readFileSync(basePath, "utf8").replace(/^\uFEFF/, ""));
+                    baseline = JSON.parse(fs.readFileSync(fsPath, "utf8"));
+                  } catch (e) {
+                    console.log("ERR " + e.message);
+                    return;
                   }
-                  catch (e) { console.log("ERR unreadable baseline: " + e.message); return; }
                   const known = new Map();
-                  for (const e of (base.entries || [])) known.set(e.file + "::" + e.function, Number(e.ccn));
-                  const norm = p => String(p).replace(/\\/g, "/").replace(/^\.\//, "");
+                  const entries = baseline.functions || baseline.entries || baseline;
+                  if (Array.isArray(entries)) {
+                    for (const e of entries) {
+                      if (!e || !e.file || !e.name) continue;
+                      known.set(norm(e.file) + "::" + e.name, Number(e.ccn) || 0);
+                    }
+                  }
+                  // The measurement emits ABSOLUTE paths (pwsh resolved them), while
+                  // a baseline recorded by a repo-side generator holds paths relative
+                  // to the repo root. Normalising alone cannot bridge that, so a key
+                  // miss falls back to a suffix match on the file path: exactly one
+                  // known entry whose normalised path ends with "<sep>measured" is the
+                  // same file. Without this every existing function looked brand new,
+                  // and a real regression was reported as "new function" -- the right
+                  // verdict for the wrong reason.
+                  //
+                  // Backslashes are normalised with split/join, NOT -replace: this JS
+                  // is embedded in a double-quoted bash command, where a regex escape
+                  // loses a level and silently matches the wrong number of
+                  // backslashes. Measured: /\\\\/g arrived as /\\/g, matched only
+                  // doubled separators, and every Windows path kept its backslashes.
+                  function norm(p) {
+                    return String(p)
+                      .split("\\").join("/")
+                      .replace(/^[A-Za-z]:\//, "")
+                      .replace(/^\.\//, "")
+                      .replace(/^\//, "");
+                  }
+                  function lookup(path, name) {
+                    const key = norm(path) + "::" + name;
+                    if (known.has(key)) return known.get(key);
+                    const target = norm(path);
+                    let hit = null;
+                    for (const [k, v] of known) {
+                      const [kp, kn] = k.split("::");
+                      if (kn !== name) continue;
+                      if (target.endsWith("/" + kp) || kp.endsWith("/" + target) || kp === target) {
+                        if (hit !== null && hit !== v) return null;  // ambiguous: treat as new
+                        hit = v;
+                      }
+                    }
+                    return hit;
+                  }
+                  const seen = new Set();
                   const regressions = [];
-                  const improvements = [];
-                  let measured = 0;
+                  const improved = [];
                   for (const line of raw.split(/\r?\n/)) {
-                    const m = line.match(/^OVER (.+):(\d+) (\S+) ccn=(\d+)$/);
+                    const m = line.match(/^(?:OVER|FUNC) (.+):(\d+) (\S+) ccn=(\d+)$/);
                     if (!m) continue;
-                    measured++;
                     const key = norm(m[1]) + "::" + m[3];
                     const now = Number(m[4]);
-                    if (!known.has(key)) { regressions.push(`${norm(m[1])}:${m[2]} ${m[3]} new function at ccn=${now}`); continue; }
-                    const was = known.get(key);
-                    if (now > was) regressions.push(`${norm(m[1])}:${m[2]} ${m[3]} ccn ${was} -> ${now}`);
-                    else if (now < was) improvements.push(`${norm(m[1])}:${m[2]} ${m[3]} ccn ${was} -> ${now}`);
+                    seen.add(key);
+                    const was = lookup(m[1], m[3]);
+                    if (was === null) {
+                      if (now > threshold) {
+                        regressions.push(m[1] + ":" + m[2] + "  " + m[3] + "  new function at ccn=" + now);
+                      }
+                      continue;
+                    }
+                    if (now > was) {
+                      regressions.push(m[1] + ":" + m[2] + "  " + m[3] + "  ccn " + was + " -> " + now);
+                    } else if (now < was) {
+                      improved.push(m[1] + ":" + m[2] + "  " + m[3] + "  ccn " + was + " -> " + now);
+                    }
                   }
-                  for (const i of improvements) console.log("IMPROVED " + i);
-                  if (regressions.length === 0) { console.log("OK " + measured); return; }
                   for (const r of regressions) console.log("REGRESSION " + r);
-                  console.log("FAIL " + regressions.length);
+                  for (const i of improved) console.log("IMPROVED " + i);
+                  if (regressions.length > 0) {
+                    console.log("FAIL " + regressions.length + " function(s) increased cyclomatic complexity vs " + fsPath + ".");
+                  }
                 });
-              ' "$PS_RATCHET_BASELINE" 2>&1 || true)
+              ' "$PS_BASELINE" "$PS_CC_THRESHOLD" 2>&1 || true)
+
               if printf '%s\n' "$PS_CC_VERDICT" | grep -q '^FAIL '; then
                 PS_CC_REG=$(printf '%s\n' "$PS_CC_VERDICT" | sed -n 's/^FAIL //p' | tail -1)
                 printf '%s\n' "$PS_CC_VERDICT" | grep '^REGRESSION ' | sed 's/^REGRESSION /     ❌ /'
-                echo ""
-                echo "❌ BLOCKED - ${PS_CC_REG} function(s) increased cyclomatic complexity vs ${PS_RATCHET_BASELINE}."
-                echo "   The ratchet only allows complexity to go DOWN. Refactor, or if the"
-                echo "   increase is deliberate, regenerate with tools/Update-ComplexityBaseline.ps1"
-                echo "   and explain the trade-off in the commit message."
+                echo "❌ BLOCKED - ${PS_CC_REG}"
                 GATE_3_STATUS="BLOCK"
-                # Consumed by the sourcing parent (pre-commit report JSON), not here.
-                # shellcheck disable=SC2034
                 GATE_3_REASON="ccn_ratchet_regression"
                 exit 1
               elif printf '%s\n' "$PS_CC_VERDICT" | grep -q '^ERR '; then
                 echo "⚠️  WARN - complexity ratchet baseline unreadable: $(printf '%s\n' "$PS_CC_VERDICT" | sed -n 's/^ERR //p' | head -1)"
                 GATE_3_STATUS="WARN"
-                # Consumed by the sourcing parent (pre-commit report JSON), not here.
-                # shellcheck disable=SC2034
-                GATE_3_REASON="ratchet_baseline_unreadable"
+                GATE_3_REASON="baseline_unreadable"
               else
                 PS_CC_IMPROVED=$(printf '%s\n' "$PS_CC_VERDICT" | grep -c '^IMPROVED ' || true)
-                if [ "${PS_CC_IMPROVED:-0}" -gt 0 ]; then
-                  printf '%s\n' "$PS_CC_VERDICT" | grep '^IMPROVED ' | sed 's/^IMPROVED /     📉 /'
-                  echo "   (improvements recorded; regenerate the baseline in a later commit)"
-                fi
-                echo "✅ PASSED - PowerShell complexity within ratchet (${PS_CC_MEASURED} function(s) checked)."
+                printf '%s\n' "$PS_CC_VERDICT" | grep '^IMPROVED ' | sed 's/^IMPROVED /     📉 /'
+                echo "✅ PASSED - PowerShell complexity within ratchet (${PS_CC_MEASURED} function(s), ${PS_CC_IMPROVED} improved, threshold ${PS_CC_THRESHOLD})."
                 GATE_3_STATUS="PASS"
-                GATE_3_DETAIL="mode=ratchet"
+                GATE_3_DETAIL="powerShell_ratchet improved=${PS_CC_IMPROVED}"
               fi
             fi
           fi
         fi
       else
+        # Freshly added files: this arm has no history to compare, so it judges
+        # each file's functions against the threshold. A file that is merely
+        # being touched keeps its history (that is what the baseline is for);
+        # measuring only ADDED files means the arm can never retroactively block
+        # a cleanup commit.
         PS_CC_ARGS=()
         for _f in $PS_ADDED; do PS_CC_ARGS[${#PS_CC_ARGS[@]}]="'$_f'"; done
         PS_CC_OUT=$("$PS_CC_PWSH" -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-          -Command "& './$PS_CC_SCRIPT' -Path @($(IFS=','; echo "${PS_CC_ARGS[*]}")) -Threshold ${CCN_THRESHOLD:-5}" 2>&1 || true)
+          -Command "& '$PS_CC_SCRIPT' -Path @($(IFS=','; echo "${PS_CC_ARGS[*]}")) -Threshold ${PS_CC_THRESHOLD}" 2>&1 || true)
         PS_CC_MEASURED=$(printf '%s\n' "$PS_CC_OUT" | sed -n 's/^functions_measured=//p' | tail -1)
         PS_CC_OVER=$(printf '%s\n' "$PS_CC_OUT" | sed -n 's/^over_threshold=//p' | tail -1)
         PS_CC_MAX=$(printf '%s\n' "$PS_CC_OUT" | sed -n 's/^max_ccn=//p' | tail -1)
-        if [ -z "$PS_CC_MEASURED" ]; then
-          echo "⚠️  WARN - PowerShell complexity measurement produced no parsable result"
-          printf '%s\n' "$PS_CC_OUT" | head -10 | sed 's/^/     /'
-          GATE_3_STATUS="WARN"
-          # Consumed by the sourcing parent (pre-commit report JSON), not here.
-          # shellcheck disable=SC2034
-          GATE_3_REASON="measurement_unparsable"
-        elif [ "${PS_CC_MEASURED:-0}" -eq 0 ]; then
-          echo "⏭️  SKIPPED - Complexity (added files contain no functions)."
+        if [ -z "$PS_CC_MEASURED" ] || [ "${PS_CC_MEASURED:-0}" -eq 0 ]; then
+          echo "⏭️  SKIPPED - Complexity (no functions in added PowerShell files)."
           GATE_3_STATUS="SKIP"
           # Consumed by the sourcing parent (pre-commit report JSON), not here.
           # shellcheck disable=SC2034
           GATE_3_REASON="no_functions_found"
+        elif [ "${PS_CC_OVER:-0}" -gt 0 ]; then
+          echo "   Measured ${PS_CC_MEASURED} function(s) via AST; max CCN ${PS_CC_MAX} (threshold ${PS_CC_THRESHOLD})"
+          printf '%s\n' "$PS_CC_OUT" | grep '^OVER ' | sed 's/^/     /'
+          echo "❌ BLOCKED - ${PS_CC_OVER} newly added function(s) with CCN > ${PS_CC_THRESHOLD}."
+          echo "Refactor high-complexity functions, or raise the threshold deliberately."
+          GATE_3_STATUS="BLOCK"
+          GATE_3_REASON="ccn_over_threshold"
+          exit 1
         else
-          echo "   Measured ${PS_CC_MEASURED} function(s) via AST; max CCN ${PS_CC_MAX} (threshold ${CCN_THRESHOLD:-5})"
-          if [ "${PS_CC_OVER:-0}" -gt 0 ]; then
-            printf '%s\n' "$PS_CC_OUT" | grep '^OVER ' | sed 's/^/     /'
-            echo ""
-            echo "❌ BLOCKED - ${PS_CC_OVER} newly added function(s) with CCN > ${CCN_THRESHOLD:-5}."
-            echo "Refactor high-complexity functions, or raise the threshold deliberately."
-            GATE_3_STATUS="BLOCK"
-            # Consumed by the sourcing parent (pre-commit report JSON), not here.
-            # shellcheck disable=SC2034
-            GATE_3_REASON="ccn_over_threshold"
-            exit 1
-          else
-            echo "✅ PASSED - All added PowerShell functions within complexity threshold (${CCN_THRESHOLD:-5})."
-            GATE_3_STATUS="PASS"
-          fi
+          echo "✅ PASSED - All added PowerShell functions within complexity threshold (${PS_CC_THRESHOLD})."
+          echo "   Measured ${PS_CC_MEASURED} function(s) via AST; max CCN ${PS_CC_MAX}."
+          GATE_3_STATUS="PASS"
         fi
       fi
     fi
@@ -450,7 +503,16 @@ else
       fi
       fi
     else
-      echo "⏭️  SKIPPED - Complexity (no source files to check)."
+      # #589: "no source files to check" described an empty PROJECT when the real
+      # cause is an empty CHANGED_FILES — an empty DIFF, or a `--all` run whose
+      # tree genuinely has no sources. The old wording read like a pass, which is
+      # why the reporter worked around the gate by running lizard by hand.
+      if [ -n "${GATE_SCOPE:-}" ] && [ "$GATE_SCOPE" = "all" ]; then
+        echo "⏭️  SKIPPED - Complexity: no tracked source files in this repository (scope: --all, whole tree)."
+      else
+        echo "⏭️  SKIPPED - Complexity: no changed source files in this run (scope: diff)."
+        echo "   Run 'xp-gate check . --all' to scan the whole tree."
+      fi
       GATE_3_STATUS="SKIP"
       # Consumed by the sourcing parent (pre-commit report JSON), not here.
       # shellcheck disable=SC2034

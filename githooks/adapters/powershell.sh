@@ -61,52 +61,72 @@ _detect_pwsh() {
 
 _find_powershell_files() {
   local name_pattern="$1"
-  # #538: gitignored drill/review artifact dirs hold hundreds of non-product
-  # .ps1 files (admin drills, Delphi review copies). Collecting them turned
-  # Gate 1 into an 800+ warning wall and made the pwsh gates unusable.
+
+  # #573: repo-local extra prune entries. The list below covers the artifact
+  # directories xp-gate itself produces, but a consuming repo can have its own
+  # (a generated obj/, a vendored third_party/, a samples/ tree of
+  # intentionally broken scripts) and had no way to exclude them -- so its Gate 1
+  # stayed the warning wall #538 fixed for xp-gate's own layout.
   #
-  # Repo-specific additions come from .xp-gate-powershell-prune-dirs (one
-  # directory NAME per line, '#' comments and blank lines ignored). The
-  # built-in list cannot know a consuming repo's own scaffolding; without this
-  # hook every project would have to grow the shared list instead.
-  local prune_args=()
-  local prune_dir
+  # Entries are appended to the built-in list, never replace it: `wrc-drill` is
+  # pinned here for xp-gate's own admin drills. Matched by -name, so a listed
+  # directory is pruned at any depth.
+  #
+  # Built as an ARRAY, not a string spliced into an eval: the entries come from
+  # a file in the checked-out repo, and a directory name is not something to
+  # hand to a shell parser.
+  local -a prune_args=()
   local prune_file=".xp-gate-powershell-prune-dirs"
   if [ -f "$prune_file" ]; then
-    while IFS= read -r prune_dir; do
-      prune_dir="${prune_dir#$'\xEF\xBB\xBF'}"
-      prune_dir="${prune_dir%$'\r'}"
-      case "$prune_dir" in ''|'#'*) continue ;; esac
-      # Discovery feeds the test-discovery, coverage and analysis denominators
-      # alike, so an entry like '*' or a path with a separator would silently
-      # shrink all three while the config file still looked reasonable. Only
-      # bare directory names are honoured; anything else is reported and
-      # ignored, never silently honoured.
-      case "$prune_dir" in
+    local entry
+    while IFS= read -r entry; do
+      entry="${entry%$'\r'}"
+      # #578: strip a UTF-8 BOM before anything else. PowerShell 5.1's
+      # `Set-Content -Encoding UTF8` writes one, and it glues itself to the first
+      # line -- so the first directory name would silently never match, and a
+      # leading '#' comment would stop looking like a comment.
+      entry="${entry#$'\xEF\xBB\xBF'}"
+      # Strip surrounding whitespace, then the ./ prefix and trailing / a repo
+      # may reasonably write; -name matches a bare directory name.
+      entry="${entry#"${entry%%[![:space:]]*}"}"
+      entry="${entry%"${entry##*[![:space:]]}"}"
+      case "$entry" in ''|'#'*) continue ;; esac
+      entry="${entry#./}"
+      entry="${entry%/}"
+      [ -n "$entry" ] || continue
+
+      # #574: discovery feeds THREE denominators at once (test discovery,
+      # coverage, static-analysis scope), so a bad entry does not merely fail to
+      # prune -- it silently shrinks all three while the file still looks
+      # reasonable.
+      #   -name '*'     matches EVERY directory -> prunes the whole tree -> the
+      #                 gate analyses nothing and still exits 0.
+      #   -name 'a/b'   matches nothing (names have no separators) -> a silent
+      #                 no-op that reads as working config.
+      # Only bare directory NAMES are honoured; anything else is reported and
+      # ignored. Reported, not silently dropped: an ignored entry is a config
+      # error the operator has to see.
+      case "$entry" in
         */*|*\\*|*'*'*|*'?'*|*'['*)
-          echo "  ⚠️  $prune_file: ignoring invalid entry '$prune_dir' (must be a bare directory name, no separators or glob metacharacters)" >&2
+          echo "  ⚠️  $prune_file: ignoring invalid entry '$entry' (must be a bare directory name, no separators or glob metacharacters)" >&2
           continue
           ;;
         .|..)
-          echo "  ⚠️  $prune_file: ignoring invalid entry '$prune_dir'" >&2
+          echo "  ⚠️  $prune_file: ignoring invalid entry '$entry'" >&2
           continue
           ;;
       esac
-      # MUST go to stderr, never stdout: this function's stdout IS the file
-      # list, and every caller captures it into the Pester
-      # Run.Path / CodeCoverage.Path arrays. Measured 2026-10-24: with this on
-      # stdout, the two advisory lines (prune + coverage exclusion) became
-      # "paths" in the array, Pester failed with
-      #   Could not resolve coverage path '  ℹ️  pruning directory name ...'
-      # and wrote a 2-byte empty coverage.xml. The gate then reported "could
-      # not parse coverage" and -- before the #570 fix -- would have counted
-      # that as "unknown" and let the commit through with no coverage at all.
-      echo "  ℹ️  pruning directory name '$prune_dir' (from $prune_file)" >&2
-      prune_args[${#prune_args[@]}]=-name
-      prune_args[${#prune_args[@]}]="$prune_dir"
+
+      echo "  ℹ️  pruning directory name '$entry' (from $prune_file)" >&2
       prune_args[${#prune_args[@]}]=-o
+      prune_args[${#prune_args[@]}]=-name
+      prune_args[${#prune_args[@]}]="$entry"
     done < "$prune_file"
   fi
+
+  # #538: gitignored drill/review artifact dirs hold hundreds of non-product
+  # .ps1 files (admin drills, Delphi review copies). Collecting them turned
+  # Gate 1 into an 800+ warning wall and made the pwsh gates unusable.
   find . \
     \( -type d \( \
       -name .git -o \
@@ -117,16 +137,17 @@ _find_powershell_files() {
       -name .delphi-work -o \
       -name .workbuddy -o \
       -name .sprint-state -o \
+      -name wrc-drill -o \
       -name .xp-gate -o \
       -name .vscode -o \
       -name .idea -o \
       -name .qoder -o \
-      "${prune_args[@]}" \
       -path './plugins/claude-code/skills' -o \
       -path './plugins/opencode/skills' -o \
       -path './plugins/qoder/skills' -o \
       -path './src/npm-package/skills' -o \
       -path './src/npm-package/plugins' \
+      "${prune_args[@]+"${prune_args[@]}"}" \
     \) -prune \) -o \
     \( -type f -name "$name_pattern" -print \) 2>/dev/null
 }
@@ -161,96 +182,166 @@ run_static_analysis() {
   if [ -n "$PWSH" ]; then
     local POWERSHELL_ARGS
     _powershell_invocation "$PWSH"
-
-    # Scoped mode: .xp-gate-powershell-analysis-paths lists the PRODUCT scope
-    # (directories and/or single files, one per line). Rationale: Pester test
-    # files legitimately trip dozens of rule warnings under the Pester
-    # execution model, which would make a whole-repo scan either block
-    # everything or force the rule set open. The scope file narrows the gate
-    # to product code under the SAME rules (repo-root
-    # PSScriptAnalyzerSettings.psd1). A listed-but-missing path means product
-    # code ESCAPED the scope and is emitted as a fail-closed reason, matching
-    # the missing-module semantics. Without the scope file the legacy
-    # whole-repo behavior is kept, so existing repos are unaffected.
-    local analysis_targets=()
+    echo "Running PSScriptAnalyzer static analysis on PowerShell scripts..."
+    # Exit with non-zero if Error or Warning severity issues found
+    local PSSA_RC=0
+    local PSSA_OUT
     local scope_file=".xp-gate-powershell-analysis-paths"
-    local target_line
+    local analysis_targets=()
     local scope_missing=0
-    local scope_declared=0
-    local scoped_mode=0
+
+    # #571: repo-local analysis scope. Pester test files legitimately trip
+    # dozens of rule warnings under the Pester execution model, so a whole-repo
+    # scan either blocks every PowerShell commit or forces the rule set open —
+    # both end in PowerShell not being gated at all. A repo may list its PRODUCT
+    # scope (directories and/or single files, one per line, `#` comments) and
+    # the SAME rules then apply to just that code.
+    #
+    # The load-bearing half is staleness: a listed path that no longer exists
+    # means product code ESCAPED the gate (renamed, moved, or a new script added
+    # without updating the file). That emits a reason so the pre-commit arm maps
+    # it to WARN inside the scoring denominator, instead of silently analysing
+    # less and reporting PASS. Same for a scope file with no usable entries.
+    # Without the file the legacy whole-repo behavior is kept, so existing repos
+    # are unaffected.
     if [ -f "$scope_file" ]; then
-      scoped_mode=1
+      local target_line
+      local declared=0
       while IFS= read -r target_line; do
-        # A UTF-8 BOM (PowerShell 5.1 `Set-Content -Encoding UTF8` writes one)
-        # would otherwise glue itself to the first entry and turn the
-        # documented '#' header into a path.
-        target_line="${target_line#$'\xEF\xBB\xBF'}"
         target_line="${target_line%$'\r'}"
+        # #578: a UTF-8 BOM (PowerShell 5.1's `Set-Content -Encoding UTF8` writes
+        # one) glues itself to the FIRST line. On a path that manufactures a
+        # nonexistent entry -- and since #576 that returns 3, so a perfectly valid
+        # scope file would fail closed on every commit. On the '#' header it turns
+        # a comment into a phantom path. Strip it before classifying.
+        target_line="${target_line#$'\xEF\xBB\xBF'}"
+        # Strip surrounding whitespace before classifying: a line of spaces is
+        # not a path, and `case` alone would treat it as one — measured, a
+        # whitespace-only line became an "analysis path not found" entry.
+        target_line="${target_line#"${target_line%%[![:space:]]*}"}"
+        target_line="${target_line%"${target_line##*[![:space:]]}"}"
         case "$target_line" in ''|'#'*) continue ;; esac
-        scope_declared=$((scope_declared + 1))
+        declared=$((declared + 1))
         if [ -e "$target_line" ]; then
+          # shellcheck disable=SC2004  # explicit index arithmetic on an array
           analysis_targets[${#analysis_targets[@]}]="$target_line"
         else
-          echo "  ⚠️  analysis path not found: $target_line"
-          echo "XP_G1_REASON: analysis-path-missing:$target_line"
           scope_missing=$((scope_missing + 1))
+          echo "  ℹ️  analysis path not found (skipped): $target_line"
+          echo "XP_G1_REASON: analysis-path-missing:$target_line"
         fi
       done < "$scope_file"
-    fi
-
-    # Scoped mode with nothing analysable is not a pass: either every entry is
-    # missing, or the file declares no usable entry at all. Both mean product
-    # code is outside the gate.
-    if [ "$scoped_mode" -eq 1 ] && [ "${#analysis_targets[@]}" -eq 0 ]; then
-      if [ "$scope_declared" -eq 0 ]; then
+      if [ "$declared" -eq 0 ]; then
+        # The file exists but declares nothing: analysing zero paths would exit 0
+        # and read as a clean PASS. A file whose entries are all MISSING takes
+        # the per-entry branch above instead, so the two causes stay distinct.
         echo "XP_G1_REASON: analysis-paths-empty"
-        echo "  ℹ️  $scope_file declares no paths - nothing to analyse"
-      else
-        echo "  ℹ️  $scope_file declares $scope_declared path(s), none exist - nothing to analyse"
+        echo "  ℹ️  $scope_file present but declares no paths - skipping analysis"
+        return 3
       fi
-      return 3
     fi
-
-    # The settings file is part of the contract: Invoke-ScriptAnalyzer -Settings
-    # on a missing path is a non-terminating error, so with SilentlyContinue the
-    # fragment returns zero findings and the gate reports PASSED on an
-    # unanalysed tree (code walkthrough round 1, finding A4). Require it before
-    # spending the run.
-    if [ "$scoped_mode" -eq 1 ] && [ ! -f "PSScriptAnalyzerSettings.psd1" ]; then
+    # Downstream hardening (ported): a scope file narrows the gate to product
+    # code, but it must be analysed under a DECLARED rule set. With no
+    # PSScriptAnalyzerSettings.psd1 the -Settings binding falls back to defaults,
+    # so a repo that declared its scope silently swapped rule sets. Refuse the
+    # run rather than grade against an unknown rule set.
+    #
+    # Mirrors the missing-module semantics (return 3 = fail closed upstream).
+    if [ "${#analysis_targets[@]}" -gt 0 ] && [ ! -f "PSScriptAnalyzerSettings.psd1" ]; then
       echo "XP_G1_REASON: analysis-settings-missing:PSScriptAnalyzerSettings.psd1"
       echo "  ⚠️  $scope_file is in use but PSScriptAnalyzerSettings.psd1 is absent - refusing to analyse with an unknown rule set"
       return 3
     fi
 
-    echo "Running PSScriptAnalyzer static analysis on PowerShell scripts..."
-    local PSSA_RC=0
-    local PSSA_OUT
-    local scope_expr="Invoke-ScriptAnalyzer -Path . -Recurse -Severity Error,Warning"
+
     if [ "${#analysis_targets[@]}" -gt 0 ]; then
-      # -ErrorAction Stop, not SilentlyContinue: an analyzer error (unreadable
-      # file, bad settings, a path that vanished between the -e test and the
-      # run) must become a fail-closed verdict, not an empty result set that
-      # reads as clean. The findings themselves are returned, not errors.
-      scope_expr="foreach (\$t in $(_powershell_path_array "${analysis_targets[@]}")) { Invoke-ScriptAnalyzer -Path \$t -Recurse -Severity Error,Warning -Settings PSScriptAnalyzerSettings.psd1 -ErrorAction Stop }"
-    fi
-    PSSA_OUT=$("$PWSH" "${POWERSHELL_ARGS[@]}" "
-      if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
-        Write-Output 'PSSA_MODULE_MISSING'
+      # Scoped per-path run. -Path binds ONE string only (an array argument
+      # throws "Cannot convert 'System.Object[]'..."), so each target is
+      # analyzed separately and findings are aggregated.
+      local target_array
+      target_array=$(_powershell_path_array "${analysis_targets[@]}")
+      PSSA_OUT=$("$PWSH" "${POWERSHELL_ARGS[@]}" "
+        if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
+          Write-Output 'PSSA_MODULE_MISSING'
+          exit 0
+        }
+        # Non-terminating errors must become terminating: otherwise a broken
+        # settings file or unreadable path yields an empty result set that LOOKS
+        # like a clean pass.
+        \$ErrorActionPreference = 'Stop'
+        try { Import-Module PSScriptAnalyzer -ErrorAction Stop | Out-Null } catch { exit 3 }
+        \$settings = Join-Path (Get-Location) 'PSScriptAnalyzerSettings.psd1'
+        \$all = @()
+        try {
+          foreach (\$p in $target_array) {
+            \$recurse = [System.IO.Directory]::Exists(\$p)
+            if (Test-Path -LiteralPath \$settings) {
+              \$all += @(Invoke-ScriptAnalyzer -Path \$p -Recurse:\$recurse -Severity Error,Warning -Settings \$settings -ErrorAction Stop)
+            } else {
+              \$all += @(Invoke-ScriptAnalyzer -Path \$p -Recurse:\$recurse -Severity Error,Warning -ErrorAction Stop)
+            }
+          }
+        } catch {
+          Write-Output ('PSSA_RUN_ERROR: ' + \$_.Exception.Message)
+          exit 3
+        }
+        if (\$all) {
+          \$all | Format-Table -AutoSize
+          exit 1
+        }
         exit 0
-      }
-      try { Import-Module PSScriptAnalyzer -ErrorAction Stop } catch { Write-Output 'PSSA_MODULE_MISSING'; exit 0 }
-      try {
-        \$results = $scope_expr
-      } catch {
-        Write-Output ('PSSA_RUN_ERROR: ' + \$_.Exception.Message)
-        exit 3
-      }
-      if (\$results) {
-        \$results | Format-Table -AutoSize
-        exit 1
-      }
-      exit 0
-    " 2>&1) || PSSA_RC=$?
+      " 2>&1) || PSSA_RC=$?
+    else
+      # #595: the unscoped path used to be a bare `-Path . -Recurse`, which walks
+      # node_modules. In a repo with Playwright installed that analyses
+      # playwright-core/bin/*.ps1 -- vendored files that use Write-Host and WMI
+      # cmdlets by design, that `npm ci` overwrites, and that the author cannot
+      # edit. Gate 1 then blocked EVERY commit, permanently. A gate that can never
+      # pass is not strict; it is one people learn to bypass.
+      #
+      # The adapter already had the right discovery: _find_powershell_files prunes
+      # .git, node_modules, dist, coverage and the rest. The two paths disagreed
+      # only because this one never called it. Now both use it, so "what this
+      # adapter refuses to analyse" has one definition.
+      local legacy_files
+      legacy_files=$(_find_powershell_files '*.ps1')
+      if [ -z "$legacy_files" ]; then
+        # Nothing to analyse is NOT a pass: say so via the reason protocol the
+        # module-missing branch uses, so it stays visible in the gate output.
+        echo "XP_G1_REASON: no PowerShell files found outside the pruned directories"
+        return 3
+      fi
+      local legacy_array
+      legacy_array=$(_powershell_path_array $legacy_files)
+      PSSA_OUT=$("$PWSH" "${POWERSHELL_ARGS[@]}" "
+        if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
+          Write-Output 'PSSA_MODULE_MISSING'
+          exit 0
+        }
+        \$ErrorActionPreference = 'Stop'
+        try { Import-Module PSScriptAnalyzer -ErrorAction Stop | Out-Null } catch { exit 3 }
+        \$settings = Join-Path (Get-Location) 'PSScriptAnalyzerSettings.psd1'
+        \$results = @()
+        try {
+          foreach (\$p in $legacy_array) {
+            if (Test-Path -LiteralPath \$settings) {
+              \$results += @(Invoke-ScriptAnalyzer -Path \$p -Severity Error,Warning -Settings \$settings -ErrorAction Stop)
+            } else {
+              \$results += @(Invoke-ScriptAnalyzer -Path \$p -Severity Error,Warning -ErrorAction Stop)
+            }
+          }
+        } catch {
+          Write-Output ('PSSA_RUN_ERROR: ' + \$_.Exception.Message)
+          exit 3
+        }
+        if (\$results) {
+          \$results | Format-Table -AutoSize
+          exit 1
+        }
+        exit 0
+      " 2>&1) || PSSA_RC=$?
+    fi
+
     printf '%s\n' "$PSSA_OUT"
     case "$PSSA_RC" in
       0)
@@ -262,10 +353,12 @@ run_static_analysis() {
           echo "XP_G1_REASON: PSScriptAnalyzer module not installed (Install-Module PSScriptAnalyzer)"
           return 3
         fi
-        # A missing scope entry stays a WARN even when the rest of the scope
-        # analysed cleanly. The reason line is emitted above; this return is
-        # what makes it count (the parent strips the line from display but
-        # keeps the verdict in the denominator).
+        # #576: a scope entry that vanished means product code may have ESCAPED
+        # the gate. The reason line was emitted above, but pre-commit switches on
+        # the RETURN CODE and only uses the reason for the message text -- so
+        # returning 0 here made the reason dead weight and Gate 1 printed
+        # PASSED. Measured before this fix: "RETURN CODE = 0". The scan being
+        # clean does not make an incomplete scope a pass.
         if [ "$scope_missing" -gt 0 ]; then
           echo "  ⚠️  $scope_missing scope entry(ies) did not exist - product code may have escaped the gate"
           return 3
@@ -273,20 +366,18 @@ run_static_analysis() {
         return 0
         ;;
       1)
-        # Real findings already BLOCK, so the missing-scope signal cannot change
-        # the verdict here -- but it must not be dropped either: "there are lint
-        # findings AND a product path escaped the gate" is strictly more
-        # information than "there are lint findings". Emit it so the operator
-        # fixes the scope in the same pass (code walkthrough round 2).
-        if [ "$scope_missing" -gt 0 ]; then
-          echo "  ⚠️  $scope_missing scope entry(ies) did not exist - product code may have escaped the gate (in addition to the findings above)"
-        fi
         return 1   # real findings -> BLOCK upstream
         ;;
       3)
+        # #576: the PowerShell fragment exits 3 when the scan itself raised. That
+        # is "could not verify", not "found violations" -- pwsh would exit 1 for
+        # findings, so mapping this to 1 would report an analysis crash as lint
+        # errors. Surface the actual exception where the fragment captured one.
         echo "XP_G1_REASON: PSScriptAnalyzer raised an error during the run"
-        printf '%s\n' "$PSSA_OUT" | grep '^PSSA_RUN_ERROR: ' | sed 's/^PSSA_RUN_ERROR: //' | head -3 | while IFS= read -r _line; do echo "  ⚠️  $_line"; done
-        return 3   # analysis error -> fail closed as WARN
+        printf '%s\n' "$PSSA_OUT" | grep '^PSSA_RUN_ERROR: ' | sed 's/^PSSA_RUN_ERROR: //' | head -3 | while IFS= read -r _ps_err; do
+          echo "  ⚠️  $_ps_err"
+        done
+        return 2   # unusable -> fail closed upstream
         ;;
       *)
         echo "XP_G1_REASON: PSScriptAnalyzer run failed (exit $PSSA_RC)"
@@ -312,39 +403,28 @@ run_lint() {
 # Timeout guard for Pester runs.
 # A hanging Pester test (e.g. a test that dot-sources a script whose body performs
 # WMI/registry/scheduled-task scans) would otherwise block `git commit` forever.
-#
-# Downstream hardening 2026-10-24: the default was 300s for BOTH the plain test
-# run and the coverage run, but they are not comparable workloads. Measured on
-# this repo (762 tests): the plain run takes ~285s and the INSTRUMENTED run is
-# slower still, so the coverage run was killed at 300s every time and the gate
-# reported "Pester coverage TIMED OUT (may be hanging)" -- a timeout that looked
-# like a hung test but was really "the budget was too small for a healthy run".
-# A gate whose default budget cannot fit a passing run will block every commit
-# for reasons that have nothing to do with the commit.
-#
-# Two budgets now:
-#   * plain run    : XP_GATE_POWERSHELL_TEST_TIMEOUT_S    (default 900s)
-#   * coverage run : XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S (default 1800s)
-# Callers keep the explicit override; the timeout is a backstop for a genuinely
-# hung test, not a performance budget.
+# Default 300s, override via XP_GATE_POWERSHELL_TEST_TIMEOUT_S.
+# #599: ONE helper, TWO budgets. The instrumented coverage run enables
+# CodeCoverage, so instrumentation alone costs more than a plain run: a shared
+# 300s budget is not the same headroom for both. The caller passes its default
+# explicitly and the timeout message names the variable that actually governs it,
+# otherwise a budget shortfall gets reported as "a test is hanging" and the
+# reader is sent to the wrong place.
 _pester_timeout() {
-  local default_s="${XP_GATE_POWERSHELL_TEST_TIMEOUT_S:-900}"
+  local budget_var="$1"
+  local default_s="${2:-300}"
+  local effective_s
+  if [ "$budget_var" = "XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S" ]; then
+    effective_s="${XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S:-$default_s}"
+  else
+    effective_s="${XP_GATE_POWERSHELL_TEST_TIMEOUT_S:-$default_s}"
+  fi
   # Prefer GNU timeout (Git Bash / Linux). On Windows where `timeout` resolves to
   # the native timeout.exe, fall back to running without a hard timeout.
   if command -v timeout >/dev/null 2>&1 && timeout --version 2>/dev/null | grep -qi "coreutils"; then
-    timeout "${default_s}s" "$@"
+    timeout "${effective_s}s" "${@:3}"
   else
-    "$@"
-  fi
-}
-
-# Separate, larger budget for the instrumented coverage run (see _pester_timeout).
-_pester_coverage_timeout() {
-  local default_s="${XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S:-1800}"
-  if command -v timeout >/dev/null 2>&1 && timeout --version 2>/dev/null | grep -qi "coreutils"; then
-    timeout "${default_s}s" "$@"
-  else
-    "$@"
+    "${@:3}"
   fi
 }
 
@@ -372,7 +452,7 @@ run_tests() {
   if [ "${#test_files[@]}" -gt 0 ]; then
     test_paths=$(_powershell_path_array "${test_files[@]}")
     echo "Running Pester tests..."
-    _pester_timeout "$PWSH" "${POWERSHELL_ARGS[@]}" "
+_pester_timeout "XP_GATE_POWERSHELL_TEST_TIMEOUT_S" "${XP_GATE_POWERSHELL_TEST_TIMEOUT_S:-300}" "$PWSH" "${POWERSHELL_ARGS[@]}" "
       \$results = Invoke-Pester -Path $test_paths -PassThru
       if (\$results.FailedCount -gt 0) {
         Write-Host \"FAILED: \$(\$results.FailedCount) test(s)\"
@@ -383,7 +463,7 @@ run_tests() {
     "
     local run_exit=$?
     if [ "$run_exit" = "124" ]; then
-      echo "⚠️  Pester tests TIMED OUT after ${XP_GATE_POWERSHELL_TEST_TIMEOUT_S:-300}s (may be hanging)."
+  echo "⚠️  Pester tests TIMED OUT after ${XP_GATE_POWERSHELL_TEST_TIMEOUT_S:-300}s (XP_GATE_POWERSHELL_TEST_TIMEOUT_S; may be hanging)."
       echo "    A test may be blocking on a system call (WMI/registry/scheduled-task)."
       echo "    Fix the hanging test, or set XP_GATE_POWERSHELL_TEST_TIMEOUT_S to a higher value."
       return 1
@@ -453,7 +533,7 @@ run_coverage() {
         if [ "$skip" -eq 0 ]; then
           filtered[${#filtered[@]}]="$src"
         else
-          echo "  ℹ️  Coverage exclusion matched: $src" >&2
+          echo "  ℹ️  Coverage exclusion matched: $src"
         fi
       done
       # Assign back unconditionally: when EVERY source file matched an
@@ -479,7 +559,7 @@ run_coverage() {
     # is the deprecated Pester 4 parameter set and fails outright on Pester 5.x
     # ("cannot resolve parameter set"). Using it silently produced no coverage.xml,
     # which the pre-commit hook then reported as an unparseable/zero result.
-    _pester_coverage_timeout "$PWSH" "${POWERSHELL_ARGS[@]}" "
+_pester_timeout "XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S" "${XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S:-900}" "$PWSH" "${POWERSHELL_ARGS[@]}" "
       \$cfg = New-PesterConfiguration
       \$cfg.Run.Path = $test_paths
       \$cfg.CodeCoverage.Enabled = \$true
@@ -494,9 +574,7 @@ run_coverage() {
     " 2>&1
     local cov_exit=$?
     if [ "$cov_exit" = "124" ]; then
-      echo "⚠️  Pester coverage TIMED OUT after ${XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S:-1800}s (may be hanging)."
-      echo "    The instrumented run is slower than the plain test run; raise"
-      echo "    XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S if the suite legitimately needs longer."
+  echo "⚠️  Pester coverage TIMED OUT after ${XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S:-900}s (XP_GATE_POWERSHELL_COVERAGE_TIMEOUT_S; instrumentation costs more than a plain run - raise this rather than suspecting a hang)."
       return 1
     fi
     return $cov_exit

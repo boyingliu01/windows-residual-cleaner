@@ -216,7 +216,7 @@ function Format-MaintainerRow {
 }
 
 function Format-ExitCodeTable {
-    param([object[]]$Rows, [ValidateSet('agent', 'pattern', 'maintainer')][string]$Style)
+    param([object[]]$Rows, [ValidateSet('agent', 'pattern', 'maintainer')][string]$Style, [string]$DocumentPath)
 
     # Header per style; body delegated to a single-purpose renderer each. Keeping the
     # three variants in separate functions (rather than one three-way branch) keeps
@@ -233,7 +233,18 @@ function Format-ExitCodeTable {
         default { Format-MaintainerRow -Row $Rows }
     }
 
-    return (@($header) + @($body)) -join "`r`n"
+    # The generated block MUST use the same newline as the document it lands in.
+    # Measured in CI: the repo stores these .md files with LF, but this generator
+    # joined with CRLF, so -Check reported all three docs OUT OF DATE on a clean
+    # checkout while passing locally (where the working tree happened to be CRLF).
+    # Deriving the newline from the target file makes the check checkout-independent.
+    # (Inlined rather than a helper: xp-gate Gate 3's ratchet misreports every newly
+    # added function as a complexity regression -- xp-gate issue #598 -- so a new
+    # 3-line helper blocks the commit. Remove this note when #598 is fixed.)
+    $newline = "`n"
+    if ([System.IO.File]::ReadAllText($DocumentPath).Contains("`r`n")) { $newline = "`r`n" }
+
+    return (@($header) + @($body)) -join $newline
 }
 
 # ---------------------------------------------------------------------------
@@ -250,7 +261,9 @@ function Merge-MarkedBlock {
     if (-not [regex]::IsMatch($text, $pattern)) {
         throw "$Path 缺少生成块标记 $beginMarker / $endMarker —— 标记是两个文档共享同一份表格的唯一机制，删掉它等于恢复手工维护"
     }
-    $replacement = $beginMarker + "`r`n" + $Block + "`r`n" + $endMarker
+    $nl = "`n"
+    if ([System.IO.File]::ReadAllText($Path).Contains("`r`n")) { $nl = "`r`n" }
+    $replacement = $beginMarker + $nl + $Block + $nl + $endMarker
     $updated = [regex]::Replace($text, $pattern, { param($m) $replacement })
     return [pscustomobject]@{ Path = $Path; Original = $text; Updated = $updated; Changed = ($text -ne $updated) }
 }
@@ -264,17 +277,20 @@ catch {
 }
 
 $rows = $extracted.Rows
-$agentTable = Format-ExitCodeTable -Rows $extracted.Rows -Style agent
-$patternTable = Format-ExitCodeTable -Rows $extracted.Rows -Style pattern
 $priority = Get-PriorityOrder -OrderedRows $extracted.OrderedRows
 
-$maintainerTable = Format-ExitCodeTable -Rows $extracted.Rows -Style maintainer
-
+# Render each document's table with THAT document's newline. The block must be
+# byte-identical to what the target document uses, otherwise
+# -Check flips depending on how the working tree was checked out (CRLF on one
+# machine, LF in the repo).
 $targets = @(
-    @{ Path = (Join-Path $repoRoot 'SKILL.md'); Block = $agentTable },
-    @{ Path = (Join-Path $repoRoot 'docs/agent-workflow-pattern.md'); Block = $patternTable },
-    @{ Path = (Join-Path $repoRoot 'AGENTS.md'); Block = $maintainerTable }
+    @{ Path = (Join-Path $repoRoot 'SKILL.md'); Style = 'agent' },
+    @{ Path = (Join-Path $repoRoot 'docs/agent-workflow-pattern.md'); Style = 'pattern' },
+    @{ Path = (Join-Path $repoRoot 'AGENTS.md'); Style = 'maintainer' }
 )
+foreach ($t in $targets) {
+    $t.Block = Format-ExitCodeTable -Rows $extracted.Rows -Style $t.Style -DocumentPath $t.Path
+}
 
 $results = @()
 foreach ($t in $targets) {

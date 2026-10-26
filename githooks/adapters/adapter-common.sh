@@ -156,7 +156,31 @@ require_tool() {
   local gate_name="${2:-Gate}"
   local install_hint="${3:-}"
 
+  # #593: on Windows the hook runs under git-bash, which does not see the
+  # toolchains installed on the Windows side (%APPDATA%\npm, the node dir,
+  # pip --user Scripts, ~/bin). Bootstrapping before probing turns "not on this
+  # shell's PATH" back into "found", instead of reporting an installed tool as
+  # missing. lib/toolchain-path.sh is sourced by pre-commit before this runs; the
+  # guard keeps require_tool usable from adapters that load on their own.
+  if command -v bootstrap_toolchain_path >/dev/null 2>&1; then
+    bootstrap_toolchain_path
+  fi
+
+  # #580: on WSL (appendWindowsPath=false) and in git-bash, `command -v node`
+  # returns 1 while node.exe sits in the same directory and runs. One root cause
+  # gave Gate 1 a silent SKIP, Gate 1 a false "Biome check failed" and Gate 8 a
+  # false "gitleaks not installed" — an environment fault reported as a code
+  # verdict in all three. tool_is_available also counts the .exe suffix and the
+  # XP_GATE_<TOOL>_BIN override.
+  if command -v tool_is_available >/dev/null 2>&1 && tool_is_available "$tool_name"; then
+    return 0
+  fi
+
   if command -v "$tool_name" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v "${tool_name}.exe" >/dev/null 2>&1; then
     return 0
   fi
 
@@ -164,48 +188,25 @@ require_tool() {
     return 0
   fi
 
-  # Downstream hardening 2026-10-24: the two probes above only see THIS shell's
-  # PATH plus the npx root resolved from the cwd. On Windows + git-bash that
-  # misses two common shapes, and in both the tool IS installed:
-  #
-  #  1. npm GLOBAL install -> %APPDATA%/npm (or ~/.npm-global/bin), which
-  #     git-bash does not inherit from the caller. Measured: jscpd@5.2.0 and
-  #     @archlinter/cli@0.16.0 both installed globally, both reported
-  #     "not available" / "not installed" by the hook.
-  #  2. Per-subproject node_modules: this repo keeps the UI toolchain in
-  #     ui/package.json, so jscpd lives in ui/node_modules/.bin -- and
-  #     `npx --no-install` resolves from the CWD (repo root), where there is no
-  #     jscpd. The tool is installed on purpose, in a documented place.
-  #
-  # "Tool unavailable = BLOCK, not SKIP" stays the policy; what changes is that
-  # the gate no longer calls a tool unavailable merely because it is one
-  # directory over from where the probe looked.
-  local _cand_dir _cand
-  for _cand_dir in \
-    "${APPDATA:-}/npm" \
-    "$HOME/AppData/Roaming/npm" \
-    "$HOME/.npm-global/bin" \
-    "$HOME/.local/bin" \
-    "/usr/local/bin" \
-    "$PWD/node_modules/.bin" \
-    "$PWD/ui/node_modules/.bin" \
-    "$PWD/server/node_modules/.bin" \
-    "$PWD/app/node_modules/.bin" \
-    "$PWD/web/node_modules/.bin"; do
-    [ -n "$_cand_dir" ] || continue
-    if [ -x "$_cand_dir/$tool_name" ]; then
-      PATH="$_cand_dir:$PATH"
-      export PATH
-      return 0
+  # #593: monorepos keep the tool in a subproject's node_modules/.bin, where
+  # neither PATH nor `npx` from the repo root can see it.
+  if command -v resolve_tool_path >/dev/null 2>&1 && resolve_tool_path "$tool_name" >/dev/null 2>&1; then
+    if command -v ensure_tool_dir_on_path >/dev/null 2>&1; then
+      ensure_tool_dir_on_path "$tool_name" || true
     fi
-  done
+    return 0
+  fi
 
   echo "❌ BLOCKED - Required tool '$tool_name' not available for $gate_name"
   if [ -n "$install_hint" ]; then
     echo "   Install: $install_hint"
   fi
+  # #593 point 3: "not installed" and "installed but not found" need different
+  # fixes, so name every location that was searched.
+  if command -v describe_tool_search >/dev/null 2>&1; then
+    describe_tool_search "$tool_name"
+  fi
   echo "   Per QUALITY-GATES-CODE-OF-CONDUCT.md: tool unavailable = BLOCK, not SKIP"
-  echo "   (searched: PATH, npx, \$APPDATA/npm, ~/.npm-global/bin, ~/.local/bin, ./node_modules/.bin, ./ui/node_modules/.bin)"
   return 1
 }
 

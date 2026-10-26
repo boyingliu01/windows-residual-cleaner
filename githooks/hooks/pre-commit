@@ -1,20 +1,29 @@
 #!/bin/bash
-# Line-ending self-check (#546). Must stay on the first executable line: if this
-# file is ever rewritten with CRLF, bash needs to reach this check before the
-# parser chokes somewhere far away and blames an innocent line. `tr` also
-# strips the \r from this very line, so the check runs even when everything
-# around it is broken.
-if tr -d '\r' < "$0" | sed -n '2p' | tr -d '\r' | grep -q 'Line-ending self-check'; then
-  if [ "$(tr -cd '\r' < "$0" | wc -c | tr -d '[:space:]')" -gt 0 ]; then
-    echo "======================================================================" >&2
-    echo "FATAL: hook has CRLF line endings — bash cannot parse it (#546)." >&2
-    echo "  file: $0" >&2
-    echo "  fix : tr -d '\\r' < \"$0\" > \"$0.tmp\" && mv \"$0.tmp\" \"$0\" && chmod +x \"$0\"" >&2
-    echo "Or re-sync the installed copy: xp-gate doctor --sync-hooks" >&2
-    echo "======================================================================" >&2
-    exit 1
-  fi
-fi
+_LE_CR=$(tr -cd '\r' < "$0" | wc -c | tr -d '[:space:]'); test "${_LE_CR:-0}" -eq 0 || { printf '%s\n' "======================================================================" "FATAL: hook has CRLF line endings -- bash cannot parse it (#546)." "  file: $0" "  fix : tr -d '\\r' < \"$0\" > \"$0.tmp\" && mv \"$0.tmp\" \"$0\" && chmod +x \"$0\"" "Or re-sync the installed copy: xp-gate doctor --sync-hooks" "======================================================================" >&2; exit 1; }
+#
+# The line above is the #546 line-ending self-check. It MUST stay on the first
+# executable line, as a SINGLE physical line, using no construct whose keyword
+# needs a line boundary. All three are load-bearing:
+#
+#  * A CRLF rewrite puts \r at the end of EVERY line. Any construct whose
+#    keywords must match across lines -- if/then/fi, case/esac, for/do/done --
+#    then fails to PARSE and none of it runs. The original #546 implementation
+#    was a nested if/fi spanning 11 lines: it could not survive the very
+#    condition it detects. On a CRLF copy bash reported
+#        line 76: syntax error near unexpected token `$'{\r''
+#    blaming an innocent function far below -- which is exactly the failure #546
+#    set out to prevent. It looked correct locally only because that bash build
+#    deferred the error past the first command.
+#  * Even on one line, `if ... then ... fi` ends in `fi\r`, and `then\r` / `fi\r`
+#    are ordinary words to the tokenizer. So the check uses only
+#    `test ... || { ...; exit 1; }`: the `{` already follows `; `, so a trailing
+#    \r on the line cannot change how it tokenizes.
+#  * The CR count is byte-wise (`tr -cd`). `grep -c $'\r'` reports 0 matches
+#    through the Git-Bash/MSYS layer even on files that carry CR bytes, which is
+#    what made earlier attempts at this fixture look green while CI stayed red.
+#
+# Verified: an LF copy runs through (0 CR bytes); a CRLF copy prints the FATAL
+# diagnosis and exits 1 with no syntax error.
 # OpenCode Quality Gates - Pre-Commit Hook - 12 numbered gates (Gate 0–11)
 # 
 # DESIGN PRINCIPLE: Tool unavailable = SKIP (graceful degradation), tool available + check fails = BLOCK
@@ -228,136 +237,6 @@ if [[ -d "$PROJECT_ROOT/node_modules/.bin" ]]; then
   export PATH="$PROJECT_ROOT/node_modules/.bin:$PATH"
 fi
 
-# ============================================================================
-# Node toolchain visibility (downstream hardening, 2026-10-24)
-#
-# On Windows + git-bash, PATH entries the caller added on the Windows side are
-# NOT inherited by this shell. Two consequences, both measured on this repo:
-#
-#   * npm GLOBAL installs live in %APPDATA%/npm, so `command -v archlint` /
-#     `command -v jscpd` said "not installed" about tools that were installed.
-#   * npm's POSIX shims start with `exec node ...`, so even after the binary was
-#     found, it died with `exec: node: not found`. That exit 127 is non-zero, so
-#     Gate 6 read it as "architecture violations detected" -- a broken toolchain
-#     reported as a code defect.
-#
-# Fixing it once, here, is the only version that holds: every gate that shells
-# out to a node tool inherits this. Each directory is appended only if absent,
-# so a caller-supplied PATH keeps its precedence.
-# ============================================================================
-_ensure_node_toolchain_path() {
-  local _dirs=() _d
-  # node itself
-  for _d in \
-    "${NODE_HOME:-}" \
-    "${ProgramFiles:-}/nodejs" \
-    "/c/Program Files/nodejs" \
-    "${LOCALAPPDATA:-}/Programs/nodejs"; do
-    [ -n "$_d" ] || continue
-    if [ -x "$_d/node" ] || [ -x "$_d/node.exe" ]; then
-      _dirs[${#_dirs[@]}]="$_d"
-      break
-    fi
-  done
-  # npm global bin (where npm-installed CLIs and their shims live)
-  for _d in \
-    "${APPDATA:-}/npm" \
-    "$HOME/AppData/Roaming/npm" \
-    "$HOME/.npm-global/bin" \
-    "$HOME/.local/bin" \
-    "/usr/local/bin"; do
-    [ -n "$_d" ] || continue
-    if [ -d "$_d" ]; then
-      _dirs[${#_dirs[@]}]="$_d"
-    fi
-  done
-  local _suffix="" _p
-  for _d in ${_dirs[@]+"${_dirs[@]}"}; do
-    case ":$PATH:" in
-      *":$_d:"*) continue ;;
-    esac
-    _suffix="${_suffix:+$_suffix:}$_d"
-  done
-  if [ -n "$_suffix" ]; then
-    PATH="$PATH:$_suffix"
-    export PATH
-  fi
-}
-_ensure_node_toolchain_path
-
-# ---------------------------------------------------------------------------
-# Python on PATH (for pip-installed scanner shims).
-#
-# Observed 2026-10-25: Gate 7 reported "IaC files detected but no scanning tools
-# available" -> BLOCKED on a machine where checkov 3.3.30 works fine from cmd.
-# Two independent reasons, both silent:
-#
-#   1. checkov's POSIX shim is `exec python "…/Scripts/checkov" "$@"`, but the
-#      hook shell has `python` nowhere on PATH (only py.exe from Windows), so
-#      `command -v checkov` succeeds and then the tool dies at exec time.
-#   2. The global bin dir holding it was D:\npm, not %APPDATA%\npm.
-#
-# Fix the general cause rather than the symptom: make Windows' own PATH entries
-# reachable from this shell, and probe Python's install locations explicitly.
-# git-bash does not inherit Windows PATH additions (only a handful of dirs), so a
-# tool the user "obviously has" is invisible here -- that class of bug has now
-# produced three separate gate failures (#536, #593, and this one).
-_ensure_python_tooling_path() {
-  local _dirs=() _d
-  # Windows PATH entries, translated to /x/... form.
-  #
-  # `cmd.exe /c echo %PATH%` does NOT give the Windows PATH here -- git-bash hands
-  # the child its own shrunken PATH, so it echoed 3-7 entries instead of the full
-  # list. The reliable source is ORIGINAL_PATH, which MSYS2 sets to the inherited
-  # Windows PATH before it rewrites PATH (measured: 3002 chars vs 7 entries).
-  local _winpath_entry _posix _winlist
-  _winlist="${ORIGINAL_PATH:-}"
-  if [ -z "$_winlist" ]; then
-    _winlist=$(cmd.exe /c 'echo %PATH%' 2>/dev/null | tr -d '\r' | tr ';' ':')
-  fi
-  local _oldifs="$IFS"
-  IFS=':'
-  for _winpath_entry in $_winlist; do
-    [ -n "$_winpath_entry" ] || continue
-    # C:\foo\bar -> /c/foo/bar  (also tolerate an entry already in /c/... form)
-    case "$_winpath_entry" in
-      [A-Za-z]:[\\/]*) _posix=$(printf '%s' "$_winpath_entry" | sed -e 's|\\|/|g' -e 's|^\([A-Za-z]\):|/\L\1|') ;;
-      /*) _posix="$_winpath_entry" ;;
-      *) continue ;;
-    esac
-    [ -d "$_posix" ] || continue
-    _dirs[${#_dirs[@]}]="$_posix"
-  done
-  IFS="$_oldifs"
-  # Python interpreter locations: the shims exec `python`, so `python` itself
-  # must resolve. py.exe alone is not enough (measured: checkov's shim is
-  # `exec python ...`, and only py.exe was on PATH).
-  for _d in \
-    "/c/Program Files/Python312" \
-    "/c/Program Files/Python311" \
-    "/c/Program Files/Python310" \
-    "$HOME/AppData/Local/Programs/Python/Python312" \
-    "$HOME/AppData/Local/Programs/Python/Python311" \
-    "$HOME/AppData/Local/Programs/Python/Python310"; do
-    [ -d "$_d" ] || continue
-    if [ -x "$_d/python.exe" ]; then
-      _dirs[${#_dirs[@]}]="$_d"
-    fi
-  done
-  local _suffix="" _p
-  for _d in ${_dirs[@]+"${_dirs[@]}"}; do
-    case ":$PATH:" in
-      *":$_d:"*) continue ;;
-    esac
-    _suffix="${_suffix:+$_suffix:}$_d"
-  done
-  if [ -n "$_suffix" ]; then
-    PATH="$PATH:$_suffix"
-    export PATH
-  fi
-}
-_ensure_python_tooling_path
-
 # Ensure pipe failures propagate exit codes through | head/tail/grep
 set -o pipefail
 
@@ -515,6 +394,28 @@ source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/sprint-gate-report.sh"
 # branch never ran; sourced as a library so the fail-closed contract is
 # unit-testable without executing this hook.
 source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/coverage-total.sh"
+
+# Issue #585: Gate 5c's spec/test alignment check. It used to sit inside
+# `if [ -f req-ids.json ] && command -v jq`, so a fresh clone (where .sprint-state/
+# does not exist) printed nothing at all; and its test discovery only matched
+# JS/TS. Sourced as a library so both contracts are unit-testable.
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/gate-5c-alignment.sh"
+
+# Issue #593: on Windows git-bash does not see the toolchains installed on the
+# Windows side (%APPDATA%\npm, the node install dir, pip --user's Scripts, ~/bin),
+# so four gates reported installed tools as missing and two of those reports were
+# false GREENS. One bootstrap, appended (never prepended) so the caller's PATH
+# order stays authoritative.
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/toolchain-path.sh"
+bootstrap_toolchain_path
+
+# Issue #581: POSIX -> native path conversion for the absolute paths handed to node.exe
+# and tsx. On WSL a leading `/` resolves to `<current drive>:\` inside node, so
+# `$HOME/.config/...` became `D:\home\...` and Gate 9 reported the module-not-found as
+# "Build integrity check failed" -- advice to fix the user's type errors. Kept in a
+# library because Gate 8 needed the same conversion for gitleaks (#582) and both were
+# solved inline otherwise.
+source_gate_lib "${AUDIT_SCRIPT_DIR}/lib/native-path.sh"
 
 # Issue #399: Python smart test selection — strategy decision + related-test
 # lookup, kept in a library so the truth table and the path conventions are
@@ -2031,7 +1932,7 @@ else
   done
 fi
 fi  # End: if ! any_changed_files_match (Issue #312 skip)
-GATE_1_STATUS="${GATE_1_STATUS:-PASS}"
+GATE_1_STATUS="${GATE_1_STATUS:-SKIP}"
 GATE_1_TOOL="${PROJECT_LANGS}"
 # The java branch may set GATE_1_STATUS=WARN + a GATE_1_DETAIL warn reason
 # (engine unavailable / soft or report downgrade); route it into the audit
@@ -2064,27 +1965,7 @@ else
   if ! require_tool "jscpd" "Gate 2" "npm install -D jscpd"; then
     exit 1
   fi
-  # require_tool may have located jscpd in a directory it had to add to PATH.
-  # It runs as a plain function call, so its PATH edit IS visible here -- but
-  # resolve the binary explicitly anyway: measured 2026-10-24 the edit did not
-  # survive (the call is reached through the language loop), and the gate then
-  # died with `jscpd: command not found` / exit 127, which its own classifier
-  # honestly reported as "jscpd run error" and skipped. A gate that cannot find
-  # the tool it just approved must not silently skip.
-  JSCPD_BIN=$(command -v jscpd 2>/dev/null || true)
-  if [ -z "$JSCPD_BIN" ]; then
-    for _jd in "${APPDATA:-}/npm" "$HOME/AppData/Roaming/npm" "$HOME/.npm-global/bin" \
-               "$PROJECT_ROOT/node_modules/.bin" "$PROJECT_ROOT/ui/node_modules/.bin"; do
-      [ -n "$_jd" ] || continue
-      if [ -x "$_jd/jscpd" ]; then JSCPD_BIN="$_jd/jscpd"; break; fi
-    done
-  fi
-  if [ -z "$JSCPD_BIN" ]; then
-    echo "❌ BLOCKED - Gate 2: require_tool accepted jscpd but no executable could be resolved"
-    echo "   (searched: PATH, \$APPDATA/npm, ~/.npm-global/bin, ./node_modules/.bin, ./ui/node_modules/.bin)"
-    exit 1
-  fi
-
+  
   echo "Running jscpd for duplicate code detection..."
   # #477: only pass --config when the file actually exists, and let jscpd's report
   # decide the message. Before this, a missing config produced "os error 2" and a
@@ -2095,13 +1976,30 @@ else
   if [ -n "$JSCPD_CONFIG" ]; then
     JSCPD_ARGS=(--config "$JSCPD_CONFIG")
   else
-    echo "ℹ️  No jscpd.conf.json found - using jscpd defaults"
+    # #591: with no project config, jscpd's own defaults treat .yaml/.txt/.log as
+    # scannable source, so an exemptions manifest, a golden snapshot and two build
+    # logs were reported as "duplicated code" (measured: 48.72% on a fixture with
+    # no source in it). Print the baseline that is actually in force, or the user
+    # cannot tell what was scanned.
+    echo "ℹ️  No jscpd.conf.json found - using the xp-gate default ignore set"
+    echo "   $(jscpd_default_ignore_patterns)"
   fi
+  # #591: drop data/evidence/build-output paths before the scan. Real source
+  # extensions are untouched, so this narrows the noise, not the gate.
+  JSCPD_SCAN_FILES=""
+  while IFS= read -r _jf; do
+    [ -n "$_jf" ] || continue
+    if ! jscpd_is_default_ignored "$_jf"; then
+      JSCPD_SCAN_FILES="$JSCPD_SCAN_FILES $_jf"
+    fi
+  done <<EOF_CHANGED
+$CHANGED_FILES
+EOF_CHANGED
   JSCPD_OUTPUT=$(mktemp)
   JSCPD_EXIT=0
-  # shellcheck disable=SC2086 # pre-existing splitting of the file list; #477 changes the reporting, not the scan set
-  "$JSCPD_BIN" ${JSCPD_ARGS[@]+"${JSCPD_ARGS[@]}"} $(echo "$CHANGED_FILES" | tr '\n' ' ') > "$JSCPD_OUTPUT" 2>&1 || JSCPD_EXIT=$?
-  head -30 "$JSCPD_OUTPUT"
+  # shellcheck disable=SC2086 # pre-existing splitting of the file list; #477/#591 change the scan set, not the splitting
+  jscpd ${JSCPD_ARGS[@]+"${JSCPD_ARGS[@]}"} $JSCPD_SCAN_FILES > "$JSCPD_OUTPUT" 2>&1 || JSCPD_EXIT=$?
+  head -30 "$JSCPD_OUTPUT" || true
   JSCPD_OUTCOME=$(classify_jscpd_run "$JSCPD_EXIT" "$(cat "$JSCPD_OUTPUT")")
   rm -f "$JSCPD_OUTPUT"
   if [ "$JSCPD_OUTCOME" = "duplicates" ]; then
@@ -2165,13 +2063,35 @@ else
     ;;
     
     *)
-  SOURCE_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(ts|tsx|js|jsx|py|go|java|scala|kt|cpp|c|h|rs|php|dart|swift)$')
+  SOURCE_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(ts|tsx|js|jsx|py|go|java|scala|kt|cpp|c|h|rs|php|dart|swift)$' || true)
   if [ -n "$SOURCE_FILES" ]; then
     if ! require_tool "jscpd" "Gate 2" "npm install -D jscpd"; then
       exit 1
     fi
     echo "Running jscpd for duplicate code detection..."
-    jscpd $SOURCE_FILES 2>&1 | head -15
+    # #591 point 4: this branch piped straight into `head`, so jscpd's exit status
+    # was replaced by head's (and SIGPIPE under pipefail) — inconsistent with the
+    # temp-file treatment the typescript branch already had from #477/#392. The
+    # #591 default ignore set applies here too.
+    GENERIC_JSCPD_FILES=""
+    while IFS= read -r _gf; do
+      [ -n "$_gf" ] || continue
+      if ! jscpd_is_default_ignored "$_gf"; then
+        GENERIC_JSCPD_FILES="$GENERIC_JSCPD_FILES $_gf"
+      fi
+    done <<EOF_GENERIC
+$SOURCE_FILES
+EOF_GENERIC
+    if [ -n "$GENERIC_JSCPD_FILES" ]; then
+      GENERIC_JSCPD_TMP=$(mktemp)
+      # shellcheck disable=SC2086
+      jscpd $GENERIC_JSCPD_FILES > "$GENERIC_JSCPD_TMP" 2>&1 || GENERIC_JSCPD_EXIT=$?
+      head -15 "$GENERIC_JSCPD_TMP" || true
+      rm -f "$GENERIC_JSCPD_TMP"
+      if [ "${GENERIC_JSCPD_EXIT:-0}" -ne 0 ]; then
+        echo "⚠️  jscpd exited with code $GENERIC_JSCPD_EXIT (see output above)"
+      fi
+    fi
     echo "✅ PASSED - jscpd check completed."
   else
     echo "✅ PASSED - No source files detected for duplicate checking."
@@ -2210,6 +2130,13 @@ source "$GATE_DIR/gate-4.sh"
  2>&1 echo ""
  2>&1 echo "→ Gate 5: Tests & coverage..."
 GATE_5_START=$(gate_start_ms)
+# #554 follow-up: explicit "nothing decided yet" sentinel. A branch inside the
+# else-block may record its own verdict (the no-code early skip records SKIP);
+# the epilogue must not overwrite it with PASS. Using "" rather than leaving the
+# variable unset keeps the epilogue's decision readable, and keeps every render
+# site's own default (`${GATE_5_STATUS:-SKIP}`) honest for the paths that never
+# assign at all.
+GATE_5_STATUS=""
 
 if [ "$PROJECT_LANG" = "documentation-only" ] || [ "$DOCS_ONLY_COMMIT" = true ]; then
   echo "⏭️  SKIPPED - Tests & coverage (documentation-only commit — no code changed to test)."
@@ -2543,80 +2470,24 @@ else
   fi
 
   # ============================================================================
-  # Gate 5c: Semantic Annotation Check (v0.19.0+)
-  # Validates @test REQ-XXX annotations against specification.yaml.
-  #
-  # Strategy: Reads pre-compiled req-ids.json (produced by xp-gate check-alignment).
-  # If req-ids.json is absent or stale, degrades to SKIP.
-  # If present: greps staged tests for @test REQ-XXX, cross-references against
-  # the pre-compiled REQ ID list. BLOCKs if any REQ ID doesn't exist in spec.
-  # If any REQ in spec has no annotated test, emits visible [FAIL] message
-  # (exit 0, appears in hook summary) — full alignment check runs at CLI time.
   # ============================================================================
-  REQ_IDS_FILE=".sprint-state/phase-outputs/req-ids.json"
-  if [ -f "$REQ_IDS_FILE" ] && command -v jq >/dev/null 2>&1; then
-    # Check staleness: req-ids.json must be newer than specification.yaml
-    SPEC_FILE="specification.yaml"
-    REQ_IDS_STALE=false
-    if [ -f "$SPEC_FILE" ]; then
-      if [ "$REQ_IDS_FILE" -ot "$SPEC_FILE" ]; then
-        REQ_IDS_STALE=true
-      fi
-    fi
-
-    if [ "$REQ_IDS_STALE" = true ]; then
-      echo "⚠️  Gate 5c: req-ids.json is stale (specification.yaml updated since last check-alignment)"
-      echo "   Run 'xp-gate check-alignment' to regenerate before next commit."
-    else
-      CHANGED_TEST_FILES_ANNOTATED=$(echo "$CHANGED_FILES" | grep -E '\.(test|spec)\.(ts|tsx|js|jsx|cjs|mjs)$' || true)
-      if [ -n "$CHANGED_TEST_FILES_ANNOTATED" ]; then
-        echo "  → Checking @test REQ-XXX annotations..."
-        ANNOTATION_ERRORS=0
-        for tf in $CHANGED_TEST_FILES_ANNOTATED; do
-          if [ -f "$tf" ]; then
-            # Extract @test REQ-XXX annotations from staged test file (word-bounded)
-            ANNOTATED_REQS=$(grep -oE '@test\s+REQ-[A-Z0-9-]+' "$tf" 2>/dev/null | sed 's/@test\s*//' | sort -u || true)
-            for req_id in $ANNOTATED_REQS; do
-              # Cross-reference against pre-compiled REQ ID list
-              FOUND=$(jq -r --arg rid "$req_id" '.[] | select(. == $rid)' "$REQ_IDS_FILE" 2>/dev/null || true)
-              if [ -z "$FOUND" ]; then
-                echo "❌ Gate 5c: $tf — @test $req_id: REQ ID not found in specification.yaml"
-                ANNOTATION_ERRORS=$((ANNOTATION_ERRORS + 1))
-              fi
-            done
-          fi
-        done
-
-        if [ "$ANNOTATION_ERRORS" -gt 0 ]; then
-          echo ""
-          echo "❌ $ANNOTATION_ERRORS test annotation(s) reference non-existent REQ IDs — commit BLOCKED"
-          echo "   Fix: Verify REQ IDs against specification.yaml, or run 'xp-gate check-alignment'"
-          exit 1
-        fi
-
-        # Check reverse: any REQ in spec with no annotated test → visible FAIL (non-blocking)
-        ALL_SPEC_REQS=$(jq -r '.[]' "$REQ_IDS_FILE" 2>/dev/null)
-        ANNOTATED_ALL=""
-        for tf in $(echo "$CHANGED_FILES" | grep -E '\.(test|spec)\.(ts|tsx|js|jsx|cjs|mjs)$' || true); do
-          if [ -f "$tf" ]; then
-            ANNOTATED_ALL="$ANNOTATED_ALL $(grep -oE '@test\s+REQ-[A-Z0-9-]+' "$tf" 2>/dev/null | sed 's/@test\s*//' || true)"
-          fi
-        done
-        UNTESTED_COUNT=0
-        for spec_req in $ALL_SPEC_REQS; do
-          if ! echo "$ANNOTATED_ALL" | grep -qF "$spec_req"; then
-            UNTESTED_COUNT=$((UNTESTED_COUNT + 1))
-          fi
-        done
-        if [ "$UNTESTED_COUNT" -gt 0 ]; then
-          echo "⚠️  [FAIL] Gate 5c: $UNTESTED_COUNT REQ(s) in specification.yaml have no annotated tests"
-          echo "   This is non-blocking. Run 'xp-gate check-alignment' for full alignment report."
-        fi
-
-        echo "  ✅ @test annotation check complete."
-      fi
-    fi
-  fi
+  # Gate 5c: Semantic Annotation Check (#585)
+  #
+  # The check itself lives in lib/gate-5c-alignment.sh so its contract is
+  # unit-testable without executing the hook. Two defects it fixes, both of which
+  # made this gate a decoration:
+  #   1. The whole body sat inside `if [ -f req-ids.json ] && command -v jq`.
+  #      .sprint-state/ is gitignored, so on a fresh clone the gate printed
+  #      NOTHING — not PASS, not FAIL, not SKIP — and the report had no slot for
+  #      it. Silence read as success, the same defect as #449/#499/#570.
+  #   2. Test discovery matched only JS/TS, so Pester's *.Tests.ps1, pytest's
+  #      test_*.py, Go's *_test.go, Java's *Test.java and Kotlin's *Tests.kt found
+  #      nothing and the gate reported a vacuous "0 annotated, 0 uncovered".
+  #
+  # GATE_5C_STATUS is now always PASS, SKIP or BLOCK — never empty.
+  # ============================================================================
+  GATE_5C_STATUS=""
+  gate_5c_alignment || exit 1
 
   # ============================================================================
   # Gate 5c-ps: Pester parity for the annotation convention (downstream, 2026-10-24)
@@ -2671,6 +2542,7 @@ else
   fi
 
   # ============================================================================
+
   # ============================================================================
   # v0.14.3+ (Issue #312): Early skip when no code files changed.
   # If the commit only touches VERSION, CHANGELOG, docs, config, .gitignore,
@@ -2680,10 +2552,19 @@ else
   CODE_EXTENSIONS="\.(ts|tsx|js|jsx|py|go|java|kt|kts|cpp|cc|cxx|c|swift|m|mm|dart|sh|ps1)$"
   CHANGED_CODE_FILES=$(echo "$CHANGED_FILES" | grep -E "$CODE_EXTENSIONS" || true)
   if [ -z "$CHANGED_CODE_FILES" ]; then
-    echo "✅ PASSED - No code files changed (only docs/config/VERSION), skipping test run."
+    # #554: this branch DID stand down deliberately, but "PASS" is a claim that
+    # a check ran and found nothing. Nothing ran here: no test executed, no
+    # coverage number exists. Recording PASS inflated the pass rate and made an
+    # unmeasured gate indistinguishable from a measured clean one -- the same
+    # defect #554 fixed on the docs-only branch, on the branch that fix did not
+    # cover (measured on the v0.31.2.0 release commit: journal said
+    # gate5_tests.status=PASS while the summary printed "coverage: N/A%").
+    echo "⏭️  SKIPPED - No code files changed (only docs/config/VERSION) — test run not needed."
     echo "   Changed files: $(echo "$CHANGED_FILES" | tr '\n' ' ')"
     TESTS_EXIT_CODE=0
     TESTS_SKIPPED=true
+    GATE_5_STATUS="SKIP"
+    GATE_5_DETAIL="no_code_files_changed"
     GATE_5_END=$(gate_start_ms)
     GATE_5_ELAPSED=$((GATE_5_END - GATE_5_START))
     echo "   ⏱️  Gate 5: ${GATE_5_ELAPSED}ms (skipped — no code changes)"
@@ -2876,15 +2757,6 @@ else
               # They keep blocking on any non-zero exit (#454).
               echo ""
               echo "❌ BLOCKED - Tests FAILED"
-              # Downstream hardening 2026-10-24: `head -50` above truncates the
-              # runner summary, so the user saw "Tests FAILED" with NO failure
-              # named -- the tail of the output (where Pester/pytest print the
-              # summary and the failing test) was thrown away. Print the tail
-              # too, and the exit code, so the block is actionable.
-              echo "     exit code: $TESTS_EXIT_CODE"
-              echo "     --- tail of runner output ---"
-              printf '%s\n' "$TESTS_OUTPUT" | tail -40 | sed 's/^/     /'
-              echo "     --- end ---"
               exit 1
             fi
           else
@@ -3053,7 +2925,7 @@ else
             go test -coverprofile=coverage.out ./... 2>/dev/null
             TOTAL_COVERAGE=$(go tool cover -func=coverage.out 2>/dev/null | grep "^total:" | awk '{print substr($3, 1, length($3)-1)}')
             if [ -n "$TOTAL_COVERAGE" ] && (( $(echo "$TOTAL_COVERAGE < 80" | bc -l 2>/dev/null || echo "0") )); then
-              echo "❌ BLOCKED - Go coverage $TOTAL_COVERAGE% below ${COVERAGE_THRESHOLD}% threshold"
+              echo "❌ BLOCKED - Go coverage $TOTAL_COVERAGE% below ${COVERAGE_THRESHOLD:-80}% threshold"
               exit 1
             fi
             echo "Go coverage: $TOTAL_COVERAGE%"
@@ -3097,38 +2969,84 @@ else
   COVERAGE_ENFORCED=false
 
   for CURRENT_LANG in $PROJECT_LANGS; do
+  # #570: every comparison below reads $COVERAGE_THRESHOLD, and the messages
+  # quote it. If it ever arrives empty (a helper called outside the hook, a test
+  # harness that sources only the case block), `[ "$pct" -lt "" ]` is false and
+  # `awk 'pct < thr'` with an empty thr is false too — the gate would PASS every
+  # value, i.e. exactly the fail-open this issue is about. Fall back to the
+  # historical default so an unset variable can never widen the gate.
+  #
+  # Kept INSIDE the loop (immediately before the case) so a harness that extracts
+  # only `case ... esac` still gets the guarantee it depends on.
+  if ! [[ "${COVERAGE_THRESHOLD:-}" =~ ^[0-9]+$ ]]; then
+    COVERAGE_THRESHOLD=80
+    COVERAGE_THRESHOLD_SOURCE="default (threshold was unset at Stage 2)"
+  fi
   case "$CURRENT_LANG" in
     "typescript")
       COVERAGE_ENFORCED=true
       if [ "${TESTS_SKIPPED:-false}" = "true" ]; then
         echo "✅ PASSED - Coverage check skipped (no test/source files changed)."
       elif [ -f "coverage/coverage-summary.json" ]; then
+        # #594: reject NaN at the SOURCE, not after the fact. Math.round() does
+        # not fail on a non-numeric input -- it returns NaN and console.log prints
+        # "NaN" -- so istanbul's "Unknown" (a file with no executable lines) sailed
+        # past both the `!= "parse_error"` and `-n` guards. Emit `no_data`, which
+        # the guard below already treats as "could not measure".
         COVERAGE_PERCENT=$(node -e "
           try {
             const fs = require('fs');
             const data = JSON.parse(fs.readFileSync('coverage/coverage-summary.json', 'utf8'));
-            console.log(Math.round(data.total.lines.pct));
+            const pct = data && data.total && data.total.lines && data.total.lines.pct;
+            console.log(Number.isFinite(pct) ? Math.round(pct) : 'no_data');
           } catch(e) { console.log('parse_error'); }
         " 2>/dev/null)
-        if [ "$COVERAGE_PERCENT" != "parse_error" ] && [ -n "$COVERAGE_PERCENT" ]; then
-          if [ "$COVERAGE_PERCENT" -lt "$COVERAGE_THRESHOLD" ]; then
+        # #594: `-n` was not enough. `[ "NaN" -lt 80 ]` is not false in bash -- it
+        # is an ERROR (exit 2, "integer expression expected"), and an `if` only
+        # tells zero from non-zero, so the error took the else branch: the PASS
+        # branch. Require an actual integer before comparing anything.
+        if [[ "$COVERAGE_PERCENT" =~ ^[0-9]+$ ]]; then
+          # #570: default the threshold at the comparison site too — an empty
+          # value makes test(1) fail, the branch is skipped, and low coverage is
+          # reported as a pass.
+          if [ "$COVERAGE_PERCENT" -lt "${COVERAGE_THRESHOLD:-80}" ]; then
             # Only a subset test run (smart selection) leaves partial coverage data;
             # a full suite run must block on <80% even when many test files changed.
             if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
               echo "⚠️  Partial coverage ${COVERAGE_PERCENT}% (subset test run, not full suite)."
               echo "    Run 'npx vitest run --coverage' for full coverage check."
             else
-              echo "❌ BLOCKED - TypeScript coverage ${COVERAGE_PERCENT}% below ${COVERAGE_THRESHOLD}% threshold"
+              echo "❌ BLOCKED - TypeScript coverage ${COVERAGE_PERCENT}% below ${COVERAGE_THRESHOLD:-80}% threshold"
               exit 1
             fi
           else
-            echo "TypeScript coverage: ${COVERAGE_PERCENT}% ✅ (≥ 80%)"
+            echo "TypeScript coverage: ${COVERAGE_PERCENT}% ✅ (≥ ${COVERAGE_THRESHOLD:-80}%)"
           fi
         else
-          echo "⚠️  Could not parse TypeScript coverage from coverage/coverage-summary.json"
+          # #570: an unparseable report is not a pass. Silently continuing here
+          # meant a corrupt or unexpected-shape coverage-summary.json disabled the
+          # TypeScript coverage gate while the run still looked clean.
+          if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
+            echo "⚠️  Could not parse TypeScript coverage from coverage/coverage-summary.json (subset test run) — not blocking."
+          else
+            echo "❌ BLOCKED - Could not parse TypeScript coverage from coverage/coverage-summary.json."
+            echo "   The report exists but carries no usable total.lines.pct, so the"
+            echo "   ${COVERAGE_THRESHOLD:-80}% floor could not be checked."
+            exit 1
+          fi
         fi
       else
-        echo "⚠️  coverage/coverage-summary.json not found. If vitest --coverage was used, check vitest.config.ts coverageDirectory."
+        # #570: the report file is absent, so nothing was measured. Warning and
+        # continuing made "delete coverage/coverage-summary.json" an effective way
+        # to switch this gate off.
+        if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
+          echo "⚠️  coverage/coverage-summary.json not found (subset test run) — not blocking."
+        else
+          echo "❌ BLOCKED - coverage/coverage-summary.json not found."
+          echo "   No coverage could be measured, so the ${COVERAGE_THRESHOLD:-80}% floor could not be"
+          echo "   checked. Run 'npx vitest run --coverage' before committing."
+          exit 1
+        fi
       fi
       ;;
     "python")
@@ -3144,19 +3062,53 @@ else
       # JaCoCo writes target/site/jacoco/ (Maven) or build/reports/jacoco/test/
       # (Gradle), i.e. neither path probed by the default branch below, so Java
       # needs its own branch to be measurable at all.
+      #
+      # #600: a MULTI-MODULE Maven repo writes one report per module --
+      # whaleaudit-core/target/site/jacoco/jacoco.csv, whaleaudit-demo/... --
+      # and nothing at the repo root. Probing only the root paths therefore
+      # concluded "No JaCoCo report found, so the 80% floor cannot be verified"
+      # and BLOCKED every Java commit of a project that had a complete report
+      # sitting one directory down. A gate that cannot see the report is not
+      # enforcing a floor, it is enforcing an accident of build layout.
+      # Fix: probe the root paths first (single-module projects, and the
+      # historical behaviour), then fall back to the module reports and
+      # aggregate across them, so the floor covers every class that was built.
       jacoco_csv=""
+      jacoco_all=""
       for jacoco_candidate in \
         "target/site/jacoco/jacoco.csv" \
         "build/reports/jacoco/test/jacocoTestReport.csv"; do
         [ -f "$jacoco_candidate" ] && { jacoco_csv="$jacoco_candidate"; break; }
       done
+      if [ -z "$jacoco_csv" ]; then
+        # Module reports. -mindepth-free walk so ./module/... is found; sorted
+        # for a stable, reproducible aggregate order.
+        jacoco_all=$(find . -path ./target -prune -o \
+          -type f \( -name 'jacoco.csv' -path '*/target/site/jacoco/*' \) -print 2>/dev/null \
+          | sort | tr '\n' ' ')
+        # First module report doubles as the "report exists" witness for the
+        # messages below; the aggregate sums over every one of them.
+        jacoco_csv=$(echo "$jacoco_all" | awk '{print $1}')
+      fi
+      if [ -n "$jacoco_csv" ] && [ -n "$jacoco_all" ]; then
+        _jc_n=$(echo "$jacoco_all" | awk '{print NF}')
+        echo "   ℹ️  Multi-module JaCoCo: aggregating $_jc_n module report(s)."
+      fi
 
       if [ -n "$jacoco_csv" ]; then
         # Aggregate INSTRUCTION_MISSED / INSTRUCTION_COVERED over every class row.
         # Columns are located by header name because their position is not part of
         # the CSV's stable contract.
+        #
+        # #600: with module reports, each file repeats the header row, so the
+        # header detection is per-file (FNR == 1) rather than per-stream
+        # (NR == 1). Otherwise module 2's header is summed as data, or worse,
+        # the single header found in module 1 leaves the columns unset for it.
+        _jc_inputs="$jacoco_csv"
+        [ -n "$jacoco_all" ] && _jc_inputs="$jacoco_all"
         COVERAGE_PERCENT=$(awk -F, '
-          NR == 1 {
+          FNR == 1 {
+            missed_col = 0; covered_col = 0;
             for (i = 1; i <= NF; i++) {
               if ($i == "INSTRUCTION_MISSED") missed_col = i;
               if ($i == "INSTRUCTION_COVERED") covered_col = i;
@@ -3172,29 +3124,44 @@ else
             if (total > 0) printf "%.2f", (covered / total) * 100;
             else print "";
           }
-        ' "$jacoco_csv" 2>/dev/null) || COVERAGE_PERCENT=""
+        ' $_jc_inputs 2>/dev/null) || COVERAGE_PERCENT=""
 
         if [ -n "$COVERAGE_PERCENT" ]; then
           # Compare on the unrounded value so 79.5% cannot pass as 80%.
           COVERAGE_ROUNDED=${COVERAGE_PERCENT%.*}
-          if awk -v pct="$COVERAGE_PERCENT" 'BEGIN { exit !(pct < 80) }'; then
+          if awk -v pct="$COVERAGE_PERCENT" -v thr="${COVERAGE_THRESHOLD:-80}" 'BEGIN { exit !(pct < thr) }'; then
             if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
               echo "⚠️  Partial coverage ${COVERAGE_ROUNDED}% (subset test run, not full suite)."
               echo "    Run the full test suite for a complete Java coverage check."
             else
-              echo "❌ BLOCKED - Java coverage ${COVERAGE_ROUNDED}% below ${COVERAGE_THRESHOLD}% threshold"
+              echo "❌ BLOCKED - Java coverage ${COVERAGE_ROUNDED}% below ${COVERAGE_THRESHOLD:-80}% threshold"
               exit 1
             fi
           else
-            echo "Java coverage: ${COVERAGE_ROUNDED}% ✅ (≥ 80%)"
+            echo "Java coverage: ${COVERAGE_ROUNDED}% ✅ (≥ ${COVERAGE_THRESHOLD:-80}%)"
           fi
         else
-          echo "⚠️  Could not parse Java coverage from ${jacoco_csv} (no instruction data)."
+          # #570: a JaCoCo report that yields no instruction data measured
+          # nothing. Warning and continuing let the gate pass on no evidence.
+          if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
+            echo "⚠️  Could not parse Java coverage from ${jacoco_csv} (subset test run) — not blocking."
+          else
+            echo "❌ BLOCKED - Could not parse Java coverage from ${jacoco_csv} (no instruction data),"
+            echo "   so the ${COVERAGE_THRESHOLD:-80}% floor cannot be verified."
+            exit 1
+          fi
         fi
       else
-        echo "⚠️  No JaCoCo report found. Run 'mvn verify' or 'gradle jacocoTestReport'"
-        echo "    so that target/site/jacoco/jacoco.csv exists — otherwise Java coverage"
-        echo "    cannot be enforced (see also: JaCoCo detection in adapters/java.sh)."
+        # #570: no report at all is the fail-open path this issue was filed for.
+        if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
+          echo "⚠️  No JaCoCo report found (subset test run) — not blocking."
+        else
+          echo "❌ BLOCKED - No JaCoCo report found, so the ${COVERAGE_THRESHOLD:-80}% Java coverage"
+          echo "   floor cannot be verified. Run 'mvn verify' or 'gradle jacocoTestReport'"
+          echo "   so that target/site/jacoco/jacoco.csv exists (see also: JaCoCo detection"
+          echo "   in adapters/java.sh)."
+          exit 1
+        fi
       fi
       ;;
     "go")
@@ -3207,23 +3174,52 @@ else
       COVERAGE_ENFORCED=true
       if [ -f "coverage/lcov.info" ]; then
         COVERAGE_PERCENT=$(parse_lcov_coverage "coverage/lcov.info" 2>/dev/null) || COVERAGE_PERCENT="0"
-        if [ "$COVERAGE_PERCENT" != "0" ] && [ -n "$COVERAGE_PERCENT" ]; then
-          if [ "$COVERAGE_PERCENT" -lt "$COVERAGE_THRESHOLD" ]; then
-            echo "❌ BLOCKED - Flutter/Dart coverage ${COVERAGE_PERCENT}% below ${COVERAGE_THRESHOLD}% threshold"
+        # #570: `-ge 0`, not `!= "0"`. A measured 0% is DATA — the tool ran and
+        # covered nothing — so it must reach the threshold comparison instead of
+        # being folded into "could not determine".
+        if [ -n "$COVERAGE_PERCENT" ] && [ "$COVERAGE_PERCENT" -ge 0 ] 2>/dev/null; then
+          # #570: default at the comparison site; an empty threshold makes
+          # test(1) fail and silently skips the BLOCK.
+          if [ "$COVERAGE_PERCENT" -lt "${COVERAGE_THRESHOLD:-80}" ]; then
+            if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
+              echo "⚠️  Partial coverage ${COVERAGE_PERCENT}% (subset test run, not full suite)."
+              echo "    Run the full test suite for a complete Flutter/Dart coverage check."
+            else
+              echo "❌ BLOCKED - Flutter/Dart coverage ${COVERAGE_PERCENT}% below ${COVERAGE_THRESHOLD:-80}% threshold"
+              exit 1
+            fi
+          else
+            echo "Flutter/Dart coverage: ${COVERAGE_PERCENT}% ✅ (≥ ${COVERAGE_THRESHOLD:-80}%)"
+          fi
+        else
+          # #570: lcov.info exists but carries no usable hit/found pair.
+          if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
+            echo "⚠️  Could not determine Flutter/Dart coverage (subset test run) — not blocking."
+          else
+            echo "❌ BLOCKED - Could not determine Flutter/Dart coverage from coverage/lcov.info,"
+            echo "   so the ${COVERAGE_THRESHOLD:-80}% floor cannot be verified."
             exit 1
           fi
-          echo "Flutter/Dart coverage: ${COVERAGE_PERCENT}% ✅ (≥ 80%)"
-        else
-          echo "⚠️  Could not determine Flutter/Dart coverage percentage from lcov.info."
         fi
       else
-        echo "⚠️  coverage/lcov.info not found. Ensure dart test --coverage was run."
+        # #570: the fail-open path. `dart test --coverage` not run means the gate
+        # has no evidence, and no evidence is not a pass.
+        if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
+          echo "⚠️  coverage/lcov.info not found (subset test run) — not blocking."
+        else
+          echo "❌ BLOCKED - coverage/lcov.info not found, so the ${COVERAGE_THRESHOLD:-80}% Flutter/Dart"
+          echo "   coverage floor cannot be verified. Ensure 'dart test --coverage' was run."
+          exit 1
+        fi
       fi
       ;;
     "powershell")
       COVERAGE_ENFORCED=true
       if [ -f "coverage.xml" ]; then
-        COVERAGE_RESULT=$(node -e "
+        # The threshold is passed INTO node: the verdict used to be computed
+        # against a hard-coded 80 inside the script, so a project that configured
+        # a different floor got a verdict about a number it never set (#570).
+        COVERAGE_RESULT=$(THRESHOLD="${COVERAGE_THRESHOLD:-80}" node -e "
           try {
             const fs = require('fs');
             const xml = fs.readFileSync('coverage.xml', 'utf8');
@@ -3240,25 +3236,51 @@ else
             if (!Number.isFinite(missed) || !Number.isFinite(covered) || missed < 0 || covered < 0 || total <= 0) {
               throw new Error('invalid LINE counter');
             }
+            const threshold = Number(process.env.THRESHOLD);
+            // Number("") is 0, which would make every percentage "pass" — the
+            // exact fail-open shape this fix is about. Refuse an unusable floor.
+            if (!Number.isFinite(threshold) || threshold <= 0) {
+              throw new Error('unusable THRESHOLD');
+            }
             const percentage = (covered / total) * 100;
-            console.log((percentage < 80 ? 'below' : 'pass') + '|' + Math.round(percentage));
+            console.log((percentage < threshold ? 'below' : 'pass') + '|' + Math.round(percentage));
           } catch (error) { console.log('parse_error'); }
         " 2>/dev/null) || COVERAGE_RESULT="parse_error"
         if [ "$COVERAGE_RESULT" != "parse_error" ] && [ -n "$COVERAGE_RESULT" ]; then
           COVERAGE_STATUS=${COVERAGE_RESULT%%|*}
           COVERAGE_PERCENT=${COVERAGE_RESULT#*|}
           if [ "$COVERAGE_STATUS" = "below" ]; then
-            echo "❌ BLOCKED - PowerShell coverage ${COVERAGE_PERCENT}% below ${COVERAGE_THRESHOLD}% threshold"
+            if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
+              echo "⚠️  Partial coverage ${COVERAGE_PERCENT}% (subset test run, not full suite)."
+              echo "    Run the full Pester suite for a complete PowerShell coverage check."
+            else
+              echo "❌ BLOCKED - PowerShell coverage ${COVERAGE_PERCENT}% below ${COVERAGE_THRESHOLD:-80}% threshold"
+              exit 1
+            fi
+          else
+            echo "PowerShell coverage: ${COVERAGE_PERCENT}% ✅ (≥ ${COVERAGE_THRESHOLD:-80}%)"
+          fi
+        else
+          # #570: an unparseable coverage.xml is no evidence, not a pass.
+          if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
+            echo "⚠️  Could not parse PowerShell coverage from coverage.xml (subset test run) - not blocking."
+          else
+            echo "❌ BLOCKED - Could not parse PowerShell coverage from coverage.xml,"
+            echo "   so the ${COVERAGE_THRESHOLD:-80}% floor cannot be verified."
             exit 1
           fi
-          echo "PowerShell coverage: ${COVERAGE_PERCENT}% ✅ (≥ 80%)"
-        else
-          echo "⚠️  Could not parse PowerShell coverage from coverage.xml"
         fi
       else
-        echo "⚠️  coverage.xml not found. Ensure Pester coverage was run."
+        # #570: Pester coverage not run means the gate has nothing to answer with.
+        if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
+          echo "⚠️  coverage.xml not found (subset test run) - not blocking."
+        else
+          echo "❌ BLOCKED - coverage.xml not found, so the ${COVERAGE_THRESHOLD:-80}% PowerShell"
+          echo "   coverage floor cannot be verified. Ensure Pester coverage was run."
+          exit 1
+        fi
       fi
-      # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
       # REPORT-INTEGRITY CHECK (downstream hardening, 2026-10-24).
       #
       # The percentage above is only as honest as the sourcefile set the report
@@ -3341,22 +3363,48 @@ else
           COVERAGE_PERCENT=$(grep -oP 'coverage: \K[0-9]+%' coverage/lcov.info 2>/dev/null | head -1 | tr -d '%') || COVERAGE_PERCENT=""
         fi
       fi
-      if [ -n "$COVERAGE_PERCENT" ] && [ "$COVERAGE_PERCENT" != "parse_error" ] && [ "$COVERAGE_PERCENT" -ge 0 ] 2>/dev/null; then
-        if [ "$COVERAGE_PERCENT" -lt "$COVERAGE_THRESHOLD" ]; then
+      # #579: `-ge 0`, not `-gt 0`. A measured 0% is DATA -- coverage.py ran and
+      # covered nothing -- not a missing value. Folding it into the
+      # "could not determine" branch let a suite that tested nothing pass the
+      # coverage gate with a WARNING. The two claims are different: 0% is
+      # "executed, proved nothing"; undetermined is "no evidence produced".
+      # #570: the threshold is defaulted HERE as well as quoted in the message.
+      # A bare `[ "$COVERAGE_PERCENT" -lt "$COVERAGE_THRESHOLD" ]` with an empty
+      # threshold makes test(1) fail with "integer expected", the condition is
+      # false, and 16% coverage was reported as ✅ (the same fail-open shape this
+      # issue is about, one line further down). `2>/dev/null` on the numeric test
+      # keeps a non-numeric report on the "cannot determine" path instead of
+      # dying.
+      if [ -n "$COVERAGE_PERCENT" ] && [ "$COVERAGE_PERCENT" != "parse_error" ] \
+         && [ "$COVERAGE_PERCENT" -ge 0 ] 2>/dev/null; then
+        if [ "$COVERAGE_PERCENT" -lt "${COVERAGE_THRESHOLD:-80}" ]; then
           # Only a subset test run (smart selection) warns — the full suite may
           # still reach ≥80%; a full suite run must block.
           if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
             echo "⚠️  Partial coverage ${COVERAGE_PERCENT}% (subset test run, not full suite)."
             echo "    Run the full test suite for a complete ${CURRENT_LANG} coverage check."
           else
-            echo "❌ BLOCKED - ${CURRENT_LANG} coverage ${COVERAGE_PERCENT}% below ${COVERAGE_THRESHOLD}% threshold"
+            echo "❌ BLOCKED - ${CURRENT_LANG} coverage ${COVERAGE_PERCENT}% below ${COVERAGE_THRESHOLD:-80}% threshold"
             exit 1
           fi
         else
-          echo "${CURRENT_LANG} coverage: ${COVERAGE_PERCENT}% ✅ (≥ 80%)"
+          echo "${CURRENT_LANG} coverage: ${COVERAGE_PERCENT}% ✅ (≥ ${COVERAGE_THRESHOLD:-80}%)"
         fi
       else
-        echo "⚠️  Could not determine ${CURRENT_LANG} coverage percentage. No standard coverage report files found."
+        # #570: "could not determine" is a FAILED answer to the gate's question
+        # ("is coverage at or above the floor?"), not a lenient one. Warning and
+        # falling through made the generic branch fail-open: a language that
+        # produced no standard report file passed the coverage gate while the
+        # summary still looked clean. The ONE exception is a subset run, where
+        # the global percentage is meaningless by construction.
+        if [ "${PARTIAL_TEST_RUN:-false}" = "true" ]; then
+          echo "⚠️  Could not determine ${CURRENT_LANG} coverage percentage (subset test run) — not blocking."
+        else
+          echo "❌ BLOCKED - Could not determine ${CURRENT_LANG} coverage percentage."
+          echo "   No standard coverage report file was found, so the ${COVERAGE_THRESHOLD:-80}% floor"
+          echo "   could not be checked. Produce coverage data or run a subset test run."
+          exit 1
+        fi
       fi
       ;;
   esac
@@ -3364,16 +3412,6 @@ else
   if [ "$COV_EXIT" -ne 0 ]; then
     echo ""
     echo "❌ BLOCKED - Coverage check FAILED"
-    # Downstream hardening 2026-10-24: the runner output above was truncated by
-    # `head -30`, so this BLOCK arrived with no evidence of WHY. Print the tail
-    # of the runner output and the exit code so the failure is actionable.
-    echo "     exit code: $COV_EXIT"
-    _cov_tail="${default_cov_output:-${run_coverage_output:-${shell_cov_output:-}}}"
-    if [ -n "$_cov_tail" ]; then
-      echo "     --- tail of coverage runner output ---"
-      printf '%s\n' "$_cov_tail" | tail -40 | sed 's/^/     /'
-      echo "     --- end ---"
-    fi
     exit 1
   fi
   if [ "$COVERAGE_ENFORCED" = false ]; then
@@ -3435,7 +3473,20 @@ else
   # "Tests + Coverage: PASS (coverage: N/A)" for a commit where no test ran
   # (#554) -- a SKIP promoted to PASS inflates the pass rate and hides that the
   # gate never executed.
-  GATE_5_STATUS="PASS"
+  #
+  # #554 follow-up: the same promotion was still happening ONE LEVEL IN. The
+  # early-skip branch above (no source extension among the changed files, e.g. a
+  # version bump) sets GATE_5_STATUS="SKIP", and this unguarded assignment
+  # overwrote it on the way out of the same else-block. A branch that records
+  # its own verdict must not be re-decided by the block epilogue: default to
+  # PASS only when the sentinel is still untouched.
+  #
+  # Not written as a `:-PASS` expansion: AC-599-03 forbids a PASS default in
+  # any `GATE_N_STATUS:-DEFAULT` expansion, because that is how an unassigned
+  # gate came to render as "passed". An explicit comparison keeps both rules.
+  if [ -z "$GATE_5_STATUS" ]; then
+    GATE_5_STATUS="PASS"
+  fi
 fi
 record_gate_audit "gate-5" "tests-coverage" "$GATE_5_STATUS" "0" "$GATE_5_START" "${GATE_5_DETAIL:-}"
 
@@ -3452,24 +3503,13 @@ GATE_6_START=$(gate_start_ms)
 if [ "$PROJECT_LANG" = "documentation-only" ]; then
   echo "     ✅ Skipped (documentation project)."
 
+elif has_project_lang "powershell" 2>/dev/null || [ "$PROJECT_LANG" = "powershell" ]; then
+  echo "     ℹ️  No PowerShell architecture tooling available"
+     echo "     ⏭️  SKIPPED - Architecture validation (no tool for PowerShell)"
+
 else
   run_archlint() (
     cd "$PROJECT_ROOT" || exit 1
-    # An npm global install ships a POSIX shim whose first act is
-    # `exec node ...`. If node's directory is not on THIS shell's PATH the shim
-    # dies with "exec: node: not found" -- which the gate then reports as
-    # "architecture violations detected" (the exit code is non-zero), i.e. a
-    # broken toolchain reads as a code defect. Put a resolvable node first.
-    if ! command -v node >/dev/null 2>&1; then
-      for _nb in "/c/Program Files/nodejs" "${APPDATA:-}" "$HOME/AppData/Roaming/npm" "/usr/local/bin" "/usr/bin"; do
-        [ -n "$_nb" ] || continue
-        if [ -x "$_nb/node" ] || [ -x "$_nb/node.exe" ]; then
-          PATH="$_nb:$PATH"
-          export PATH
-          break
-        fi
-      done
-    fi
     if [ "$ARCHLINT_KIND" = "npx" ]; then
       npx @archlinter/cli "$@"
     else
@@ -3492,40 +3532,10 @@ else
     for CURRENT_LANG in $PROJECT_LANGS; do
     case "$CURRENT_LANG" in
       "typescript")
-        # Try local npx install first (devDependencies), fall back to global.
-        #
-        # Downstream hardening 2026-10-24: `command -v archlint` searches this
-        # shell's PATH only, and an npm GLOBAL install lands in
-        # %APPDATA%/npm (Windows) which git-bash does not inherit from the
-        # caller. Measured: with @archlinter/cli@0.16.0 installed globally and
-        # node on PATH, the hook printed
-        #   ❌ BLOCKED - archlint not installed
-        # while the same command from an interactive shell found it -- i.e. the
-        # gate's "not installed" verdict was about PATH inheritance, not about
-        # the machine. Probe the standard npm bin directories explicitly before
-        # believing the tool is absent.
-        ARCHLINT_GLOBAL=""
-        if [ -z "$ARCHLINT_GLOBAL" ]; then
-          for _ab in \
-            "${APPDATA:-}/npm" \
-            "$HOME/AppData/Roaming/npm" \
-            "$HOME/.npm-global/bin" \
-            "$HOME/.local/bin" \
-            "/c/Program Files/nodejs" \
-            "/usr/local/bin"; do
-            [ -n "$_ab" ] || continue
-            if [ -x "$_ab/archlint" ]; then
-              ARCHLINT_GLOBAL="$_ab/archlint"
-              break
-            fi
-          done
-        fi
+        # Try local npx install first (devDependencies), fall back to global
         if [ -x "$PROJECT_ROOT/node_modules/.bin/archlint" ]; then
           ARCHLINT_KIND="binary"
           ARCHLINT_BIN="$PROJECT_ROOT/node_modules/.bin/archlint"
-        elif [ -n "$ARCHLINT_GLOBAL" ]; then
-          ARCHLINT_KIND="binary"
-          ARCHLINT_BIN="$ARCHLINT_GLOBAL"
         elif command -v archlint >/dev/null 2>&1; then
           ARCHLINT_KIND="binary"
           ARCHLINT_BIN="$(command -v archlint)"
@@ -3534,7 +3544,6 @@ else
         else
           echo "     ❌ BLOCKED - archlint not installed"
           echo "     Install with: npm install --save-dev @archlinter/cli"
-          echo "     (searched: node_modules/.bin, \$APPDATA/npm, ~/.npm-global/bin, ~/.local/bin, PATH, npx)"
           exit 1
         fi
          echo "     Running archlint for TypeScript..."
@@ -3620,120 +3629,81 @@ else
         fi
         ;;
       "java")
-        if [ -f "src/test/java/architecture" ] || [ -d "src/test/java/architecture" ]; then
-          echo "     Running Java architecture tests..."
-          if [ -f "pom.xml" ]; then
-            mvn test -Dtest=architecture.* 2>&1 | head -20 || mvn test -Dtest=**Architecture** 2>&1 | head -20 || echo "⚠️  Java architecture tests completed"
-          elif [ -f "build.gradle" ]; then
-            if [ -f "./gradlew" ]; then
-              ./gradlew test --tests "*Architecture*" 2>&1 | head -20 || echo "⚠️  Java architecture tests completed"
-            fi
+        # #599: this branch used to be a guaranteed PASS no matter what happened.
+        #   1) The test-dir probe hardcoded `src/test/java/architecture` at the
+        #      repo root. A multi-module Maven repo (core/ + demo/) puts the arch
+        #      tests under <module>/src/test/java/..., so the probe missed them
+        #      and the gate took the SKIP path -- reporting architecture as
+        #      "not configured" for a repo that HAS such tests.
+        #   2) Even when it did run, `mvn ... | head -20` yields head's exit
+        #      status (0) as the pipeline result, so the `||` fallback never
+        #      fired and `echo "✅ ... completed"` printed unconditionally. A
+        #      failing architecture test was reported as success. Verified:
+        #      `false | head -20` exits 0; with `set -o pipefail` it exits 1.
+        # Fix: discover the test source roots instead of guessing one path, and
+        # judge the build by PIPESTATUS[0] (the pattern run_java_build_integrity
+        # already uses), so the verdict comes from the build, not from `head`.
+        _java_arch_roots=""
+        if [ -f "pom.xml" ] || [ -x "./mvnw" ]; then
+          # Any */src/test/java dir (module-relative root), including the repo
+          # root itself, which find prints as ./src/test/java -> root ".".
+          while IFS= read -r _root; do
+            [ -n "$_root" ] && _java_arch_roots="${_java_arch_roots} ${_root}"
+          done <<JAVAARCHROOTS
+$(find . -path ./target -prune -o -type d -path '*/src/test/java' -print 2>/dev/null \
+  | sed 's|^\./||; s|/src/test/java$||; s|^src/test/java$|.|')
+JAVAARCHROOTS
+        elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+          _java_arch_roots="."
+        fi
+
+        # Only the roots that actually contain an *Architecture* test count.
+        _java_arch_hit=""
+        for _r in $_java_arch_roots; do
+          _probe_dir="$_r/src/test/java"
+          [ "$_r" = "." ] && _probe_dir="src/test/java"
+          if find "$_probe_dir" -name '*Architecture*' -type f 2>/dev/null | head -1 | grep -q .; then
+            _java_arch_hit="${_java_arch_hit} ${_r}"
+          fi
+        done
+
+        if [ -n "$_java_arch_hit" ]; then
+          echo "     Running Java architecture tests (roots:$_java_arch_hit)..."
+          _java_arch_rc=0
+          if [ -f "pom.xml" ] || [ -x "./mvnw" ]; then
+            _mvn_bin="mvn"
+            [ -x "./mvnw" ] && _mvn_bin="./mvnw"
+            # -pl <module> -am runs only the module that holds the tests (plus
+            # what it needs); quoting the whole root list into one -Dtest works
+            # for Surefire because it accepts comma-separated patterns.
+            for _r in $_java_arch_hit; do
+              if [ "$_r" = "." ]; then
+                "$_mvn_bin" -q test -Dtest='*Architecture*' 2>&1 | tail -20
+              else
+                "$_mvn_bin" -q -pl "$_r" -am test -Dtest='*Architecture*' 2>&1 | tail -20
+              fi
+              _rc="${PIPESTATUS[0]}"
+              [ "$_rc" -ne 0 ] && _java_arch_rc="$_rc"
+            done
+          elif [ -x "./gradlew" ]; then
+            ./gradlew test --tests '*Architecture*' 2>&1 | tail -20
+            _java_arch_rc="${PIPESTATUS[0]}"
+          fi
+
+          if [ "$_java_arch_rc" -ne 0 ]; then
+            echo ""
+            echo "❌ BLOCKED - Java architecture test(s) failed (exit $_java_arch_rc)"
+            echo "Fix the layering violation(s) above before committing."
+            GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_tests_failed"
+            exit 1
           fi
           echo "     ✅ Java architecture validation completed."
         else
-          echo "     ℹ️  No architecture test files found - skipping"
+          echo "     ℹ️  No *Architecture* test sources found under */src/test/java - skipping"
           echo "     ⏭️  SKIPPED - Architecture validation (no tests)"
           # #537: no test files means Java architecture was NOT measured.
           if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
             GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_not_configured"
-          fi
-        fi
-        ;;
-      "powershell")
-        # Downstream hardening 2026-10-24: this language had a dedicated arm that
-        # hard-SKIPped with "No PowerShell architecture tooling available". That
-        # is true of `archlint` (TypeScript import graphs) but false of the
-        # CONSTRAINT: "which script may depend on which" does not need a parser.
-        # This repo's layering already exists in its code -- native-invoke.ps1 as
-        # the leaf primitive, rollback-*.ps1 as the library, run-all.ps1 as the
-        # orchestrator, scan-*.ps1 as leaves -- and nothing checked it, so a
-        # scanner importing the cleaner would have shipped unremarked.
-        #
-        # The layers live in architecture.yaml's `powershell:` block and the
-        # checker in tools/Test-PowerShellArchitecture.ps1. Absent either, this
-        # arm degrades LOUDLY (WARN) rather than silently passing.
-        PS_ARCH_CONFIGURED=0
-        if [ -f "$PROJECT_ROOT/architecture.yaml" ] && grep -q '^powershell:' "$PROJECT_ROOT/architecture.yaml" 2>/dev/null; then
-          PS_ARCH_CONFIGURED=1
-        fi
-        PS_ARCH_TOOL="$PROJECT_ROOT/tools/Test-PowerShellArchitecture.ps1"
-        PS_ARCH_BASELINE="$PROJECT_ROOT/.xp-gate-powershell-arch-baseline.json"
-        if [ "$PS_ARCH_CONFIGURED" -eq 0 ] || [ ! -f "$PS_ARCH_TOOL" ]; then
-          echo "     ⚠️  WARN - PowerShell layering not configured"
-          echo "        (needs architecture.yaml 'powershell:' block + tools/Test-PowerShellArchitecture.ps1)"
-          GATE_6_STATUS="WARN"
-          if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
-            GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_not_configured"
-          fi
-        else
-          # Resolve a PowerShell engine LOCALLY -- `_detect_pwsh` lives in
-          # adapters/powershell.sh, which the hook sources inside a SUBSHELL for
-          # Gate 1, so its functions never reach this gate. (Same defect class was
-          # measured in Gate 3: "no PowerShell engine found" on a machine with two
-          # engines installed.) A gate must not rely on another gate's sourcing.
-          _g6_detect_pwsh() {
-            if command -v pwsh >/dev/null 2>&1; then echo pwsh; return 0; fi
-            if command -v powershell.exe >/dev/null 2>&1; then echo powershell.exe; return 0; fi
-            local _c
-            for _c in \
-              "${LOCALAPPDATA:-$HOME/AppData/Local}/Microsoft/WindowsApps/pwsh.exe" \
-              "/c/Program Files/PowerShell/7/pwsh.exe" \
-              "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"; do
-              [ -x "$_c" ] && { echo "$_c"; return 0; }
-            done
-            return 1
-          }
-          PS_ARCH_ENGINE=$(_g6_detect_pwsh 2>/dev/null || true)
-          if [ -z "$PS_ARCH_ENGINE" ]; then
-            echo "     ⚠️  WARN - no PowerShell engine found; layering not verified"
-            GATE_6_STATUS="WARN"
-            if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
-              GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="no_powershell_engine"
-            fi
-          else
-            PS_ARCH_EXTRA=""
-            if [ -f "$PS_ARCH_BASELINE" ]; then
-              PS_ARCH_EXTRA="-BaselinePath '$PS_ARCH_BASELINE'"
-            fi
-            PS_ARCH_OUT=$("$PS_ARCH_ENGINE" -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-              -Command "& '$PS_ARCH_TOOL' -ConfigPath '$PROJECT_ROOT/architecture.yaml' -Root '$PROJECT_ROOT' $PS_ARCH_EXTRA" 2>&1)
-            PS_ARCH_EXIT=$?
-            PS_ARCH_VIOLATIONS=$(printf '%s\n' "$PS_ARCH_OUT" | sed -n 's/.*violations=\([0-9]*\).*/\1/p' | tail -1)
-            PS_ARCH_FAILING=$(printf '%s\n' "$PS_ARCH_OUT" | sed -n 's/.*failing=\([0-9]*\).*/\1/p' | tail -1)
-            if printf '%s\n' "$PS_ARCH_OUT" | grep -q '^NO_POWERSHELL_LAYERS'; then
-              echo "     ⚠️  WARN - architecture.yaml has no parsable 'powershell:' layers"
-              GATE_6_STATUS="WARN"
-              if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
-                GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="powershell_layers_unparsable"
-              fi
-            elif [ -z "$PS_ARCH_VIOLATIONS" ]; then
-              echo "     ⚠️  WARN - PowerShell layering check produced no parsable result"
-              printf '%s\n' "$PS_ARCH_OUT" | head -8 | sed 's/^/        /'
-              GATE_6_STATUS="WARN"
-              if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
-                GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_check_unparsable"
-              fi
-            elif [ "${PS_ARCH_FAILING:-0}" -gt 0 ]; then
-              printf '%s\n' "$PS_ARCH_OUT" | grep '^VIOLATION ' | sed 's/^VIOLATION /        ❌ /'
-              echo ""
-              echo "     ❌ BLOCKED - ${PS_ARCH_FAILING} PowerShell layering violation(s)"
-              echo "     $(printf '%s\n' "$PS_ARCH_OUT" | head -1)"
-              echo "     Fix the dependency, or (if deliberate) record it in"
-              echo "     .xp-gate-powershell-arch-baseline.json with a reason."
-              GATE_6_STATUS="BLOCK"
-              if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
-                GATE_6_REASON_BY_LANG["$CURRENT_LANG"]="architecture_violations"
-              fi
-              exit 1
-            else
-              if [ "${PS_ARCH_VIOLATIONS:-0}" -gt 0 ]; then
-                printf '%s\n' "$PS_ARCH_OUT" | grep '^WAIVED ' | sed 's/^WAIVED /        ℹ️  (baselined) /'
-              fi
-              printf '%s\n' "$PS_ARCH_OUT" | grep '^STALE_WAIVER ' | sed 's/^STALE_WAIVER /        ⚠️  stale waiver (now clean, remove): /'
-              echo "     ✅ PowerShell architecture validation completed."
-              echo "     $(printf '%s\n' "$PS_ARCH_OUT" | head -1)"
-              GATE_6_STATUS="PASS"
-            fi
           fi
         fi
         ;;
@@ -3780,6 +3750,22 @@ else
       GATE_6_REASON="mixed"
     else
       GATE_6_REASON="$_g6_seen"
+    fi
+
+    # #601: a language that was really measured and passed leaves NO skip
+    # reason behind (see the #537 comment in the typescript arm: "archlint
+    # actually ran here, so there is no skip reason"). The verdict was never
+    # upgraded to match, so Gate 6 reported SKIP even when every language in
+    # the project had been validated and passed -- a measured dimension
+    # rendered as unmeasured. That is the mirror image of the bug #537 fixed,
+    # and the report could not tell the two apart.
+    #
+    # Upgrade to PASS only when the measurement actually happened for EVERY
+    # language: no language may carry a skip reason. A single skipped language
+    # keeps the gate non-PASS, so "some languages measured" cannot be scored
+    # as a full success.
+    if [ -z "$GATE_6_LANG_REASONS" ] && [ -n "$PROJECT_LANGS" ]; then
+      GATE_6_STATUS="PASS"
     fi
   else
     # Architecture config is REQUIRED — BLOCK if missing
@@ -4030,10 +4016,20 @@ elif [ -f "package.json" ] && [ -f "tsconfig.json" ]; then
     GATE_9_SCRIPT="$HOME/.config/xp-gate/modules/build-integrity/gate-10.ts"
   fi
 
+  # #581: the script path goes to node.exe. On WSL $HOME is /home/<user>, which node.exe
+  # resolves to <current drive>:\home\<user>\... -- module not found -- and Gate 9 then
+  # reported "Build integrity check failed" with advice to fix type errors in the USER'S
+  # code. Convert the path first so the failure, if any, is a real one.
+  if [ -n "$GATE_9_SCRIPT" ]; then
+    GATE_9_SCRIPT=$(to_native_path "$GATE_9_SCRIPT")
+  fi
+  # Same for the project root, which reaches both node and tsx as an absolute path.
+  GATE_9_PROJECT_ROOT=$(to_native_path "$PROJECT_ROOT")
+
   if [ -n "$GATE_9_SCRIPT" ]; then
     CHANGED_FILES_CSV=$(echo "$CHANGED_FILES" | tr ' ' ',')
     GATE_9_OUTPUT=$(mktemp)
-    if RUN_TSX_TIMEOUT=120s run_tsx "$GATE_9_SCRIPT" --changed-files "$CHANGED_FILES_CSV" --project-root "$PROJECT_ROOT" --timeout 115000 > "$GATE_9_OUTPUT" 2>&1; then
+    if RUN_TSX_TIMEOUT=120s run_tsx "$GATE_9_SCRIPT" --changed-files "$CHANGED_FILES_CSV" --project-root "$GATE_9_PROJECT_ROOT" --timeout 115000 > "$GATE_9_OUTPUT" 2>&1; then
       GATE_9_TS_STATUS="PASS"
       echo "     ✅ Build integrity check passed."
     else
@@ -4189,7 +4185,17 @@ if [ -n "$SPRINT_GATE_SCRIPT" ]; then
       GATE_11_STATUS="SKIP"
       ;;
     allow)
-      echo "✅ PASSED - Gate 11: Sprint Flow (${SPRINT_GATE_DETAIL:-sprint state validated})"
+      # #584: `allow` covered three different outcomes and all of them became
+      # PASS, so a sprint that was never examined raised PASSED_COUNT and the
+      # score. Only a genuinely validated sprint certifies this gate; the rest
+      # declined to evaluate and must read as SKIP with the real reason shown.
+      SPRINT_GATE_ALLOW_REASON=$(sprint_gate_allow_reason "$SPRINT_GATE_OUTPUT")
+      if [ "$SPRINT_GATE_ALLOW_REASON" = "checks-passed" ]; then
+        echo "✅ PASSED - Gate 11: Sprint Flow (${SPRINT_GATE_DETAIL:-sprint state validated})"
+      else
+        echo "⏭️  SKIPPED - Gate 11: Sprint Flow (${SPRINT_GATE_ALLOW_REASON}: ${SPRINT_GATE_DETAIL:-not evaluated})"
+        GATE_11_STATUS="SKIP"
+      fi
       ;;
     *)
       # A run that succeeded but said nothing this gate understands. Pass on the exit
@@ -4260,9 +4266,14 @@ generate_quality_report() {
   # -- degraded coverage, kept in the denominator but flagged separately so a
   # degraded gate is never confused with a real PASS.
   local DEGRADED_COUNT=0
-  local FAILED_COUNT=0
-  local FAILED_JSON=""
+  # The report's gatesDegraded is a superset: DEGRADED plus WARN (#536), because
+  # both mean "this gate could not fully verify what it was asked to". Kept
+  # separate from the scoring loop's DEGRADED_COUNT above so the two statuses stay
+  # distinct where that distinction is load-bearing (#599-10).
+  local REPORT_DEGRADED_COUNT=0
   local DEGRADED_JSON=""
+  local FAIL_COUNT=0
+  local FAILED_JSON=""
   for gate in 1 2 3 4 5 6 7 8 9 10 11 12; do
     local status_var="GATE_${gate}_STATUS"
     # Default mirrors the JSON report rendering below EXACTLY (gates 1-11
@@ -4278,10 +4289,22 @@ generate_quality_report() {
     case "$gate_status" in
       PASS) PASSED_COUNT=$((PASSED_COUNT + 1)) ;;
       SKIP) SKIP_COUNT=$((SKIP_COUNT + 1)) ;;
-      WARN) WARN_COUNT=$((WARN_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)) ;;
-      DEGRADED) DEGRADED_COUNT=$((DEGRADED_COUNT + 1)); WARN_COUNT=$((WARN_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)); DEGRADED_JSON="${DEGRADED_JSON:+$DEGRADED_JSON, }\"gate${gate}\"";;
-      FAIL|BLOCK) FAILED_COUNT=$((FAILED_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)); FAILED_JSON="${FAILED_JSON:+$FAILED_JSON, }\"gate${gate}\"";;
-      *) NONPASS_COUNT=$((NONPASS_COUNT + 1)); FAILED_COUNT=$((FAILED_COUNT + 1)); FAILED_JSON="${FAILED_JSON:+$FAILED_JSON, }\"gate${gate}\"";;
+      # #536: a WARN gate ran but could not fully do its job, so the REPORT's
+      # gatesDegraded must include it -- that field answers "how much of this run
+      # could actually verify what it was asked to". The scoring loop's
+      # DEGRADED_COUNT deliberately does NOT include it: a plain WARN must stay
+      # distinguishable from a gate that reported DEGRADED (#599-10), or the two
+      # statuses become one and neither is worth anything.
+      WARN) REPORT_DEGRADED_COUNT=$((REPORT_DEGRADED_COUNT + 1)); WARN_COUNT=$((WARN_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)) ;;
+      # #574: DEGRADED is a status a gate really produces -- Gate 5 reports it
+      # when coverage could not be measured honestly instead of claiming PASS.
+      # It had no arm here, so it fell into the catch-all below and counted as a
+      # HARD FAILURE: the gate was punished for telling the truth about itself.
+      # It must also feed WARN_COUNT, because the FAIL predicate is
+      # (NONPASS_COUNT - WARN_COUNT) > 0; adding only NONPASS_COUNT would turn
+      # every honest DEGRADED run into FAIL.
+      DEGRADED) DEGRADED_COUNT=$((DEGRADED_COUNT + 1)); REPORT_DEGRADED_COUNT=$((REPORT_DEGRADED_COUNT + 1)); WARN_COUNT=$((WARN_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)); DEGRADED_JSON="${DEGRADED_JSON:+$DEGRADED_JSON, }\"gate${gate}\"" ;;
+      *) FAIL_COUNT=$((FAIL_COUNT + 1)); NONPASS_COUNT=$((NONPASS_COUNT + 1)); FAILED_JSON="${FAILED_JSON:+$FAILED_JSON, }\"gate${gate}\"" ;;
     esac
   done
 
@@ -4296,15 +4319,12 @@ generate_quality_report() {
       VERDICT="WARN"     # all effective gates passed or warned; warns forbid PASS
     fi
   elif [ "$SKIP_COUNT" -gt 0 ]; then
-    # PARTIAL: 没有任何失败，但有门禁没跑。
-    #
-    # SKIP 被排除在分母外，于是 effective pass rate 把"没跑"与"跑过"算成同一件事。
-    # 实测只改一个 .md 的提交：12 道门跑了 3 道，全部通过，汇总却报
-    # "10.0/10 | verdict: PASS"，整个代码质量半边从未执行。
-    #
-    # docs-only 提交跳过重门禁是设计行为（REQ-F2），所以这里绝不阻断 —— 降级
-    # verdict 就是全部修复。它让 PASS 保持"该跑的都跑了且都过了"，而不是
-    # "没人抱怨"。
+    # #575: PARTIAL. Something passed, but not everything ran, and "PASS" reads
+    # as a statement about the commit — not about the fraction of the pipeline
+    # that happened to execute. A docs-only commit runs 3 of 12 gates and used
+    # to report `verdict: PASS`, which is a claim the run did not support.
+    # This is deliberately NOT FAIL: nothing failed. It is also not SKIP-ALL,
+    # which means no gate ran at all. Naming the gap is the whole point.
     VERDICT="PARTIAL"
   fi
 
@@ -4400,8 +4420,8 @@ generate_quality_report() {
       COVERAGE_WARNINGS_JSON="${COVERAGE_WARNINGS_JSON:+$COVERAGE_WARNINGS_JSON, }\"unsupported_language_name\""
       continue
     fi
-    _cm_g3=$(classify_coverage_reason "${GATE_3_REASON:-}" "${GATE_3_STATUS:-PASS}")
-    _cm_g4=$(classify_coverage_reason "${GATE_4_REASON:-}" "${GATE_4_STATUS:-PASS}")
+    _cm_g3=$(classify_coverage_reason "${GATE_3_REASON:-}" "${GATE_3_STATUS:-SKIP}")
+    _cm_g4=$(classify_coverage_reason "${GATE_4_REASON:-}" "${GATE_4_STATUS:-SKIP}")
     # Gate 6 reason for this language — extracted so the rule is testable
     # rather than inlined (see coverage_g6_reason_for below).
     _cm_g6_reason=$(coverage_g6_reason_for "$_cm_lang")
@@ -4423,12 +4443,12 @@ generate_quality_report() {
     "gatesPassed": $PASSED_COUNT,
     "gatesTotal": $TOTAL_GATES,
     "gatesSkipped": $SKIP_COUNT,
-    "gatesDegraded": $DEGRADED_COUNT,
+    "gatesWarned": $WARN_COUNT,
+    "gatesFailed": $FAIL_COUNT,
+    "failedGates": [$FAILED_JSON],
+    "gatesDegraded": $REPORT_DEGRADED_COUNT,
     "degradedGates": [$DEGRADED_JSON],
     "gatesEffective": $EFFECTIVE_TOTAL,
-    "gatesWarned": $WARN_COUNT,
-    "gatesFailed": $FAILED_COUNT,
-    "failedGates": [$FAILED_JSON],
     "effectivePassRate": $EFFECTIVE_PASS_RATE_JSON,
     "gatesRan": $GATES_RAN,
     "scoreAllGates": $SCORE_ALL_JSON,
@@ -4441,7 +4461,7 @@ generate_quality_report() {
   "gates": {
     "gate1_static_analysis": {
       "name": "Code Quality (Static + Lint + Shell)",
-      "status": "${GATE_1_STATUS:-PASS}",
+      "status": "${GATE_1_STATUS:-SKIP}",
       "tool": "${GATE_1_TOOL:-auto}"
     },
     "gate2_dup_code": {
@@ -4451,7 +4471,7 @@ generate_quality_report() {
     },
     "gate3_complexity": {
       "name": "Cyclomatic Complexity",
-      "status": "${GATE_3_STATUS:-PASS}",
+      "status": "${GATE_3_STATUS:-SKIP}",
       "reason": "${GATE_3_REASON:-}",
       "threshold": "${CCN_THRESHOLD:-5}",
       "blockThreshold": "${CCN_THRESHOLD:-5}",
@@ -4459,13 +4479,14 @@ generate_quality_report() {
     },
     "gate4_principles": {
       "name": "Clean Code + SOLID",
-      "status": "${GATE_4_STATUS:-PASS}",
+      "status": "${GATE_4_STATUS:-SKIP}",
       "reason": "${GATE_4_REASON:-}",
       "warnings": ${WARNING_COUNT:-0}
     },
     "gate5_tests": {
       "name": "Tests + Coverage",
       "status": "${GATE_5_STATUS:-SKIP}",
+      "reason": "${GATE_5_DETAIL:-}",
       "thresholds": { "lines": ${COVERAGE_THRESHOLD}, "functions": null, "branches": null, "statements": null },
       "threshold_source": "${COVERAGE_THRESHOLD_SOURCE}",
       "actual": { "coverage": "${COV_PCT}" },
@@ -4480,30 +4501,30 @@ generate_quality_report() {
     },
     "gate7_iac_security": {
       "name": "IaC Security Scanning",
-      "status": "${GATE_7_STATUS:-PASS}",
+      "status": "${GATE_7_STATUS:-SKIP}",
       "scanned_files": ${GATE_7_SCANNED_FILES:-0},
       "tools": "checkov, hadolint, kube-score, tflint"
     },
     "gate8_secret_scanning": {
       "name": "Secret Scanning",
-      "status": "${GATE_8_STATUS:-PASS}",
+      "status": "${GATE_8_STATUS:-SKIP}",
       "tool": "gitleaks"
     },
     "gate9_build_integrity": {
       "name": "Build Integrity",
-      "status": "${GATE_9_STATUS:-PASS}",
+      "status": "${GATE_9_STATUS:-SKIP}",
       "tool": "tsc + npm pack + import check"
     },
     "gate10_sast": {
       "name": "SAST Security Scan",
-      "status": "${GATE_10_STATUS:-PASS}",
+      "status": "${GATE_10_STATUS:-SKIP}",
       "reason": "${GATE_10_REASON:-}",
       "scanned_files": ${GATE_10_SCANNED_FILES:-0},
       "tool": "semgrep"
     },
     "gate11_sprint_flow": {
       "name": "Sprint Flow Enforcement",
-      "status": "${GATE_11_STATUS:-PASS}",
+      "status": "${GATE_11_STATUS:-SKIP}",
       "tool": "sprint-gate.sh"
     },
     "gate12_file_hygiene": {
@@ -4525,17 +4546,17 @@ ENDJSON
 
   # ── History append (unchanged — append-only for trend) ────────────────────────────
   local GATES_JSON="{"
-  GATES_JSON="${GATES_JSON}\"gate1\":{\"status\":\"${GATE_1_STATUS:-PASS}\",\"name\":\"Code Quality\"},"
+  GATES_JSON="${GATES_JSON}\"gate1\":{\"status\":\"${GATE_1_STATUS:-SKIP}\",\"name\":\"Code Quality\"},"
   GATES_JSON="${GATES_JSON}\"gate2\":{\"status\":\"${GATE_2_STATUS:-SKIP}\",\"name\":\"Duplicate Code\"},"
-  GATES_JSON="${GATES_JSON}\"gate3\":{\"status\":\"${GATE_3_STATUS:-PASS}\",\"name\":\"Complexity\",\"warnings\":${CC_WARNINGS:-0}},"
-  GATES_JSON="${GATES_JSON}\"gate4\":{\"status\":\"${GATE_4_STATUS:-PASS}\",\"name\":\"Principles\",\"warnings\":${WARNING_COUNT:-0}},"
+  GATES_JSON="${GATES_JSON}\"gate3\":{\"status\":\"${GATE_3_STATUS:-SKIP}\",\"name\":\"Complexity\",\"warnings\":${CC_WARNINGS:-0}},"
+  GATES_JSON="${GATES_JSON}\"gate4\":{\"status\":\"${GATE_4_STATUS:-SKIP}\",\"name\":\"Principles\",\"warnings\":${WARNING_COUNT:-0}},"
   GATES_JSON="${GATES_JSON}\"gate5\":{\"status\":\"${GATE_5_STATUS:-SKIP}\",\"name\":\"Tests+Coverage\",\"coverage\":\"${COV_PCT}\"},"
   GATES_JSON="${GATES_JSON}\"gate6\":{\"status\":\"${GATE_6_STATUS:-SKIP}\",\"name\":\"Architecture+BoyScout\",\"bsBlocked\":${BS_BLOCKED}},"
-  GATES_JSON="${GATES_JSON}\"gate7\":{\"status\":\"${GATE_7_STATUS:-PASS}\",\"name\":\"IaC Security\"},"
-  GATES_JSON="${GATES_JSON}\"gate8\":{\"status\":\"${GATE_8_STATUS:-PASS}\",\"name\":\"Secret Scanning\"},"
-  GATES_JSON="${GATES_JSON}\"gate9\":{\"status\":\"${GATE_9_STATUS:-PASS}\",\"name\":\"Build Integrity\"},"
-  GATES_JSON="${GATES_JSON}\"gate10\":{\"status\":\"${GATE_10_STATUS:-PASS}\",\"name\":\"SAST Security\"},"
-  GATES_JSON="${GATES_JSON}\"gate11\":{\"status\":\"${GATE_11_STATUS:-PASS}\",\"name\":\"Sprint Flow\"},"
+  GATES_JSON="${GATES_JSON}\"gate7\":{\"status\":\"${GATE_7_STATUS:-SKIP}\",\"name\":\"IaC Security\"},"
+  GATES_JSON="${GATES_JSON}\"gate8\":{\"status\":\"${GATE_8_STATUS:-SKIP}\",\"name\":\"Secret Scanning\"},"
+  GATES_JSON="${GATES_JSON}\"gate9\":{\"status\":\"${GATE_9_STATUS:-SKIP}\",\"name\":\"Build Integrity\"},"
+  GATES_JSON="${GATES_JSON}\"gate10\":{\"status\":\"${GATE_10_STATUS:-SKIP}\",\"name\":\"SAST Security\"},"
+  GATES_JSON="${GATES_JSON}\"gate11\":{\"status\":\"${GATE_11_STATUS:-SKIP}\",\"name\":\"Sprint Flow\"},"
   GATES_JSON="${GATES_JSON}\"gate12\":{\"status\":\"${GATE_12_STATUS:-WARN}\",\"name\":\"File Hygiene\"}}"
 
   echo "{\"timestamp\":\"$TIMESTAMP\",\"commit\":\"$COMMIT_HASH\",\"branch\":\"$BRANCH\",\"score\":$SCORE_JSON,\"passed\":$PASSED_COUNT,\"total\":$TOTAL_GATES,\"effectiveTotal\":$EFFECTIVE_TOTAL,\"effectivePassRate\":$EFFECTIVE_PASS_RATE_JSON,\"skipCount\":$SKIP_COUNT,\"verdict\":\"$VERDICT\",\"gates\":$GATES_JSON,\"coverage\":\"$COV_PCT\",\"complexityWarnings\":${CC_WARNINGS:-0},\"principleWarnings\":${WARNING_COUNT:-0},\"boyScoutBlocked\":${BS_BLOCKED}}" >> "$HISTORY_FILE"
@@ -4546,17 +4567,17 @@ ENDJSON
   echo "  📊 Quality Report — $TIMESTAMP"
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
-  printf "  %-45s %s\n" "Gate 1: Code Quality" "${GATE_1_STATUS:-PASS}"
+  printf "  %-45s %s\n" "Gate 1: Code Quality" "${GATE_1_STATUS:-SKIP}"
   printf "  %-45s %s\n" "Gate 2: Duplicate Code" "${GATE_2_STATUS:-SKIP}"
-  printf "  %-45s %s (warnings: ${CC_WARNINGS:-0})\n" "Gate 3: Complexity" "${GATE_3_STATUS:-PASS}"
-  printf "  %-45s %s (warnings: ${WARNING_COUNT:-0})\n" "Gate 4: Principles" "${GATE_4_STATUS:-PASS}"
+  printf "  %-45s %s (warnings: ${CC_WARNINGS:-0})\n" "Gate 3: Complexity" "${GATE_3_STATUS:-SKIP}"
+  printf "  %-45s %s (warnings: ${WARNING_COUNT:-0})\n" "Gate 4: Principles" "${GATE_4_STATUS:-SKIP}"
   printf "  %-45s %s (coverage: ${COV_PCT}%%)\n" "Gate 5: Tests + Coverage" "${GATE_5_STATUS:-SKIP}"
   printf "  %-45s %s\n" "Gate 6: Architecture + Boy Scout" "${GATE_6_STATUS:-SKIP}"
-  printf "  %-45s %s\n" "Gate 7: IaC Security" "${GATE_7_STATUS:-PASS}"
-  printf "  %-45s %s\n" "Gate 8: Secret Scanning" "${GATE_8_STATUS:-PASS}"
-  printf "  %-45s %s\n" "Gate 9: Build Integrity" "${GATE_9_STATUS:-PASS}"
-  printf "  %-45s %s\n" "Gate 10: SAST Security" "${GATE_10_STATUS:-PASS}"
-  printf "  %-45s %s\n" "Gate 11: Sprint Flow" "${GATE_11_STATUS:-PASS}"
+  printf "  %-45s %s\n" "Gate 7: IaC Security" "${GATE_7_STATUS:-SKIP}"
+  printf "  %-45s %s\n" "Gate 8: Secret Scanning" "${GATE_8_STATUS:-SKIP}"
+  printf "  %-45s %s\n" "Gate 9: Build Integrity" "${GATE_9_STATUS:-SKIP}"
+  printf "  %-45s %s\n" "Gate 10: SAST Security" "${GATE_10_STATUS:-SKIP}"
+  printf "  %-45s %s\n" "Gate 11: Sprint Flow" "${GATE_11_STATUS:-SKIP}"
   printf "  %-45s %s\n" "Gate 12: File Hygiene" "${GATE_12_STATUS:-WARN}"
   echo ""
   # #564: both views in one line. The effective score answers "of the gates that

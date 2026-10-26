@@ -1,7 +1,7 @@
 {
     "note":  "PowerShell cyclomatic-complexity ratchet baseline (Gate 3). Regenerate with tools/Update-ComplexityBaseline.ps1. Entries may only go DOWN: a commit that raises any function\u0027s CCN above its recorded value is blocked.",
-    "threshold":  5,
-    "measured":  "140",
+    "threshold":  1,
+    "measured":  "165",
     "entries":  [
                     {
                         "file":  "references/scripts/clean-residuals.ps1",
@@ -88,6 +88,12 @@
                         "ccn":  19
                     },
                     {
+                        "file":  "tools/Test-PowerShellArchitecture.ps1",
+                        "function":  "ConvertFrom-LayerBlock",
+                        "line":  55,
+                        "ccn":  18
+                    },
+                    {
                         "file":  "references/scripts/create-restore-point.ps1",
                         "function":  "Main",
                         "line":  80,
@@ -166,6 +172,12 @@
                         "ccn":  12
                     },
                     {
+                        "file":  "tools/Test-PowerShellArchitecture.ps1",
+                        "function":  "Get-LayerForFile",
+                        "line":  130,
+                        "ccn":  12
+                    },
+                    {
                         "file":  "references/scripts/rollback-verdicts.ps1",
                         "function":  "Get-RestorableEntry",
                         "line":  249,
@@ -179,14 +191,14 @@
                     },
                     {
                         "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Write-RegUnicodeFile",
-                        "line":  202,
+                        "function":  "Export-RegistryKeyBackup",
+                        "line":  263,
                         "ccn":  10
                     },
                     {
                         "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Export-RegistryKeyBackup",
-                        "line":  263,
+                        "function":  "Write-RegUnicodeFile",
+                        "line":  202,
                         "ccn":  10
                     },
                     {
@@ -197,14 +209,14 @@
                     },
                     {
                         "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Get-RollbackConsumptionDecision",
-                        "line":  750,
+                        "function":  "Select-RecoveryCandidate",
+                        "line":  174,
                         "ccn":  10
                     },
                     {
                         "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Select-RecoveryCandidate",
-                        "line":  174,
+                        "function":  "Get-RollbackConsumptionDecision",
+                        "line":  750,
                         "ccn":  10
                     },
                     {
@@ -275,8 +287,8 @@
                     },
                     {
                         "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Read-RollbackJournal",
-                        "line":  261,
+                        "function":  "Get-NormalizedRegKeyPath",
+                        "line":  683,
                         "ccn":  7
                     },
                     {
@@ -287,20 +299,20 @@
                     },
                     {
                         "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Write-FileAtomic",
-                        "line":  192,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Get-NormalizedRegKeyPath",
-                        "line":  683,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
                         "function":  "ConvertTo-RollbackJournal",
                         "line":  302,
+                        "ccn":  7
+                    },
+                    {
+                        "file":  "references/scripts/rollback-journal.ps1",
+                        "function":  "Read-RollbackJournal",
+                        "line":  261,
+                        "ccn":  7
+                    },
+                    {
+                        "file":  "references/scripts/rollback-journal.ps1",
+                        "function":  "Write-FileAtomic",
+                        "line":  192,
                         "ccn":  7
                     },
                     {
@@ -374,6 +386,534 @@
                         "function":  "Get-ResidualVerdict",
                         "line":  51,
                         "ccn":  6
+                    },
+                    {
+                        "file":  "references/scripts/build-installed-index.ps1",
+                        "function":  "ConvertFrom-ChocoText",
+                        "line":  124,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/clean-residuals.ps1",
+                        "function":  "Get-OptionalProtectionStatus",
+                        "line":  284,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/clean-residuals.ps1",
+                        "function":  "New-RollbackPlannedEntry",
+                        "line":  317,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-backup.ps1",
+                        "function":  "Confirm-PathEntryRemoved",
+                        "line":  410,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-exec.ps1",
+                        "function":  "Add-RegSignatureLine",
+                        "line":  66,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-exec.ps1",
+                        "function":  "Get-SignIiInputForEntry",
+                        "line":  415,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-exec.ps1",
+                        "function":  "Get-CurrentRegSnapshot",
+                        "line":  217,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-journal.ps1",
+                        "function":  "ConvertFrom-RollbackJournalText",
+                        "line":  77,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-journal.ps1",
+                        "function":  "ConvertTo-RollbackJournalEntry",
+                        "line":  359,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-journal.ps1",
+                        "function":  "Get-ItemId",
+                        "line":  145,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-producer.ps1",
+                        "function":  "Update-RollbackJournalEntry",
+                        "line":  173,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-recovery.ps1",
+                        "function":  "Get-CompletedAtState",
+                        "line":  69,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-recovery.ps1",
+                        "function":  "Test-MarkerWellFormed",
+                        "line":  30,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-recovery.ps1",
+                        "function":  "Get-RecoveryJournalTarget",
+                        "line":  843,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-recovery.ps1",
+                        "function":  "Test-WithinRecoveryWindow",
+                        "line":  596,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-recovery.ps1",
+                        "function":  "Get-UnfinishedJournalFallbackDecision",
+                        "line":  698,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-recovery.ps1",
+                        "function":  "Test-JournalIsStaleOrForeign",
+                        "line":  398,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/rollback-recovery.ps1",
+                        "function":  "Complete-RollbackJournal",
+                        "line":  552,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/scan-filesystem-residuals.ps1",
+                        "function":  "Test-AllSubdirsEmpty",
+                        "line":  53,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/scan-uninstalled.ps1",
+                        "function":  "Get-UninstallExePath",
+                        "line":  28,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "tools/New-SkillPackage.ps1",
+                        "function":  "Copy-PackageContent",
+                        "line":  84,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "tools/Update-DocTables.ps1",
+                        "function":  "Format-ExitCodeTable",
+                        "line":  218,
+                        "ccn":  5
+                    },
+                    {
+                        "file":  "references/scripts/build-installed-index.ps1",
+                        "function":  "ConvertFrom-WingetJson",
+                        "line":  20,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/build-installed-index.ps1",
+                        "function":  "ConvertFrom-ScoopText",
+                        "line":  98,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/clean-residuals.ps1",
+                        "function":  "Get-RenameTarget",
+                        "line":  83,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/confirm-cleanup.ps1",
+                        "function":  "Get-SelectionTally",
+                        "line":  115,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/native-invoke.ps1",
+                        "function":  "ConvertTo-NativeArgument",
+                        "line":  20,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/rollback-backup.ps1",
+                        "function":  "Test-RegContinuation",
+                        "line":  39,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/rollback-exec.ps1",
+                        "function":  "ConvertTo-CanonicalRegKeyPath",
+                        "line":  37,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/rollback-exec.ps1",
+                        "function":  "Split-StartupTarget",
+                        "line":  13,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/rollback-journal.ps1",
+                        "function":  "Get-MachineFingerprint",
+                        "line":  609,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/rollback-producer.ps1",
+                        "function":  "New-RollbackBackupDirectory",
+                        "line":  77,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/rollback-producer.ps1",
+                        "function":  "Get-JournalBackupFileRelative",
+                        "line":  105,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/rollback-recovery.ps1",
+                        "function":  "Test-ExternalChangeSignRegistry",
+                        "line":  661,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/rollback-recovery.ps1",
+                        "function":  "Read-JsonFileSafe",
+                        "line":  10,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/scan-filesystem-residuals.ps1",
+                        "function":  "Get-DirectorySizeMB",
+                        "line":  33,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/scan-residuals.ps1",
+                        "function":  "Get-ExecutablePath",
+                        "line":  9,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/scan-uninstalled.ps1",
+                        "function":  "Get-ResidualEvidence",
+                        "line":  76,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "tools/Measure-PowerShellComplexity.ps1",
+                        "function":  "Get-FunctionComplexity",
+                        "line":  116,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "tools/Measure-PowerShellComplexity.ps1",
+                        "function":  "Get-NodeDecisionWeight",
+                        "line":  84,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "tools/Test-PowerShellArchitecture.ps1",
+                        "function":  "Get-ScriptDependencyList",
+                        "line":  176,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "tools/Update-DocTables.ps1",
+                        "function":  "Get-OrderedCodeRow",
+                        "line":  68,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "tools/Update-DocTables.ps1",
+                        "function":  "Get-CallerCodeRow",
+                        "line":  89,
+                        "ccn":  4
+                    },
+                    {
+                        "file":  "references/scripts/build-installed-index.ps1",
+                        "function":  "ConvertFrom-ScoopJson",
+                        "line":  75,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/clean-residuals.ps1",
+                        "function":  "Test-AdminPrivilege",
+                        "line":  257,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/clean-residuals.ps1",
+                        "function":  "Set-RollbackEntryState",
+                        "line":  362,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/clean-residuals.ps1",
+                        "function":  "Get-StartupRecoveryExitCode",
+                        "line":  429,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/confirm-cleanup.ps1",
+                        "function":  "Show-Page",
+                        "line":  34,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/create-restore-point.ps1",
+                        "function":  "Test-AdminPrivilege",
+                        "line":  23,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/create-restore-point.ps1",
+                        "function":  "Get-SystemRestoreInterval",
+                        "line":  41,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback.ps1",
+                        "function":  "Get-MatchingRestorePoint",
+                        "line":  168,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback-backup.ps1",
+                        "function":  "Confirm-RegistryTargetAbsent",
+                        "line":  388,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback-backup.ps1",
+                        "function":  "Get-RegistryParentPath",
+                        "line":  23,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback-exec.ps1",
+                        "function":  "Get-ReportedRollbackVerdict",
+                        "line":  525,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback-journal.ps1",
+                        "function":  "Get-Sha256Hex",
+                        "line":  173,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback-journal.ps1",
+                        "function":  "Get-RegistryKeyLastWriteTime",
+                        "line":  12,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback-producer.ps1",
+                        "function":  "Get-RollbackFailureKindFromCleanupAction",
+                        "line":  360,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback-producer.ps1",
+                        "function":  "Test-JournalHasMutation",
+                        "line":  272,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback-recovery.ps1",
+                        "function":  "Test-MarkerBelongsToJournal",
+                        "line":  51,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback-recovery.ps1",
+                        "function":  "Write-UnrepairedList",
+                        "line":  506,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback-verdicts.ps1",
+                        "function":  "Resolve-PathEntryScope",
+                        "line":  36,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/rollback-verdicts.ps1",
+                        "function":  "Test-RollbackFlagTrue",
+                        "line":  81,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/run-all.ps1",
+                        "function":  "Test-AdminPrivilege",
+                        "line":  9,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/scan-uninstalled.ps1",
+                        "function":  "Test-PathMissing",
+                        "line":  12,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "tools/Measure-PowerShellComplexity.ps1",
+                        "function":  "Get-DecisionNodeTypeSet",
+                        "line":  23,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "tools/Measure-PowerShellComplexity.ps1",
+                        "function":  "Test-NodeTypeMatch",
+                        "line":  99,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "tools/Update-DocTables.ps1",
+                        "function":  "Format-PatternRow",
+                        "line":  198,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "tools/Update-DocTables.ps1",
+                        "function":  "Format-MaintainerRow",
+                        "line":  208,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "tools/Update-DocTables.ps1",
+                        "function":  "Merge-CodeRow",
+                        "line":  109,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "tools/Update-DocTables.ps1",
+                        "function":  "Format-AgentRow",
+                        "line":  188,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "tools/Update-DocTables.ps1",
+                        "function":  "Merge-MarkedBlock",
+                        "line":  256,
+                        "ccn":  3
+                    },
+                    {
+                        "file":  "references/scripts/clean-residuals.ps1",
+                        "function":  "Set-MachinePathValue",
+                        "line":  388,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "references/scripts/clean-residuals.ps1",
+                        "function":  "Invoke-ScExe",
+                        "line":  47,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "references/scripts/confirm-cleanup.ps1",
+                        "function":  "Limit-StringLength",
+                        "line":  26,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "references/scripts/rollback.ps1",
+                        "function":  "Get-RegistryBackupFile",
+                        "line":  157,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "references/scripts/rollback.ps1",
+                        "function":  "Test-RollbackAdminPrivilege",
+                        "line":  30,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "references/scripts/rollback.ps1",
+                        "function":  "Get-AutoRollbackExitCode",
+                        "line":  46,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "references/scripts/rollback.ps1",
+                        "function":  "Get-BackupDirectory",
+                        "line":  139,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "references/scripts/rollback-backup.ps1",
+                        "function":  "Invoke-RegExe",
+                        "line":  239,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "references/scripts/rollback-exec.ps1",
+                        "function":  "Get-RollbackEntryParentKey",
+                        "line":  336,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "references/scripts/rollback-producer.ps1",
+                        "function":  "Write-RollbackJournalSafely",
+                        "line":  199,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "references/scripts/run-all.ps1",
+                        "function":  "Invoke-StepChecked",
+                        "line":  88,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "tools/Measure-PowerShellComplexity.ps1",
+                        "function":  "Test-ShortCircuitNode",
+                        "line":  110,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "tools/Measure-PowerShellComplexity.ps1",
+                        "function":  "Get-SwitchClauseCount",
+                        "line":  57,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "tools/Measure-PowerShellComplexity.ps1",
+                        "function":  "Get-DecisionPointCount",
+                        "line":  72,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "tools/Test-PowerShellArchitecture.ps1",
+                        "function":  "Split-YamlList",
+                        "line":  120,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "tools/Update-DocTables.ps1",
+                        "function":  "Get-ExitCodeDocBlock",
+                        "line":  57,
+                        "ccn":  2
+                    },
+                    {
+                        "file":  "tools/Update-DocTables.ps1",
+                        "function":  "Get-ExitCodeRow",
+                        "line":  138,
+                        "ccn":  2
                     }
                 ]
 }

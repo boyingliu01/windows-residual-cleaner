@@ -75,7 +75,13 @@ All notable changes to this project will be documented in this file.
 - `tests/unit/platform-hygiene.Tests.ps1`：产品源分母 22 → **23**
   （`tools/Update-DocTables.ps1` 入库，按 R6 硬边界同提交登记）；
   `AGENTS.md` 里同一处过期的「18 个产品源文件」一并更正。
-- 验证：双引擎 Pester 各 **806/806**；PSSA 0；UI tsc 0 / vitest 71/71；
+- **CI 抓到本轮的第二个真缺陷（换行符）**：仓库里这三份 `.md` 存的是 **LF**，而生成器
+  当时用 CRLF 拼块。本机工作树恰好是 CRLF，所以本地 `-Check` 绿；CI 干净检出是 LF，
+  于是三份文档全报 `OUT OF DATE`——**同一份代码在两个 checkout 上得出相反结论**。
+  修复：新增 `Get-DocumentNewline`，让生成块沿用**目标文档自身**的换行符；
+  并补一条回归用例（`生成块的换行符与所在文档一致`），把这类检出差异钉死。
+  这条是「本地绿、CI 红」的典型形态，值得记一笔：**生成器写文件时必须问目标文件怎么换行**。
+- 验证：双引擎 Pester 各 **807/807**；PSSA 0；UI tsc 0 / vitest 71/71；
   根 vitest 22/22；architecture 0 violations；jscpd 1.70%（Gate 2 为 warn）。
 
 ## [1.4.6.0] - 2026-10-25
