@@ -434,6 +434,42 @@ if ($proc.WaitForExit($ms)) { $proc.ExitCode }   # 才拿得到退出码
 
 ---
 
+### 16. `Get-Content -Raw` 在 PS 5.1 下对**无 BOM** 文件按**系统 ANSI 代码页**解码（2026-10-26 CI 实测）
+
+```powershell
+# ❌ 错误: 这三份 .md 是无 BOM 的 UTF-8；PS 5.1 会按系统代码页解码
+#          （CI 的 windows-latest 是 CP1252，中文系统是 CP936）
+$text = Get-Content -LiteralPath 'SKILL.md' -Raw
+# 于是 '—' (U+2014) 被读成 'â€”'，比较/生成/回写全部基于错字
+
+# ✅ 正确: 显式 UTF-8 解码，结果与运行机器的代码页无关
+$script:Utf8Read = New-Object System.Text.UTF8Encoding($false)
+$text = $script:Utf8Read.GetString([System.IO.File]::ReadAllBytes($path))
+# 写回也用同一个对象：WriteAllText($path, $text, $script:Utf8Read)
+```
+
+**为什么这个坑特别难抓**（2026-10-26 实测代价：两轮 CI 才定位）：
+
+- **字节没坏**。磁盘上的文件是对的，`git` 也不报差异——坏的只是「读进来的那一刻」。
+  所以 `git status` 干净、`diff` 无输出、编辑器里看也正常。
+- **两侧长度都相同**。CI 打印的是「长度 原=360/新=360，CRLF 原=359/新=359」——
+  只有字符不同。任何按长度/行数做的自检都放行。
+- **本地会被掩盖而不是不存在**。本机是中文系统，而被读的那段文本当时恰好是纯 ASCII，
+  于是 `Get-Content` 与 UTF-8 解码结果一致，`-Check` 一直绿。缺陷取决于
+  「运行机器的代码页 × 文件内容是否恰好含非 ASCII」这个叉乘。
+- 因此**「本地绿、CI 红」不一定是环境问题**，也可能是代码里的隐式编码假设。
+
+**教训（比修复本身重要）**：先修可观测性，再修缺陷。这次的突破点不是想到了编码，
+而是让 `-Check` 失败时打印**首个差异行的两侧原文**——下一个 CI 失败立刻把 `â€”` 摆在
+眼前，根因从「猜」变成「读」。**报「不一致」而不报「哪一行、怎么不一致」，等于把
+排查成本推给下一个读日志的人。**
+
+**守卫**：`tests/unit/doc-tables.Tests.ps1` 有一条用例断言生成器里不出现
+`Get-Content` / `File::ReadAllText`（仅看非注释行），且读文档与探测换行符走**同一份**
+`$script:Utf8Read`。反向验证过：改回旧写法立即变红。
+
+---
+
 ## 多条件检测逻辑设计原则
 
 ### 核心规则: 权威信号必须 gate 辅助信号

@@ -67,17 +67,41 @@ All notable changes to this project will be documented in this file.
 - `README.md` + `AGENTS.md`：写明「xp-gate 代码不在本仓维护」，并保留这次处置的理由，
   免得下一个维护者又把它 vendored 回来。
 
-#### 关于 `Update-DocTables.ps1` 的一次可观测性修复
+#### 关于 `Update-DocTables.ps1` 的两步修复：先让失败可读，再修真正的缺陷
 
-CI 上 `doc-tables` 的 `-Check` 报「三份文档全部 OUT OF DATE」，而本机同一条命令是绿的。
-逐项排除后仍无法复现（LF/CRLF 都试过、producer 改 CRLF 也试过、PS 5.1 与 pwsh 7 的正则
-结果逐字相同）。真正的问题是**日志只说「不一致」不说「哪一行怎么不一致」**，
-下一步只能靠猜。现 `-Check` 失败时打印首个差异行号、两侧行数、两侧 CRLF 计数与两侧原文。
-这不是让 CI 变绿的改动，是让下一次失败自带答案。
+**第一步：可观测性。** CI 上 `doc-tables` 的 `-Check` 报「三份文档全部 OUT OF DATE」，
+而本机同一条命令是绿的。逐项排除后仍无法复现（LF/CRLF 都试过、producer 改 CRLF 也试过、
+PS 5.1 与 pwsh 7 的正则结果逐字相同）。真正的问题是**日志只说「不一致」不说
+「哪一行怎么不一致」**，下一步只能靠猜。于是先让 `-Check` 失败时打印首个差异行号、
+两侧行数、两侧 CRLF 计数与两侧原文。
+
+**第二步：这个改动立刻给出了答案。** 下一次 CI 的失败信息是：
+
+```
+文档现有: | `2` | Permission denied (not elevated) â€” deletion needs Administrator. |
+生成结果: | `2` | Permission denied (not elevated) — deletion needs Administrator. |
+```
+
+`â€”` 是 UTF-8 的 `—`（U+2014）被按 **CP1252** 解码的结果。同一行、两侧字节数相同
+（360/360）、CRLF 计数也相同（359/359）——**字节没坏，表格内容也没坏，坏在生成器把
+文件读进来的那一瞬间**。
+
+根因：`Get-Content -Raw` 在 **Windows PowerShell 5.1** 下对**无 BOM** 文件按**系统 ANSI
+代码页**解码，而这四份文件（三份 `.md` + producer `.ps1`）都是无 BOM UTF-8。CI 的
+windows-latest 是英文系统（CP1252），本机是中文系统，而本机当时那段文本恰好是 ASCII，
+于是缺陷被**掩盖**而不是不存在。
+
+修复：在脚本顶部显式持有 `$script:Utf8Read = New-Object System.Text.UTF8Encoding($false)`，
+五处读取（producer 注释、两处换行符探测、文档正文、写回）全部改用它。换行符探测尤其
+要走同一份解码结果——否则同一份文档会被两条不同编码的读法解读，问题只是藏得更深。
+
+新增用例同时断言两件事：(1) 生成器里不再出现任何代码页敏感的读取（`Get-Content` /
+`File::ReadAllText`，只看非注释行）；(2) 读文档与探测换行符都走 `$script:Utf8Read`。
+**反向验证过**：把那一行改回 `Get-Content -Raw`，新用例立即变红（9/1）；恢复后 10/10。
 
 #### 验证
 
-双引擎 Pester 各 **807/807**（pwsh 7 与 PS 5.1）；PSSA 0；复杂度棘轮 11 函数、超阈值 0。
+双引擎 Pester 各 **808/808**（pwsh 7 与 PS 5.1）；PSSA 0；复杂度棘轮 11 函数、超阈值 0。
 
 ## [1.4.7.0] - 2026-10-25
 

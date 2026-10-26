@@ -63,6 +63,32 @@ Describe 'Doc tables: 退出码表单一事实来源（2026-10-25）' {
         }
     }
 
+    It '生成器按 UTF-8 读取文档，不依赖系统 ANSI 代码页（CI 与本地结论相反的真凶）' {
+        # 2026-10-26 CI 实测：三份文档全报 OUT OF DATE，-Check 打印的差异行是
+        #   文档现有: | `2` | ... â€” deletion needs Administrator.
+        #   生成结果: | `2` | ... — deletion needs Administrator.
+        # `â€”` 是 UTF-8 的 U+2014 被按 CP1252 解码的结果 —— 字节没坏，内容也没坏，
+        # 坏在生成器读进来的那一瞬间。`Get-Content -Raw` 在 Windows PowerShell 5.1
+        # 下对**无 BOM** 文件按系统 ANSI 代码页解码，而仓库里这几份文件都是无 BOM
+        # UTF-8。本机之所以绿，只是因为这台机器的 ANSI 码页恰好让那段文本仍是 ASCII。
+        #
+        # 断言两件事，缺一不可：
+        # (1) 生成器不再出现任何代码页敏感的读取（Get-Content / File::ReadAllText）；
+        # (2) 换行符探测走同一份 UTF-8 解码结果，而不是另一条路径——否则同一份文档
+        #     会被两条不同编码的读法解读，问题只是藏得更深。
+        $src = Get-Content -LiteralPath $script:Generator -Raw
+        # 注释里提到这些名字是**说明**为什么不能用，不算违规；只看非注释行。
+        $codeLines = @($src -split "`r?`n" | Where-Object { $_ -notmatch '^\s*#' })
+        $offenders = @()
+        foreach ($line in $codeLines) {
+            if ($line -match 'Get-Content\b') { $offenders += "Get-Content: $($line.Trim())" }
+            if ($line -match 'File\]::ReadAllText') { $offenders += "ReadAllText: $($line.Trim())" }
+        }
+        $offenders | Should -BeNullOrEmpty -Because "生成器里仍有代码页敏感的读取（PS 5.1 下按系统 ANSI 解码无 BOM 文件）：$($offenders -join ' / ')。请用 UTF8Encoding 显式解码（见脚本顶部的 `$script:Utf8Read`）"
+        $src | Should -Match '\$script:Utf8Read' -Because '生成器必须显式持有 UTF-8 解码器，否则读文档的编码取决于运行机器的代码页'
+        ([regex]::Matches($src, '\$script:Utf8Read\.GetString')).Count | Should -BeGreaterThan 1 -Because '读文档与探测换行符必须走同一份解码结果（至少要覆盖两处），不允许一条走 UTF-8、一条走默认编码'
+    }
+
     It 'SKILL.md 与 pattern 文档都带生成块标记' {
         # 标记是把两份文档绑到同一个事实来源的**唯一机制**。
         # 删掉标记 = 悄悄退回手工维护，而那正是这次要消除的东西。

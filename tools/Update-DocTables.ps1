@@ -33,6 +33,21 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $producerPath = Join-Path $repoRoot 'references/scripts/rollback-producer.ps1'
 
+# Read text as UTF-8, explicitly.
+#
+# `Get-Content -Raw` is NOT safe here: on Windows PowerShell 5.1 it decodes a BOM-less
+# file using the system ANSI code page, and all four files this script touches (.md docs
+# and the producer .ps1) are BOM-less UTF-8. The failure is one-directional and therefore
+# sneaky -- the *bytes on disk* are fine, and the table content is fine, but the text the
+# generator compares against has already been mangled. CI showed it as:
+#   文档现有: | `2` | ... â€” deletion needs Administrator.   <- U+2014 decoded as CP1252
+#   生成结果: | `2` | ... — deletion needs Administrator.
+# Same line, same length in bytes, different characters -> reported as drift forever.
+# Locally it passed only because this machine's ANSI page happens to be CP936 and the
+# docs it read were ASCII at that point; the defect was masked, not absent.
+# An explicit UTF-8 decode makes the result independent of the machine's code page.
+$script:Utf8Read = New-Object System.Text.UTF8Encoding($false)
+
 # ---------------------------------------------------------------------------
 # 1. Extract the ordered list from the authoritative doc block.
 #
@@ -57,7 +72,7 @@ $script:CallerCodeMeaning = @{
 function Get-ExitCodeDocBlock {
     param([string]$Path)
 
-    $text = Get-Content -LiteralPath $Path -Raw
+    $text = $script:Utf8Read.GetString([System.IO.File]::ReadAllBytes($Path))
     $m = [regex]::Match($text, '(?s)function\s+Get-CleanupExitCode\s*\{.*?\.DESCRIPTION(.*?)#>')
     if (-not $m.Success) {
         throw "无法在 $Path 定位 Get-CleanupExitCode 的 .DESCRIPTION 注释块 —— 生成器失去事实来源，必须先修生成器而不是绕过"
@@ -242,7 +257,7 @@ function Format-ExitCodeTable {
     # added function as a complexity regression -- xp-gate issue #598 -- so a new
     # 3-line helper blocks the commit. Remove this note when #598 is fixed.)
     $newline = "`n"
-    if ([System.IO.File]::ReadAllText($DocumentPath).Contains("`r`n")) { $newline = "`r`n" }
+    if ($script:Utf8Read.GetString([System.IO.File]::ReadAllBytes($DocumentPath)).Contains("`r`n")) { $newline = "`r`n" }
 
     return (@($header) + @($body)) -join $newline
 }
@@ -256,13 +271,13 @@ $endMarker = '<!-- END GENERATED: exit-codes -->'
 function Merge-MarkedBlock {
     param([string]$Path, [string]$Block)
 
-    $text = Get-Content -LiteralPath $Path -Raw
+    $text = $script:Utf8Read.GetString([System.IO.File]::ReadAllBytes($Path))
     $pattern = '(?s)' + [regex]::Escape($beginMarker) + '.*?' + [regex]::Escape($endMarker)
     if (-not [regex]::IsMatch($text, $pattern)) {
         throw "$Path 缺少生成块标记 $beginMarker / $endMarker —— 标记是两个文档共享同一份表格的唯一机制，删掉它等于恢复手工维护"
     }
     $nl = "`n"
-    if ([System.IO.File]::ReadAllText($Path).Contains("`r`n")) { $nl = "`r`n" }
+    if ($script:Utf8Read.GetString([System.IO.File]::ReadAllBytes($Path)).Contains("`r`n")) { $nl = "`r`n" }
     $replacement = $beginMarker + $nl + $Block + $nl + $endMarker
     $updated = [regex]::Replace($text, $pattern, { param($m) $replacement })
     return [pscustomobject]@{ Path = $Path; Original = $text; Updated = $updated; Changed = ($text -ne $updated) }
@@ -326,7 +341,7 @@ if ($Check) {
 }
 
 foreach ($r in $drifted) {
-    [System.IO.File]::WriteAllText($r.Path, $r.Updated, (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($r.Path, $r.Updated, $script:Utf8Read)
     Write-Output "updated: $($r.Path)"
 }
 if ($drifted.Count -eq 0) { Write-Output '所有文档已是最新' }
