@@ -23,14 +23,25 @@ Describe 'run-all.ps1 Test-AdminPrivilege' {
         Test-AdminPrivilege | Should -BeOfType [bool]
     }
 
-    It 'returns false with -Mandatory in a non-admin session (no exit)' -Skip:$script:IsAdmin {
-        # 本会话是非管理员；关键点是它 return $false 而不是 exit 2
-        Test-AdminPrivilege -Mandatory | Should -Be $false
+    It 'returns false with -Mandatory when not admin (no exit)' {
+        # 用注入接缝驱动**两个**分支，而不是靠「本会话恰好不是管理员」。
+        # 前者 CI（管理员 runner）与本机（非管理员）都会跑同一条断言；后者会让
+        # 这一支只在其中一侧执行——CI 行覆盖率因此掉到 79.84%，低于 80% 阈值。
+        Test-AdminPrivilege -Mandatory -IsAdminOverride $false 2>$null | Should -Be $false
+    }
+
+    It 'returns true with -Mandatory when admin (override) — 管理员分支同样可驱动' {
+        Test-AdminPrivilege -Mandatory -IsAdminOverride $true | Should -Be $true
     }
 
     It 'does not terminate the host when called' {
         # 能执行到这里就证明没有 exit
-        { Test-AdminPrivilege -Mandatory | Out-Null } | Should -Not -Throw
+        { Test-AdminPrivilege -Mandatory -IsAdminOverride $false 2>$null | Out-Null } | Should -Not -Throw
+    }
+
+    It 'warns (not errors) without -Mandatory when not admin' {
+        $w = @(Test-AdminPrivilege -IsAdminOverride $false 3>&1 2>&1 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+        $w.Count | Should -Be 1 -Because '非强制路径必须只发警告，不写错误流'
     }
 }
 
@@ -91,8 +102,13 @@ Describe 'run-all.ps1 step failure propagation' {
 Describe 'create-restore-point.ps1 Test-AdminPrivilege' {
     BeforeEach { . $script:RestoreScript }
 
-    It 'returns false with -Mandatory in a non-admin session (no exit)' -Skip:$script:IsAdmin {
-        Test-AdminPrivilege -Mandatory | Should -Be $false
+    It 'returns false with -Mandatory when not admin (no exit)' {
+        # 同 run-all.ps1：用注入接缝驱动，两个身份下都执行
+        Test-AdminPrivilege -Mandatory -IsAdminOverride $false 2>$null | Should -Be $false
+    }
+
+    It 'returns true with -Mandatory when admin (override)' {
+        Test-AdminPrivilege -Mandatory -IsAdminOverride $true | Should -Be $true
     }
 
     It 'returns a boolean without -Mandatory' {
@@ -273,20 +289,28 @@ Describe 'run-all.ps1 pipeline step-abort propagation' {
         $script:capturedExe | Should -Be "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe"
     }
 
-    It 'exits via the guard with the code Main relayed (guard path)' -Skip:$script:IsAdmin {
-        # 覆盖 run-all.ps1 末尾执行守卫的 135-137 行：以子进程 -File 方式真正执行脚本，
-        # 非管理员下应 exit 2（权限门），且输出不含 "exit" 之外的异常。
-        # 管理员会话（CI runner）下权限门放行，管道会真实执行到业务步骤，
-        # 「守卫转发权限门退出码」这条契约无法观测，跳过。
+    It 'exits via the guard with the code Main relayed (guard path)' {
+        # 覆盖 run-all.ps1 末尾执行守卫：以子进程 -File 方式**真正执行**脚本（dot-source
+        # 永远走不到 `exit` 那一行），断言 Main 回传 2、守卫原样 exit 2。
+        #
+        # 2026-10-26 起不再 `-Skip:$IsAdmin`：原先靠「本会话恰好不是管理员」使权限门拦截，
+        # 而 CI 的 windows-latest 是管理员会话 → 权限门放行 → 管道真的跑业务步骤 →
+        # 这条契约无法观测 → 跳过 → 守卫那 3 行进不了覆盖率。现在用
+        # `WRC_TEST_IS_ADMIN` 环境变量把身份注入**子进程**（进程内参数传不过去），
+        # 于是两个环境下都走同一条确定路径，断言也不再取决于 runner 身份。
         $outFile = Join-Path $env:TEMP ('wrc-ra-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+        $prevInjected = $env:WRC_TEST_IS_ADMIN
         try {
+            $env:WRC_TEST_IS_ADMIN = 'false'
             $p = Start-Process -FilePath "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe" `
                 -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$script:RunAllScript`"") `
                 -Wait -PassThru -NoNewWindow `
                 -RedirectStandardOutput $outFile -RedirectStandardError "$outFile.err"
-            # 非管理员 → Main 回传 2 → 守卫 exit 2
+            # 注入的非管理员 → Main 回传 2 → 守卫 exit 2
             $p.ExitCode | Should -Be 2
         } finally {
+            if ($null -eq $prevInjected) { Remove-Item Env:\WRC_TEST_IS_ADMIN -ErrorAction SilentlyContinue }
+            else { $env:WRC_TEST_IS_ADMIN = $prevInjected }
             Remove-Item $outFile, "$outFile.err" -Force -ErrorAction SilentlyContinue
         }
     }

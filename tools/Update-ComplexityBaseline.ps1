@@ -1,4 +1,4 @@
-# Regenerate the PowerShell complexity ratchet baseline.
+﻿# Regenerate the PowerShell complexity ratchet baseline.
 #
 # Why a baseline instead of a flat threshold: the repo has 62 functions above
 # CCN 5 (max 143 in clean-residuals.ps1 Main) -- all of them pre-date this gate.
@@ -69,18 +69,101 @@ if ($scope.Count -eq 0) {
     if (Test-Path -LiteralPath $setup) { $scope += @($setup) }
 }
 
+# Measure with the SAME script Gate 3 runs, when it is installed.
+#
+# Gate 3 (gate-3.sh L79) measures with xp-gate's OWN copy at
+# `<xp-gate>/hooks/lib/Measure-PowerShellComplexity.ps1`, not with the one in this repo.
+# The two are different implementations and disagree: on 2026-10-26 the live copy
+# reported clean-residuals.ps1 Main at CCN 139 while the repo copy said 143. A baseline
+# built from the repo copy therefore records numbers the gate never sees -- too HIGH and
+# a real regression slips through, too LOW and the gate blocks on a function nobody
+# changed. Neither failure is visible: both files produce well-formed `OVER` lines.
+#
+# So: prefer the live copy, fall back to the repo copy only when xp-gate is not
+# installed (a bare checkout, or CI without the gate). The fallback is a degraded mode,
+# and says so, because a baseline is only meaningful against the measurer that reads it.
+$liveTool = Join-Path $HOME '.config/xp-gate/hooks/lib/Measure-PowerShellComplexity.ps1'
 $tool = Join-Path $PSScriptRoot 'Measure-PowerShellComplexity.ps1'
-$raw = & $tool -Path $scope -Threshold $Threshold
-$over = @($raw | Where-Object { $_ -like 'OVER *' })
+$measurer = 'repo'
+$supportsList = $false
+if (Test-Path -LiteralPath $liveTool) {
+    $tool = $liveTool
+    $measurer = 'live'
+    # -List only exists on xp-gate's copy. The repo copy has no such switch and would die
+    # on an unknown parameter, so it is gated on the measurer actually being the live one.
+    $supportsList = $true
+}
+else {
+    Write-Warning ('xp-gate not installed; measuring with the repo copy at {0}. ' -f $tool) +
+        'Gate 3 measures with its own copy and the two can disagree (CCN 139 vs 143 on ' +
+        'clean-residuals.ps1 Main, 2026-10-26). This copy also has no -List switch, so the ' +
+        'baseline will lack the ccn=1 population the gate does measure. Re-run this tool on a ' +
+        'machine that has xp-gate before trusting the baseline.'
+}
+Write-Verbose ("measurer: {0} ({1}), -List: {2}" -f $measurer, $tool, $supportsList)
+
+# -List, because that is how the gate measures (gate-3.sh L136 appends `-List`).
+#
+# Without it the collector only ever sees OVER lines, i.e. functions strictly above the
+# threshold. The gate, with -List, also emits a FUNC line for EVERY function -- including
+# ones at ccn=1 that can never be "above" any threshold. Those are measured-but-unknown,
+# so the ratchet reports them as "new function" and blocks the commit (measured
+# 2026-10-26: `Add-CleanupFailure ccn=1` was the last one standing after the path and
+# key-name defects were fixed). Collect the same population the gate compares against.
+# Collect the same population the gate compares against.
+$measureArgs = @{ Path = $scope; Threshold = $Threshold }
+if ($supportsList) { $measureArgs['List'] = $true }
+$raw = & $tool @measureArgs
+$over = @($raw | Where-Object { $_ -like 'OVER *' -or $_ -like 'FUNC *' })
 
 $entries = @()
 foreach ($line in $over) {
-    # "OVER <file>:<line> <name> ccn=<n>"
-    if ($line -match '^OVER (.+):(\d+) (\S+) ccn=(\d+)$') {
+    # "<OVER|FUNC> <file>:<line> <name> ccn=<n>"
+    # OVER = above threshold, FUNC = every function when -List is passed. Both must land
+    # in the baseline: the gate compares against whatever it measured, and a function it
+    # measured but the baseline lacks is reported as new.
+    if ($line -match '^(?:OVER|FUNC) (.+):(\d+) (\S+) ccn=(\d+)$') {
         $fullPath = $Matches[1]
         $entries += [ordered]@{
-            file     = (Resolve-Path -LiteralPath $fullPath -Relative -ErrorAction SilentlyContinue) -replace '\\', '/' -replace '^\./', ''
+            # ABSOLUTE path with NATIVE BACKSLASHES -- exactly how the gate spells it.
+            # Nothing else matches, and the failure is silent:
+            #
+            #   * the gate measures with xp-gate's own hooks/lib/Measure-PowerShellComplexity.ps1,
+            #     which emits `$_.FullName`, i.e. `D:\Study\...\run-all.ps1`;
+            #   * it compares norm(file) + '::' + name, where gate-3.sh L179 is
+            #         function norm(p) { return String(p).replace(/\\\\/g, "/").replace(/^\.\//, ""); }
+            #     Inside the single-quoted `node -e '...'` block bash passes FOUR backslashes,
+            #     so JS receives the regex /\\\\/ -- which matches TWO CONSECUTIVE backslashes.
+            #     A single "\" is never touched: on Windows this norm() is a NO-OP.
+            #
+            # So the two sides only agree when this file spells the path the same way the
+            # gate does, backslashes and all. A forward-slashed baseline (what this tool
+            # used to write) keeps its slashes -- it is "already normalised", so the broken
+            # regex leaves it alone -- and then nothing matches: `known` stays effectively
+            # empty and EVERY function is reported "new function at ccn=N".
+            #
+            # Measured 2026-10-26, three defects stacked, each hiding the next:
+            #   1. baseline key was `function`, gate reads `e.name`      -> known empty
+            #   2. relative paths (gate measures absolute)               -> known empty
+            #   3. forward slashes vs the gate's broken norm()           -> known empty
+            # Only #1 was in the issue I filed; #2 and #3 produce the identical symptom.
+            # Do not "tidy" this back to forward slashes -- that reintroduces #3 silently.
+            #
+            # Trade-off accepted: this file is now machine-specific. Acceptable because CI
+            # does not run xp-gate's pre-commit (see .github/workflows/ci.yml); the baseline
+            # only ever serves the local ratchet. Re-running this tool on another machine
+            # rewrites the prefix.
+            file     = (Resolve-Path -LiteralPath $fullPath -ErrorAction SilentlyContinue).Path
             function = $Matches[3]
+            # BOTH keys, for the same value. xp-gate issue #632: gate-3.sh reads
+            # `e.name` (`if (!e || !e.file || !e.name) continue;`) while this writer —
+            # named in the baseline's own `note` — emits `function`. Every entry is then
+            # skipped, `known` stays empty, and EVERY function above the threshold is
+            # reported as "new function at ccn=N", so Gate 3 blocks unconditionally once
+            # a baseline exists. Emitting both spellings makes the data readable by
+            # either side without depending on which one upstream settles on.
+            # Revert to `function` alone once #632 ships.
+            name     = $Matches[3]
             line     = [int]$Matches[2]
             ccn      = [int]$Matches[4]
         }

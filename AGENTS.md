@@ -325,6 +325,28 @@ if ($PSBoundParameters.ContainsKey('A')) { 'bound' } else { 'omitted' }
 > 存在性一律用 `$PSBoundParameters.ContainsKey`，且转发层同样要用它（否则上一层的
 > `$null -ne` 会把空串继续往下伪装）；并补一条「不传 ⇒ 必须读到活系统值」的端到端断言。
 
+> **第三变体：`[Nullable[bool]]` 参数的 `.Value` 取不出来（2026-10-26 实测）**。
+> 给 `Test-AdminPrivilege` 加 `-IsAdminOverride` 时写的是：
+
+```powershell
+# ❌ 错误: 两个分支都走 else，`-IsAdminOverride $true` 效果等于没传
+param([System.Nullable[bool]]$IsAdminOverride)
+$isAdmin = $null -ne $IsAdminOverride          # 这个判断本身是对的
+if ($isAdmin) { $isAdmin = $IsAdminOverride.Value }   # ← .Value 是空串！
+
+# ✅ 正确: 存在性看 PSBoundParameters，取值直接跟 $true 比
+if ($PSBoundParameters.ContainsKey('IsAdminOverride')) {
+    $isAdmin = ($IsAdminOverride -eq $true)
+}
+```
+
+> 实测（pwsh 7.7 与 PS 5.1 一致）：参数类型确实是 `System.Nullable\`1[System.Boolean]`，
+> `$X -eq $true` 与 `[bool]$X` 都能正确反映传进来的值，但 `$X.HasValue` 与 `$X.Value`
+> **都返回空**。所以「用 Nullable 表达三态」在 PowerShell 里并不成立：
+> `null`（未传）/ `$false` / `$true` 三态只能靠 `PSBoundParameters` + 值比较拼出来。
+> 症状很隐蔽——不传时行为正确，传 `$false` 时也正确，**只有传 `$true` 才错**，
+> 于是「默认路径绿、注入路径红」，很容易被当成用例写错。
+
 ---
 
 ### 12. 跑 Pester 的包装脚本里设 `$ErrorActionPreference = 'Stop'` 会**凭空造出失败**
@@ -768,6 +790,29 @@ It 'Works against real registry data' {
   「门禁边界一致性」测试守卫（tracked 产品源必须全被 scope 覆盖 + scope 条目必须真实存在
   + coverage-ignore 必须空 + prune-dirs 必须含 wrc-drill）。注意发现是 `*.ps1` 端到端：
   `.psm1` 模块不在发现/覆盖率/分析三处分母内（见 analysis-paths 文件头 R6 note）。
+- **Gate 3 的基线要同时满足四件事，缺一件就「必然拦住一切提交」（xp-gate #632，2026-10-26）**：
+  任一条件不满足，**每个** CCN > 阈值的函数都被报成「new function at ccn=N」，
+  而 22 条误报的症状**一字不差**——这正是它连耗三轮的原因。
+  1. **键名**：`gate-3.sh` L175 读 `e.name`，上游点名的生成器写的是 `function`；
+  2. **测量器**：门禁用 `<xp-gate>/hooks/lib/Measure-PowerShellComplexity.ps1`（L79），
+     **不是**仓库里那份。两者是不同实现，`clean-residuals.ps1` 的 `Main` 算成 **139**（仓库版 143）；
+  3. **路径拼写**：门禁的 `norm()` 在 Windows 上是**空操作**。L179 写的是
+     `.replace(/\\\\/g, "/")`，而它在 bash **单引号** `node -e '...'` 里——bash 原样传四个
+     反斜杠，JS 收到的正则是 `/\\\\/`，匹配**两个连续反斜杠**。实测
+     `norm('D:\Study\x.ps1') === 'D:\Study\x.ps1'`。所以基线必须存**绝对原生反斜杠**路径；
+     存正斜杠（"已经规范化"）会原样保留，与测量输出永不相等；
+  4. **全集**：门禁带 `-List`，会输出 `FUNC` 行覆盖**所有**函数，包括 `ccn=1` 那些永远
+     「不大于阈值」的。生成器不带 `-List` 就会漏条目，漏的那条又被报成「新函数」。
+
+  所以生成器必须：写 `name` 键 + 用 live 测量器 + `file` 存绝对反斜杠 + 传 `-List`。
+  **任何一项单独修，回归数都一点不变**（实测 22 → 22 → 22 → 0）。
+
+  **判断口径**：门禁说「new function」时，别猜自己的代码变复杂了——按 `gate-3.sh`
+  L157-208 的原逻辑（**`norm()` 逐字照抄**，别"顺手修正"它的正则）用 `node` 复算一遍
+  `known` 与实测键的交集。我第一次复现时就是把它改成了 `/\\/g`，于是本地算 0 回归、
+  真实门禁照旧拦人，白跑一轮。守卫：`tests/unit/complexity-tool.Tests.ps1` 有一条用例
+  一次钉住这四个前提。基线含本机绝对路径是可接受的（CI 不跑 xp-gate 的 pre-commit），
+  换机器重跑生成器即重写前缀。**不要**为此改动 xp-gate 或 `~/.config/xp-gate/`。
 - **coverage.xml 的口径与污染（2026-10-16 走查实测）**：引用覆盖率数字前先核对产物：
   (1) 本地包装脚本的 `CoveragePercent`（如 80.40%）是 **Pester 命令口径**；
   (2) JaCoCo `coverage.xml` 的 LINE counter 是**行口径**，两者不可互引；Gate 5 读的是后者。

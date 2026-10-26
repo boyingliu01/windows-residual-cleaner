@@ -1,919 +1,1183 @@
 {
-    "note":  "PowerShell cyclomatic-complexity ratchet baseline (Gate 3). Regenerate with tools/Update-ComplexityBaseline.ps1. Entries may only go DOWN: a commit that raises any function\u0027s CCN above its recorded value is blocked.",
-    "threshold":  1,
-    "measured":  "165",
-    "entries":  [
-                    {
-                        "file":  "references/scripts/clean-residuals.ps1",
-                        "function":  "Main",
-                        "line":  456,
-                        "ccn":  143
-                    },
-                    {
-                        "file":  "references/scripts/confirm-cleanup.ps1",
-                        "function":  "Main",
-                        "line":  146,
-                        "ccn":  66
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Test-RollbackJournalSelfValid",
-                        "line":  403,
-                        "ccn":  53
-                    },
-                    {
-                        "file":  "references/scripts/scan-residuals.ps1",
-                        "function":  "Main",
-                        "line":  18,
-                        "ccn":  49
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Invoke-RollbackRestore",
-                        "line":  592,
-                        "ccn":  46
-                    },
-                    {
-                        "file":  "references/scripts/build-installed-index.ps1",
-                        "function":  "Main",
-                        "line":  153,
-                        "ccn":  41
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Invoke-RollbackJournalConsumption",
-                        "line":  942,
-                        "ccn":  35
-                    },
-                    {
-                        "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Get-TrimmedRegExport",
-                        "line":  52,
-                        "ccn":  26
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Get-JournalSuppressionVerdict",
-                        "line":  243,
-                        "ccn":  26
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Get-RollbackEntryProbe",
-                        "line":  246,
-                        "ccn":  24
-                    },
-                    {
-                        "file":  "references/scripts/scan-uninstalled.ps1",
-                        "function":  "Main",
-                        "line":  94,
-                        "ccn":  24
-                    },
-                    {
-                        "file":  "references/scripts/clean-residuals.ps1",
-                        "function":  "Remove-ItemRobust",
-                        "line":  111,
-                        "ccn":  21
-                    },
-                    {
-                        "file":  "references/scripts/scan-filesystem-residuals.ps1",
-                        "function":  "Main",
-                        "line":  67,
-                        "ccn":  21
-                    },
-                    {
-                        "file":  "references/scripts/run-all.ps1",
-                        "function":  "Main",
-                        "line":  27,
-                        "ccn":  19
-                    },
-                    {
-                        "file":  "tools/Test-PowerShellArchitecture.ps1",
-                        "function":  "ConvertFrom-LayerBlock",
-                        "line":  55,
-                        "ccn":  18
-                    },
-                    {
-                        "file":  "references/scripts/create-restore-point.ps1",
-                        "function":  "Main",
-                        "line":  80,
-                        "ccn":  17
-                    },
-                    {
-                        "file":  "references/scripts/rollback.ps1",
-                        "function":  "Main",
-                        "line":  188,
-                        "ccn":  17
-                    },
-                    {
-                        "file":  "references/scripts/rollback-verdicts.ps1",
-                        "function":  "Get-RollbackVerdict",
-                        "line":  132,
-                        "ccn":  17
-                    },
-                    {
-                        "file":  "references/scripts/generate-report.ps1",
-                        "function":  "Main",
-                        "line":  17,
-                        "ccn":  16
-                    },
-                    {
-                        "file":  "references/scripts/confirm-cleanup.ps1",
-                        "function":  "Get-ItemContent",
-                        "line":  12,
-                        "ccn":  15
-                    },
-                    {
-                        "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Export-StartupValueBackup",
-                        "line":  314,
-                        "ccn":  14
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Get-RecoveryCandidateSet",
-                        "line":  92,
-                        "ccn":  14
-                    },
-                    {
-                        "file":  "references/scripts/rollback-verdicts.ps1",
-                        "function":  "Format-RollbackReport",
-                        "line":  314,
-                        "ccn":  14
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Get-ItemMutationKindList",
-                        "line":  39,
-                        "ccn":  13
-                    },
-                    {
-                        "file":  "references/scripts/clean-residuals.ps1",
-                        "function":  "Test-Whitelisted",
-                        "line":  239,
-                        "ccn":  12
-                    },
-                    {
-                        "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Read-RegUnicodeFile",
-                        "line":  171,
-                        "ccn":  12
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Restore-RegistryBackupFile",
-                        "line":  453,
-                        "ccn":  12
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Get-RollbackJournalEntryList",
-                        "line":  107,
-                        "ccn":  12
-                    },
-                    {
-                        "file":  "tools/Test-PowerShellArchitecture.ps1",
-                        "function":  "Get-LayerForFile",
-                        "line":  130,
-                        "ccn":  12
-                    },
-                    {
-                        "file":  "references/scripts/rollback-verdicts.ps1",
-                        "function":  "Get-RestorableEntry",
-                        "line":  249,
-                        "ccn":  11
-                    },
-                    {
-                        "file":  "setup.ps1",
-                        "function":  "Main",
-                        "line":  2,
-                        "ccn":  11
-                    },
-                    {
-                        "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Export-RegistryKeyBackup",
-                        "line":  263,
-                        "ccn":  10
-                    },
-                    {
-                        "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Write-RegUnicodeFile",
-                        "line":  202,
-                        "ccn":  10
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Get-RegExportStructure",
-                        "line":  90,
-                        "ccn":  10
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Select-RecoveryCandidate",
-                        "line":  174,
-                        "ccn":  10
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Get-RollbackConsumptionDecision",
-                        "line":  750,
-                        "ccn":  10
-                    },
-                    {
-                        "file":  "references/scripts/confirm-cleanup.ps1",
-                        "function":  "Show-Detail",
-                        "line":  61,
-                        "ccn":  9
-                    },
-                    {
-                        "file":  "references/scripts/native-invoke.ps1",
-                        "function":  "Invoke-NativeExe",
-                        "line":  52,
-                        "ccn":  9
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Get-ParentBaselineMaxByParent",
-                        "line":  354,
-                        "ccn":  9
-                    },
-                    {
-                        "file":  "references/scripts/rollback-verdicts.ps1",
-                        "function":  "Get-ExpectedPathAfterCleanup",
-                        "line":  97,
-                        "ccn":  9
-                    },
-                    {
-                        "file":  "references/scripts/rollback.ps1",
-                        "function":  "Invoke-AutoRollback",
-                        "line":  79,
-                        "ccn":  8
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Set-JournalConsumedWithoutRestore",
-                        "line":  865,
-                        "ccn":  8
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Get-CleanupExitCode",
-                        "line":  285,
-                        "ccn":  8
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Get-ParentBaselineMax",
-                        "line":  634,
-                        "ccn":  8
-                    },
-                    {
-                        "file":  "references/scripts/rollback-verdicts.ps1",
-                        "function":  "Test-RollbackRestorable",
-                        "line":  12,
-                        "ccn":  8
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Test-RegStructureIdentical",
-                        "line":  164,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Open-RegistryKeyForRead",
-                        "line":  186,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Get-NormalizedRegKeyPath",
-                        "line":  683,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "ConvertFrom-IsoUtc",
-                        "line":  648,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "ConvertTo-RollbackJournal",
-                        "line":  302,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Read-RollbackJournal",
-                        "line":  261,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Write-FileAtomic",
-                        "line":  192,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "ConvertTo-RollbackJournalTarget",
-                        "line":  13,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Write-RecoveryMarker",
-                        "line":  432,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/run-all.ps1",
-                        "function":  "Invoke-Step",
-                        "line":  51,
-                        "ccn":  7
-                    },
-                    {
-                        "file":  "references/scripts/build-installed-index.ps1",
-                        "function":  "ConvertFrom-WingetText",
-                        "line":  48,
-                        "ccn":  6
-                    },
-                    {
-                        "file":  "references/scripts/create-restore-point.ps1",
-                        "function":  "Test-SystemRestoreEnabled",
-                        "line":  60,
-                        "ccn":  6
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Get-ParentBaselineSnapshot",
-                        "line":  385,
-                        "ccn":  6
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Get-CleanupLogJournalBinding",
-                        "line":  223,
-                        "ccn":  6
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Test-CompletionMarkerSuppressed",
-                        "line":  323,
-                        "ccn":  6
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Add-RollbackJournalEntry",
-                        "line":  132,
-                        "ccn":  6
-                    },
-                    {
-                        "file":  "references/scripts/rollback-verdicts.ps1",
-                        "function":  "Test-PathSegmentPresent",
-                        "line":  62,
-                        "ccn":  6
-                    },
-                    {
-                        "file":  "references/scripts/scan-filesystem-residuals.ps1",
-                        "function":  "Get-EffectiveFileCount",
-                        "line":  8,
-                        "ccn":  6
-                    },
-                    {
-                        "file":  "references/scripts/scan-uninstalled.ps1",
-                        "function":  "Get-ResidualVerdict",
-                        "line":  51,
-                        "ccn":  6
-                    },
-                    {
-                        "file":  "references/scripts/build-installed-index.ps1",
-                        "function":  "ConvertFrom-ChocoText",
-                        "line":  124,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/clean-residuals.ps1",
-                        "function":  "Get-OptionalProtectionStatus",
-                        "line":  284,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/clean-residuals.ps1",
-                        "function":  "New-RollbackPlannedEntry",
-                        "line":  317,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Confirm-PathEntryRemoved",
-                        "line":  410,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Add-RegSignatureLine",
-                        "line":  66,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Get-SignIiInputForEntry",
-                        "line":  415,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Get-CurrentRegSnapshot",
-                        "line":  217,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "ConvertFrom-RollbackJournalText",
-                        "line":  77,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "ConvertTo-RollbackJournalEntry",
-                        "line":  359,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Get-ItemId",
-                        "line":  145,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Update-RollbackJournalEntry",
-                        "line":  173,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Get-CompletedAtState",
-                        "line":  69,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Test-MarkerWellFormed",
-                        "line":  30,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Get-RecoveryJournalTarget",
-                        "line":  843,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Test-WithinRecoveryWindow",
-                        "line":  596,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Get-UnfinishedJournalFallbackDecision",
-                        "line":  698,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Test-JournalIsStaleOrForeign",
-                        "line":  398,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Complete-RollbackJournal",
-                        "line":  552,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/scan-filesystem-residuals.ps1",
-                        "function":  "Test-AllSubdirsEmpty",
-                        "line":  53,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/scan-uninstalled.ps1",
-                        "function":  "Get-UninstallExePath",
-                        "line":  28,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "tools/New-SkillPackage.ps1",
-                        "function":  "Copy-PackageContent",
-                        "line":  84,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "tools/Update-DocTables.ps1",
-                        "function":  "Format-ExitCodeTable",
-                        "line":  218,
-                        "ccn":  5
-                    },
-                    {
-                        "file":  "references/scripts/build-installed-index.ps1",
-                        "function":  "ConvertFrom-WingetJson",
-                        "line":  20,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/build-installed-index.ps1",
-                        "function":  "ConvertFrom-ScoopText",
-                        "line":  98,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/clean-residuals.ps1",
-                        "function":  "Get-RenameTarget",
-                        "line":  83,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/confirm-cleanup.ps1",
-                        "function":  "Get-SelectionTally",
-                        "line":  115,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/native-invoke.ps1",
-                        "function":  "ConvertTo-NativeArgument",
-                        "line":  20,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Test-RegContinuation",
-                        "line":  39,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "ConvertTo-CanonicalRegKeyPath",
-                        "line":  37,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Split-StartupTarget",
-                        "line":  13,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Get-MachineFingerprint",
-                        "line":  609,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "New-RollbackBackupDirectory",
-                        "line":  77,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Get-JournalBackupFileRelative",
-                        "line":  105,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Test-ExternalChangeSignRegistry",
-                        "line":  661,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Read-JsonFileSafe",
-                        "line":  10,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/scan-filesystem-residuals.ps1",
-                        "function":  "Get-DirectorySizeMB",
-                        "line":  33,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/scan-residuals.ps1",
-                        "function":  "Get-ExecutablePath",
-                        "line":  9,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/scan-uninstalled.ps1",
-                        "function":  "Get-ResidualEvidence",
-                        "line":  76,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "tools/Measure-PowerShellComplexity.ps1",
-                        "function":  "Get-FunctionComplexity",
-                        "line":  116,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "tools/Measure-PowerShellComplexity.ps1",
-                        "function":  "Get-NodeDecisionWeight",
-                        "line":  84,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "tools/Test-PowerShellArchitecture.ps1",
-                        "function":  "Get-ScriptDependencyList",
-                        "line":  176,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "tools/Update-DocTables.ps1",
-                        "function":  "Get-OrderedCodeRow",
-                        "line":  68,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "tools/Update-DocTables.ps1",
-                        "function":  "Get-CallerCodeRow",
-                        "line":  89,
-                        "ccn":  4
-                    },
-                    {
-                        "file":  "references/scripts/build-installed-index.ps1",
-                        "function":  "ConvertFrom-ScoopJson",
-                        "line":  75,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/clean-residuals.ps1",
-                        "function":  "Test-AdminPrivilege",
-                        "line":  257,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/clean-residuals.ps1",
-                        "function":  "Set-RollbackEntryState",
-                        "line":  362,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/clean-residuals.ps1",
-                        "function":  "Get-StartupRecoveryExitCode",
-                        "line":  429,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/confirm-cleanup.ps1",
-                        "function":  "Show-Page",
-                        "line":  34,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/create-restore-point.ps1",
-                        "function":  "Test-AdminPrivilege",
-                        "line":  23,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/create-restore-point.ps1",
-                        "function":  "Get-SystemRestoreInterval",
-                        "line":  41,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback.ps1",
-                        "function":  "Get-MatchingRestorePoint",
-                        "line":  168,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Confirm-RegistryTargetAbsent",
-                        "line":  388,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Get-RegistryParentPath",
-                        "line":  23,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Get-ReportedRollbackVerdict",
-                        "line":  525,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Get-Sha256Hex",
-                        "line":  173,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback-journal.ps1",
-                        "function":  "Get-RegistryKeyLastWriteTime",
-                        "line":  12,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Get-RollbackFailureKindFromCleanupAction",
-                        "line":  360,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Test-JournalHasMutation",
-                        "line":  272,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Test-MarkerBelongsToJournal",
-                        "line":  51,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback-recovery.ps1",
-                        "function":  "Write-UnrepairedList",
-                        "line":  506,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback-verdicts.ps1",
-                        "function":  "Resolve-PathEntryScope",
-                        "line":  36,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/rollback-verdicts.ps1",
-                        "function":  "Test-RollbackFlagTrue",
-                        "line":  81,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/run-all.ps1",
-                        "function":  "Test-AdminPrivilege",
-                        "line":  9,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/scan-uninstalled.ps1",
-                        "function":  "Test-PathMissing",
-                        "line":  12,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "tools/Measure-PowerShellComplexity.ps1",
-                        "function":  "Get-DecisionNodeTypeSet",
-                        "line":  23,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "tools/Measure-PowerShellComplexity.ps1",
-                        "function":  "Test-NodeTypeMatch",
-                        "line":  99,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "tools/Update-DocTables.ps1",
-                        "function":  "Format-PatternRow",
-                        "line":  198,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "tools/Update-DocTables.ps1",
-                        "function":  "Format-MaintainerRow",
-                        "line":  208,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "tools/Update-DocTables.ps1",
-                        "function":  "Merge-CodeRow",
-                        "line":  109,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "tools/Update-DocTables.ps1",
-                        "function":  "Format-AgentRow",
-                        "line":  188,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "tools/Update-DocTables.ps1",
-                        "function":  "Merge-MarkedBlock",
-                        "line":  256,
-                        "ccn":  3
-                    },
-                    {
-                        "file":  "references/scripts/clean-residuals.ps1",
-                        "function":  "Set-MachinePathValue",
-                        "line":  388,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "references/scripts/clean-residuals.ps1",
-                        "function":  "Invoke-ScExe",
-                        "line":  47,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "references/scripts/confirm-cleanup.ps1",
-                        "function":  "Limit-StringLength",
-                        "line":  26,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "references/scripts/rollback.ps1",
-                        "function":  "Get-RegistryBackupFile",
-                        "line":  157,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "references/scripts/rollback.ps1",
-                        "function":  "Test-RollbackAdminPrivilege",
-                        "line":  30,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "references/scripts/rollback.ps1",
-                        "function":  "Get-AutoRollbackExitCode",
-                        "line":  46,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "references/scripts/rollback.ps1",
-                        "function":  "Get-BackupDirectory",
-                        "line":  139,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "references/scripts/rollback-backup.ps1",
-                        "function":  "Invoke-RegExe",
-                        "line":  239,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "references/scripts/rollback-exec.ps1",
-                        "function":  "Get-RollbackEntryParentKey",
-                        "line":  336,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "references/scripts/rollback-producer.ps1",
-                        "function":  "Write-RollbackJournalSafely",
-                        "line":  199,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "references/scripts/run-all.ps1",
-                        "function":  "Invoke-StepChecked",
-                        "line":  88,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "tools/Measure-PowerShellComplexity.ps1",
-                        "function":  "Test-ShortCircuitNode",
-                        "line":  110,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "tools/Measure-PowerShellComplexity.ps1",
-                        "function":  "Get-SwitchClauseCount",
-                        "line":  57,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "tools/Measure-PowerShellComplexity.ps1",
-                        "function":  "Get-DecisionPointCount",
-                        "line":  72,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "tools/Test-PowerShellArchitecture.ps1",
-                        "function":  "Split-YamlList",
-                        "line":  120,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "tools/Update-DocTables.ps1",
-                        "function":  "Get-ExitCodeDocBlock",
-                        "line":  57,
-                        "ccn":  2
-                    },
-                    {
-                        "file":  "tools/Update-DocTables.ps1",
-                        "function":  "Get-ExitCodeRow",
-                        "line":  138,
-                        "ccn":  2
-                    }
-                ]
+  "note": "PowerShell cyclomatic-complexity ratchet baseline (Gate 3). Regenerate with tools/Update-ComplexityBaseline.ps1. Entries may only go DOWN: a commit that raises any function's CCN above its recorded value is blocked.",
+  "threshold": 1,
+  "measured": "168",
+  "entries": [
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\build-installed-index.ps1",
+      "function": "ConvertFrom-WingetJson",
+      "name": "ConvertFrom-WingetJson",
+      "line": 20,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\build-installed-index.ps1",
+      "function": "ConvertFrom-WingetText",
+      "name": "ConvertFrom-WingetText",
+      "line": 48,
+      "ccn": 6
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\build-installed-index.ps1",
+      "function": "ConvertFrom-ScoopJson",
+      "name": "ConvertFrom-ScoopJson",
+      "line": 75,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\build-installed-index.ps1",
+      "function": "ConvertFrom-ScoopText",
+      "name": "ConvertFrom-ScoopText",
+      "line": 98,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\build-installed-index.ps1",
+      "function": "ConvertFrom-ChocoText",
+      "name": "ConvertFrom-ChocoText",
+      "line": 124,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\build-installed-index.ps1",
+      "function": "Main",
+      "name": "Main",
+      "line": 153,
+      "ccn": 41
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Invoke-ScExe",
+      "name": "Invoke-ScExe",
+      "line": 47,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Get-RenameTarget",
+      "name": "Get-RenameTarget",
+      "line": 83,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Remove-ItemRobust",
+      "name": "Remove-ItemRobust",
+      "line": 111,
+      "ccn": 21
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Test-Whitelisted",
+      "name": "Test-Whitelisted",
+      "line": 239,
+      "ccn": 12
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Get-AdminState",
+      "name": "Get-AdminState",
+      "line": 261,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Test-AdminPrivilege",
+      "name": "Test-AdminPrivilege",
+      "line": 278,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Get-OptionalProtectionStatus",
+      "name": "Get-OptionalProtectionStatus",
+      "line": 306,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "New-RollbackPlannedEntry",
+      "name": "New-RollbackPlannedEntry",
+      "line": 339,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Set-RollbackEntryState",
+      "name": "Set-RollbackEntryState",
+      "line": 384,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Set-MachinePathValue",
+      "name": "Set-MachinePathValue",
+      "line": 410,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Add-CleanupFailure",
+      "name": "Add-CleanupFailure",
+      "line": 432,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Get-StartupRecoveryExitCode",
+      "name": "Get-StartupRecoveryExitCode",
+      "line": 451,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\clean-residuals.ps1",
+      "function": "Main",
+      "name": "Main",
+      "line": 478,
+      "ccn": 139
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\confirm-cleanup.ps1",
+      "function": "Get-ItemContent",
+      "name": "Get-ItemContent",
+      "line": 12,
+      "ccn": 8
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\confirm-cleanup.ps1",
+      "function": "Limit-StringLength",
+      "name": "Limit-StringLength",
+      "line": 26,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\confirm-cleanup.ps1",
+      "function": "Show-Page",
+      "name": "Show-Page",
+      "line": 34,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\confirm-cleanup.ps1",
+      "function": "Show-Detail",
+      "name": "Show-Detail",
+      "line": 61,
+      "ccn": 9
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\confirm-cleanup.ps1",
+      "function": "Show-Help",
+      "name": "Show-Help",
+      "line": 89,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\confirm-cleanup.ps1",
+      "function": "Get-PageRange",
+      "name": "Get-PageRange",
+      "line": 108,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\confirm-cleanup.ps1",
+      "function": "Get-SelectionTally",
+      "name": "Get-SelectionTally",
+      "line": 115,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\confirm-cleanup.ps1",
+      "function": "Main",
+      "name": "Main",
+      "line": 146,
+      "ccn": 55
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\create-restore-point.ps1",
+      "function": "Get-AdminState",
+      "name": "Get-AdminState",
+      "line": 27,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\create-restore-point.ps1",
+      "function": "Test-AdminPrivilege",
+      "name": "Test-AdminPrivilege",
+      "line": 44,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\create-restore-point.ps1",
+      "function": "Get-SystemRestoreInterval",
+      "name": "Get-SystemRestoreInterval",
+      "line": 63,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\create-restore-point.ps1",
+      "function": "Test-SystemRestoreEnabled",
+      "name": "Test-SystemRestoreEnabled",
+      "line": 82,
+      "ccn": 6
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\create-restore-point.ps1",
+      "function": "Main",
+      "name": "Main",
+      "line": 102,
+      "ccn": 17
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\generate-report.ps1",
+      "function": "Set-Id",
+      "name": "Set-Id",
+      "line": 10,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\generate-report.ps1",
+      "function": "Main",
+      "name": "Main",
+      "line": 17,
+      "ccn": 16
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\native-invoke.ps1",
+      "function": "ConvertTo-NativeArgument",
+      "name": "ConvertTo-NativeArgument",
+      "line": 20,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\native-invoke.ps1",
+      "function": "Invoke-NativeExe",
+      "name": "Invoke-NativeExe",
+      "line": 52,
+      "ccn": 9
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-backup.ps1",
+      "function": "Get-RegistryParentPath",
+      "name": "Get-RegistryParentPath",
+      "line": 23,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-backup.ps1",
+      "function": "Test-RegContinuation",
+      "name": "Test-RegContinuation",
+      "line": 39,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-backup.ps1",
+      "function": "Get-TrimmedRegExport",
+      "name": "Get-TrimmedRegExport",
+      "line": 52,
+      "ccn": 26
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-backup.ps1",
+      "function": "Read-RegUnicodeFile",
+      "name": "Read-RegUnicodeFile",
+      "line": 171,
+      "ccn": 12
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-backup.ps1",
+      "function": "Write-RegUnicodeFile",
+      "name": "Write-RegUnicodeFile",
+      "line": 202,
+      "ccn": 10
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-backup.ps1",
+      "function": "Invoke-RegExe",
+      "name": "Invoke-RegExe",
+      "line": 239,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-backup.ps1",
+      "function": "Export-RegistryKeyBackup",
+      "name": "Export-RegistryKeyBackup",
+      "line": 263,
+      "ccn": 10
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-backup.ps1",
+      "function": "Export-StartupValueBackup",
+      "name": "Export-StartupValueBackup",
+      "line": 314,
+      "ccn": 14
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-backup.ps1",
+      "function": "Confirm-RegistryTargetAbsent",
+      "name": "Confirm-RegistryTargetAbsent",
+      "line": 388,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-backup.ps1",
+      "function": "Confirm-PathEntryRemoved",
+      "name": "Confirm-PathEntryRemoved",
+      "line": 410,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Split-StartupTarget",
+      "name": "Split-StartupTarget",
+      "line": 13,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "ConvertTo-CanonicalRegKeyPath",
+      "name": "ConvertTo-CanonicalRegKeyPath",
+      "line": 37,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Add-RegSignatureLine",
+      "name": "Add-RegSignatureLine",
+      "line": 66,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Get-RegExportStructure",
+      "name": "Get-RegExportStructure",
+      "line": 90,
+      "ccn": 10
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Test-RegStructureIdentical",
+      "name": "Test-RegStructureIdentical",
+      "line": 164,
+      "ccn": 7
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Open-RegistryKeyForRead",
+      "name": "Open-RegistryKeyForRead",
+      "line": 186,
+      "ccn": 7
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Get-CurrentRegSnapshot",
+      "name": "Get-CurrentRegSnapshot",
+      "line": 217,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Get-RollbackEntryProbe",
+      "name": "Get-RollbackEntryProbe",
+      "line": 246,
+      "ccn": 24
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Get-RollbackEntryParentKey",
+      "name": "Get-RollbackEntryParentKey",
+      "line": 336,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Get-ParentBaselineMaxByParent",
+      "name": "Get-ParentBaselineMaxByParent",
+      "line": 354,
+      "ccn": 9
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Get-ParentBaselineSnapshot",
+      "name": "Get-ParentBaselineSnapshot",
+      "line": 385,
+      "ccn": 6
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Get-SignIiInputForEntry",
+      "name": "Get-SignIiInputForEntry",
+      "line": 415,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Restore-RegistryBackupFile",
+      "name": "Restore-RegistryBackupFile",
+      "line": 453,
+      "ccn": 12
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Get-RestoredMachinePath",
+      "name": "Get-RestoredMachinePath",
+      "line": 504,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Get-ReportedRollbackVerdict",
+      "name": "Get-ReportedRollbackVerdict",
+      "line": 525,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Write-RollbackResult",
+      "name": "Write-RollbackResult",
+      "line": 577,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Invoke-RollbackRestore",
+      "name": "Invoke-RollbackRestore",
+      "line": 592,
+      "ccn": 46
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Set-JournalConsumedWithoutRestore",
+      "name": "Set-JournalConsumedWithoutRestore",
+      "line": 865,
+      "ccn": 8
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-exec.ps1",
+      "function": "Invoke-RollbackJournalConsumption",
+      "name": "Invoke-RollbackJournalConsumption",
+      "line": 942,
+      "ccn": 35
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "Get-RegistryKeyLastWriteTime",
+      "name": "Get-RegistryKeyLastWriteTime",
+      "line": 12,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "ConvertFrom-RollbackJournalText",
+      "name": "ConvertFrom-RollbackJournalText",
+      "line": 77,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "Get-RollbackJournalEntryList",
+      "name": "Get-RollbackJournalEntryList",
+      "line": 107,
+      "ccn": 12
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "Get-ItemId",
+      "name": "Get-ItemId",
+      "line": 145,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "Get-Sha256Hex",
+      "name": "Get-Sha256Hex",
+      "line": 173,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "Write-FileAtomic",
+      "name": "Write-FileAtomic",
+      "line": 192,
+      "ccn": 7
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "Write-RollbackJournal",
+      "name": "Write-RollbackJournal",
+      "line": 241,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "Read-RollbackJournal",
+      "name": "Read-RollbackJournal",
+      "line": 261,
+      "ccn": 7
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "ConvertTo-RollbackJournal",
+      "name": "ConvertTo-RollbackJournal",
+      "line": 302,
+      "ccn": 7
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "ConvertTo-RollbackJournalEntry",
+      "name": "ConvertTo-RollbackJournalEntry",
+      "line": 359,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "Test-RollbackJournalSelfValid",
+      "name": "Test-RollbackJournalSelfValid",
+      "line": 403,
+      "ccn": 53
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "Get-MachineFingerprint",
+      "name": "Get-MachineFingerprint",
+      "line": 609,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "Format-IsoUtc",
+      "name": "Format-IsoUtc",
+      "line": 639,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "ConvertFrom-IsoUtc",
+      "name": "ConvertFrom-IsoUtc",
+      "line": 648,
+      "ccn": 7
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-journal.ps1",
+      "function": "Get-NormalizedRegKeyPath",
+      "name": "Get-NormalizedRegKeyPath",
+      "line": 683,
+      "ccn": 7
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "ConvertTo-RollbackJournalTarget",
+      "name": "ConvertTo-RollbackJournalTarget",
+      "line": 13,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "Get-ItemMutationKindList",
+      "name": "Get-ItemMutationKindList",
+      "line": 39,
+      "ccn": 13
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "New-RollbackBackupDirectory",
+      "name": "New-RollbackBackupDirectory",
+      "line": 77,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "Get-JournalBackupFileRelative",
+      "name": "Get-JournalBackupFileRelative",
+      "line": 105,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "Add-RollbackJournalEntry",
+      "name": "Add-RollbackJournalEntry",
+      "line": 132,
+      "ccn": 6
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "Update-RollbackJournalEntry",
+      "name": "Update-RollbackJournalEntry",
+      "line": 173,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "Write-RollbackJournalSafely",
+      "name": "Write-RollbackJournalSafely",
+      "line": 199,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "Get-CleanupLogJournalBinding",
+      "name": "Get-CleanupLogJournalBinding",
+      "line": 223,
+      "ccn": 6
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "Set-RollbackJournalCleanupBinding",
+      "name": "Set-RollbackJournalCleanupBinding",
+      "line": 254,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "Test-JournalHasMutation",
+      "name": "Test-JournalHasMutation",
+      "line": 272,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "Get-CleanupExitCode",
+      "name": "Get-CleanupExitCode",
+      "line": 285,
+      "ccn": 8
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "Test-CompletionMarkerSuppressed",
+      "name": "Test-CompletionMarkerSuppressed",
+      "line": 323,
+      "ccn": 6
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-producer.ps1",
+      "function": "Get-RollbackFailureKindFromCleanupAction",
+      "name": "Get-RollbackFailureKindFromCleanupAction",
+      "line": 360,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Read-JsonFileSafe",
+      "name": "Read-JsonFileSafe",
+      "line": 10,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Test-MarkerWellFormed",
+      "name": "Test-MarkerWellFormed",
+      "line": 30,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Test-MarkerBelongsToJournal",
+      "name": "Test-MarkerBelongsToJournal",
+      "line": 51,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Get-CompletedAtState",
+      "name": "Get-CompletedAtState",
+      "line": 69,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Get-RecoveryCandidateSet",
+      "name": "Get-RecoveryCandidateSet",
+      "line": 92,
+      "ccn": 14
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Select-RecoveryCandidate",
+      "name": "Select-RecoveryCandidate",
+      "line": 174,
+      "ccn": 10
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Get-JournalSuppressionVerdict",
+      "name": "Get-JournalSuppressionVerdict",
+      "line": 243,
+      "ccn": 26
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Test-JournalIsStaleOrForeign",
+      "name": "Test-JournalIsStaleOrForeign",
+      "line": 398,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Write-RecoveryMarker",
+      "name": "Write-RecoveryMarker",
+      "line": 432,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Add-UnrepairedItem",
+      "name": "Add-UnrepairedItem",
+      "line": 475,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Write-UnrepairedList",
+      "name": "Write-UnrepairedList",
+      "line": 506,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Complete-RollbackJournal",
+      "name": "Complete-RollbackJournal",
+      "line": 552,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Test-WithinRecoveryWindow",
+      "name": "Test-WithinRecoveryWindow",
+      "line": 596,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Get-ParentBaselineMax",
+      "name": "Get-ParentBaselineMax",
+      "line": 634,
+      "ccn": 8
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Test-ExternalChangeSignRegistry",
+      "name": "Test-ExternalChangeSignRegistry",
+      "line": 661,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Get-UnfinishedJournalFallbackDecision",
+      "name": "Get-UnfinishedJournalFallbackDecision",
+      "line": 698,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Get-RollbackConsumptionDecision",
+      "name": "Get-RollbackConsumptionDecision",
+      "line": 750,
+      "ccn": 10
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-recovery.ps1",
+      "function": "Get-RecoveryJournalTarget",
+      "name": "Get-RecoveryJournalTarget",
+      "line": 843,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-verdicts.ps1",
+      "function": "Test-RollbackRestorable",
+      "name": "Test-RollbackRestorable",
+      "line": 12,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-verdicts.ps1",
+      "function": "Resolve-PathEntryScope",
+      "name": "Resolve-PathEntryScope",
+      "line": 36,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-verdicts.ps1",
+      "function": "Test-PathSegmentPresent",
+      "name": "Test-PathSegmentPresent",
+      "line": 62,
+      "ccn": 6
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-verdicts.ps1",
+      "function": "Test-RollbackFlagTrue",
+      "name": "Test-RollbackFlagTrue",
+      "line": 81,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-verdicts.ps1",
+      "function": "Get-ExpectedPathAfterCleanup",
+      "name": "Get-ExpectedPathAfterCleanup",
+      "line": 97,
+      "ccn": 9
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-verdicts.ps1",
+      "function": "Get-RollbackVerdict",
+      "name": "Get-RollbackVerdict",
+      "line": 132,
+      "ccn": 17
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-verdicts.ps1",
+      "function": "Get-RestorableEntry",
+      "name": "Get-RestorableEntry",
+      "line": 249,
+      "ccn": 11
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback-verdicts.ps1",
+      "function": "Format-RollbackReport",
+      "name": "Format-RollbackReport",
+      "line": 314,
+      "ccn": 14
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback.ps1",
+      "function": "Test-RollbackAdminPrivilege",
+      "name": "Test-RollbackAdminPrivilege",
+      "line": 30,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback.ps1",
+      "function": "Get-AutoRollbackExitCode",
+      "name": "Get-AutoRollbackExitCode",
+      "line": 46,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback.ps1",
+      "function": "Invoke-AutoRollback",
+      "name": "Invoke-AutoRollback",
+      "line": 79,
+      "ccn": 8
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback.ps1",
+      "function": "Get-BackupDirectory",
+      "name": "Get-BackupDirectory",
+      "line": 139,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback.ps1",
+      "function": "Get-RegistryBackupFile",
+      "name": "Get-RegistryBackupFile",
+      "line": 157,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback.ps1",
+      "function": "Get-MatchingRestorePoint",
+      "name": "Get-MatchingRestorePoint",
+      "line": 168,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\rollback.ps1",
+      "function": "Main",
+      "name": "Main",
+      "line": 188,
+      "ccn": 17
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\run-all.ps1",
+      "function": "Get-AdminState",
+      "name": "Get-AdminState",
+      "line": 28,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\run-all.ps1",
+      "function": "Test-AdminPrivilege",
+      "name": "Test-AdminPrivilege",
+      "line": 45,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\run-all.ps1",
+      "function": "Main",
+      "name": "Main",
+      "line": 64,
+      "ccn": 19
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\run-all.ps1",
+      "function": "Invoke-Step",
+      "name": "Invoke-Step",
+      "line": 88,
+      "ccn": 7
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\run-all.ps1",
+      "function": "Invoke-StepChecked",
+      "name": "Invoke-StepChecked",
+      "line": 125,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\scan-filesystem-residuals.ps1",
+      "function": "Get-EffectiveFileCount",
+      "name": "Get-EffectiveFileCount",
+      "line": 8,
+      "ccn": 6
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\scan-filesystem-residuals.ps1",
+      "function": "Get-DirectorySizeMB",
+      "name": "Get-DirectorySizeMB",
+      "line": 33,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\scan-filesystem-residuals.ps1",
+      "function": "Test-AllSubdirsEmpty",
+      "name": "Test-AllSubdirsEmpty",
+      "line": 53,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\scan-filesystem-residuals.ps1",
+      "function": "Main",
+      "name": "Main",
+      "line": 67,
+      "ccn": 21
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\scan-residuals.ps1",
+      "function": "Get-ExecutablePath",
+      "name": "Get-ExecutablePath",
+      "line": 9,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\scan-residuals.ps1",
+      "function": "Main",
+      "name": "Main",
+      "line": 18,
+      "ccn": 49
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\scan-uninstalled.ps1",
+      "function": "Test-PathMissing",
+      "name": "Test-PathMissing",
+      "line": 12,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\scan-uninstalled.ps1",
+      "function": "Get-UninstallExePath",
+      "name": "Get-UninstallExePath",
+      "line": 28,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\scan-uninstalled.ps1",
+      "function": "Get-ResidualVerdict",
+      "name": "Get-ResidualVerdict",
+      "line": 51,
+      "ccn": 6
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\scan-uninstalled.ps1",
+      "function": "Get-ResidualEvidence",
+      "name": "Get-ResidualEvidence",
+      "line": 76,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\references\\scripts\\scan-uninstalled.ps1",
+      "function": "Main",
+      "name": "Main",
+      "line": 94,
+      "ccn": 24
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\setup.ps1",
+      "function": "Main",
+      "name": "Main",
+      "line": 2,
+      "ccn": 11
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Measure-PowerShellComplexity.ps1",
+      "function": "Get-DecisionNodeTypeSet",
+      "name": "Get-DecisionNodeTypeSet",
+      "line": 23,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Measure-PowerShellComplexity.ps1",
+      "function": "Test-ShortCircuitOperator",
+      "name": "Test-ShortCircuitOperator",
+      "line": 51,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Measure-PowerShellComplexity.ps1",
+      "function": "Get-SwitchClauseCount",
+      "name": "Get-SwitchClauseCount",
+      "line": 57,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Measure-PowerShellComplexity.ps1",
+      "function": "Get-DecisionPointCount",
+      "name": "Get-DecisionPointCount",
+      "line": 72,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Measure-PowerShellComplexity.ps1",
+      "function": "Get-NodeDecisionWeight",
+      "name": "Get-NodeDecisionWeight",
+      "line": 84,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Measure-PowerShellComplexity.ps1",
+      "function": "Test-NodeTypeMatch",
+      "name": "Test-NodeTypeMatch",
+      "line": 99,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Measure-PowerShellComplexity.ps1",
+      "function": "Test-ShortCircuitNode",
+      "name": "Test-ShortCircuitNode",
+      "line": 110,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Measure-PowerShellComplexity.ps1",
+      "function": "Get-FunctionComplexity",
+      "name": "Get-FunctionComplexity",
+      "line": 116,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\New-SkillPackage.ps1",
+      "function": "Copy-PackageContent",
+      "name": "Copy-PackageContent",
+      "line": 84,
+      "ccn": 5
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\New-SkillPackage.ps1",
+      "function": "Clear-NodeModuleTree",
+      "name": "Clear-NodeModuleTree",
+      "line": 108,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Test-PowerShellArchitecture.ps1",
+      "function": "ConvertFrom-LayerBlock",
+      "name": "ConvertFrom-LayerBlock",
+      "line": 55,
+      "ccn": 18
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Test-PowerShellArchitecture.ps1",
+      "function": "Split-YamlList",
+      "name": "Split-YamlList",
+      "line": 120,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Test-PowerShellArchitecture.ps1",
+      "function": "Get-LayerForFile",
+      "name": "Get-LayerForFile",
+      "line": 130,
+      "ccn": 12
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Test-PowerShellArchitecture.ps1",
+      "function": "Get-ScriptDependencyList",
+      "name": "Get-ScriptDependencyList",
+      "line": 176,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Update-DocTables.ps1",
+      "function": "Get-ExitCodeDocBlock",
+      "name": "Get-ExitCodeDocBlock",
+      "line": 72,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Update-DocTables.ps1",
+      "function": "Get-OrderedCodeRow",
+      "name": "Get-OrderedCodeRow",
+      "line": 83,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Update-DocTables.ps1",
+      "function": "Get-CallerCodeRow",
+      "name": "Get-CallerCodeRow",
+      "line": 104,
+      "ccn": 4
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Update-DocTables.ps1",
+      "function": "Merge-CodeRow",
+      "name": "Merge-CodeRow",
+      "line": 124,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Update-DocTables.ps1",
+      "function": "Get-ExitCodeRow",
+      "name": "Get-ExitCodeRow",
+      "line": 153,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Update-DocTables.ps1",
+      "function": "Get-PriorityOrder",
+      "name": "Get-PriorityOrder",
+      "line": 169,
+      "ccn": 1
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Update-DocTables.ps1",
+      "function": "Format-AgentRow",
+      "name": "Format-AgentRow",
+      "line": 203,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Update-DocTables.ps1",
+      "function": "Format-PatternRow",
+      "name": "Format-PatternRow",
+      "line": 213,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Update-DocTables.ps1",
+      "function": "Format-MaintainerRow",
+      "name": "Format-MaintainerRow",
+      "line": 223,
+      "ccn": 3
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Update-DocTables.ps1",
+      "function": "Format-ExitCodeTable",
+      "name": "Format-ExitCodeTable",
+      "line": 233,
+      "ccn": 2
+    },
+    {
+      "file": "D:\\Study\\LLM\\windows-residual-cleaner\\tools\\Update-DocTables.ps1",
+      "function": "Merge-MarkedBlock",
+      "name": "Merge-MarkedBlock",
+      "line": 271,
+      "ccn": 3
+    }
+  ]
 }

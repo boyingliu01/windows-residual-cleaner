@@ -77,12 +77,57 @@ Describe 'Measure-PowerShellComplexity (Gate 3 PowerShell arm)' {
         $baselinePath = Join-Path $PSScriptRoot '..\..\.xp-gate-powershell-ccn-baseline.json'
         Test-Path -LiteralPath $baselinePath | Should -BeTrue
         $doc = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
         $missing = @()
         foreach ($e in @($doc.entries)) {
-            $abs = Join-Path (Join-Path $PSScriptRoot '..\..') ([string]$e.file -replace '/', '\')
-            if (-not (Test-Path -LiteralPath $abs)) { $missing += [string]$e.file }
+            # 基线的 `file` 现在是**绝对原生路径**（反斜杠），这是 gate-3.sh 的匹配要求，
+            # 不是风格选择：它的 norm() 在 Windows 上是空操作（L179 的 /\\\\/ 在 bash
+            # 单引号里变成匹配「两个连续反斜杠」的正则），所以基线必须和门禁测量输出
+            # 拼写一致。这里同时接受相对路径，以免基线格式再变时用例变成假红。
+            $raw = [string]$e.file
+            $abs = if ([System.IO.Path]::IsPathRooted($raw)) { $raw } else { Join-Path $repoRoot ($raw -replace '/', '\') }
+            if (-not (Test-Path -LiteralPath $abs)) { $missing += $raw }
         }
         $missing | Should -BeNullOrEmpty -Because "基线引用了不存在的文件：$($missing -join ', ')（文件改名/删除后必须重跑 tools/Update-ComplexityBaseline.ps1）"
+    }
+
+    It '基线生成器写出的 form 与门禁的比较口径一致（三个「known 恒空」缺陷的回归守卫）' {
+        # 2026-10-26 实测：Gate 3 连续三轮误报「new function at ccn=N」，每次都是
+        # `known` 变空的**不同**原因，而三者的症状一字不差，所以每次都像「还没修好」。
+        # 这条用例把三个前提一次性钉死，避免哪个被好心「整理」回去：
+        #   1. 键名：gate-3.sh 读 `e.name`，生成器必须写 `name`（issue #632）；
+        #   2. 测量器：门禁用 xp-gate 自己的 hooks/lib 那份，CCN 与仓库副本不同
+        #      （clean-residuals.ps1 的 Main：139 vs 143）；
+        #   3. 路径拼写：门禁的 norm() 在 Windows 上是空操作（L179 的 /\\\\/ 被
+        #      bash 单引号传成四反斜杠 = 匹配两个连续反斜杠），所以基线必须存
+        #      **绝对原生反斜杠路径**；存正斜杠或相对路径都匹配不上。
+        $genPath = Join-Path $PSScriptRoot '..\..\tools\Update-ComplexityBaseline.ps1'
+        Test-Path -LiteralPath $genPath | Should -BeTrue
+        $gen = Get-Content -LiteralPath $genPath -Raw
+
+        $doc = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\.xp-gate-powershell-ccn-baseline.json') -Raw |
+            ConvertFrom-Json
+        $entries = @($doc.entries)
+
+        # 1. 键名：每条都必须同时有 function 与 name，且同值。
+        $noName = @($entries | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.name) })
+        $noName.Count | Should -Be 0 -Because 'gate-3.sh 读 e.name；缺 name 的条目会被 continue 跳过，known 恒空（#632）'
+        $mismatch = @($entries | Where-Object { [string]$_.name -cne [string]$_.function })
+        $mismatch.Count | Should -Be 0 -Because 'name 与 function 必须同值，否则两者描述的不是同一批函数'
+
+        # 2. 测量器：生成器必须优先用 live 那份，而不是仓库副本。
+        $gen | Should -Match 'hooks[/\\]lib[/\\]Measure-PowerShellComplexity\.ps1' -Because `
+            '门禁测的是 xp-gate hooks/lib 里那份；用仓库副本会记录门禁看不见的 CCN（139 vs 143）'
+        $gen | Should -Match '\$supportsList' -Because '门禁带 -List 比对全量函数；生成器不收集 ccn=1 的 FUNC 行就会漏条目'
+
+        # 3. 路径拼写：绝对 + 原生反斜杠（不带 -replace 转正斜杠）。
+        $relative = @($entries | Where-Object { -not [System.IO.Path]::IsPathRooted([string]$_.file) })
+        $relative.Count | Should -Be 0 -Because '门禁测量输出是绝对路径，相对路径条目一条都匹配不上'
+        $slashed = @($entries | Where-Object { ([string]$_.file).Contains('/') })
+        $slashed.Count | Should -Be 0 -Because `
+            '门禁的 norm() 在 Windows 上是空操作，基线存正斜杠会保留成正斜杠，与测量输出的反斜杠不相等'
+        $gen | Should -Not -Match "file\s*=.*-replace\s+'\\\\\\\\',\s*'/'" -Because `
+            '生成器若把路径转成正斜杠，回归 3 会静默重现'
     }
 
     It 'ratchet 基线被 git 跟踪（否则 clone/CI 上不存在，门禁静默退回 SKIP）' {

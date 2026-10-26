@@ -2,6 +2,148 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.9.0] - 2026-10-26
+
+### 覆盖率不该取决于「谁在跑」：给权限门加注入接缝，CI 的 5 条跳过归零
+
+`-Check` 的编码修复（1.4.8.0）让 CI 的 Pester 回到 **797 passed / 0 failed**，但覆盖率
+门禁仍然红：`FAILED: line coverage 79.84% is below the 80% threshold`。同一份代码本机是
+**80.78%**。差的那 0.94 个百分点不是随机波动，是**运行身份**。
+
+#### 根因：`IsInRole(Administrator)` 在单个进程内是常量
+
+本地不是管理员，CI 的 `windows-latest` runner 是。于是：
+
+| 场景 | 本机（非管理员） | CI（管理员） |
+|------|------------------|--------------|
+| `Test-AdminPrivilege -Mandatory` 的拒绝分支 | 执行 → 计入覆盖率 | **永不执行** |
+| 5 条 `-Skip:$IsAdmin` 的「非管理员契约」用例 | 全跑 | **全跳过** |
+| 行覆盖率 | 80.78% | 79.84%（< 80% 阈值） |
+
+这些用例原本的写法是「本会话恰好不是管理员，所以这一支能被观测到」。它们在任何**单个**
+环境里都是绿的，但把「代码是否被验证过」交给了环境——CI 上那 5 条**一次都没跑过**，
+其中还包括「非 DryRun 且无 backup-* 时绝不允许 exit 0」这条最关键的破坏性护栏。
+
+#### 处置：两个注入接缝，让两个分支在任何身份下都能被驱动
+
+1. **`-IsAdminOverride` 参数**（`run-all.ps1` / `create-restore-point.ps1` /
+   `clean-residuals.ps1` 的 `Test-AdminPrivilege`）。进程内可直接驱动两个分支。
+2. **`WRC_TEST_IS_ADMIN` 环境变量**。参数过不了子进程边界，而执行守卫的 `exit`
+   只有在**子进程**里才算真的执行过——那 3 行（守卫）光靠参数注入覆盖不到。
+   只在测试里设；生产运行不设，行为与之前完全一致。
+
+存在性判定用 `$PSBoundParameters.ContainsKey`，值用 `-eq $true` 比较。**踩到一个新坑**：
+最初写的是 `$IsAdminOverride.Value`，两个引擎都返回空串——PowerShell 对
+`[Nullable[bool]]` 参数的 `.Value` 取不出来。这正好是 AGENTS.md 陷阱 11 的同一族问题
+（`[string]` 参数的 `$null -ne` 恒为真），换个类型换个属性又踩一次。
+
+#### 结果
+
+| 指标 | 修复前（CI，管理员） | 修复后（注入管理员，本机实测） |
+|------|---------------------|------------------------------|
+| Skipped | 5 | **0** |
+| Inconclusive | 6 | **0** |
+| Pester 用例 | 797 passed | **811 passed / 0 failed** |
+| JaCoCo 行覆盖率 | **79.84%** ❌ | **80.70%** ✅（3070/3804） |
+
+双引擎（pwsh 7 与 PS 5.1）各 **811/811**，Skipped 与 Inconclusive 均为 0。
+覆盖率是按 CI 的口径量的：`\.xp-gate-powershell-analysis-paths` 作分母、读 JaCoCo 的
+LINE counter，并**先把 `WRC_TEST_IS_ADMIN=true` 注入再跑**——本机不是管理员，不注入就
+等于还是在测「非管理员那一侧」，测不出 CI 会看到什么。
+
+#### 一个反复出现的操作陷阱（值得写下来）
+
+本轮的 5 个 `.ps1` 在编辑后**全部丢了 UTF-8 BOM**，`references/scripts` 下三个产品脚本
+也中招。`edit` 工具整文件重写时不会保留原 BOM，而 Gate 1 的
+`PSUseBOMForUnicodeEncodedFile` 与 CI 的 encoding guard 都按 error 判。
+`tests/unit/platform-hygiene.Tests.ps1` 已有守卫用例，但它是在**事后**才红的。
+本轮改用脚本统一补齐（扫全部 tracked `.ps1`，非 ASCII 且无 BOM 即补），三次共修复 8 个文件。
+
+#### 另外修掉了 Gate 3 的两个上游缺陷（xp-gate #632，已提交 issue，只做数据层绕过）
+
+把权限门的接缝**挪进独立函数**时，Gate 3 拦下了提交并报 7 个「new function at ccn=N」。
+那 7 个函数的 ccn 与基线**一个不差**，变的只有行号。查 `gate-3.sh` 才发现是**两个**叠加
+的缺陷，症状完全相同，所以易被当成同一个问题连查两轮。
+
+**缺陷一：读写的键名不一致。** `gate-3.sh` 读 `e.name`，而上游自己指定的生成器
+（`tools/Update-ComplexityBaseline.ps1`，也是 baseline 的 `note` 字段里点名的那个）写的是
+`function`：
+
+```javascript
+// gate-3.sh L175-176
+if (!e || !e.file || !e.name) continue;
+known.set(norm(e.file) + "::" + e.name, Number(e.ccn) || 0);
+```
+
+```powershell
+# tools/Update-ComplexityBaseline.ps1 L83
+function = $Matches[3]
+```
+
+基线里没有一条有 `name`，`continue` 把它们全部跳过，`known` 恒为空。
+
+**缺陷二：测量器与路径形式不一致。** Gate 3 用的**不是**仓库里那份
+`tools/Measure-PowerShellComplexity.ps1`，而是 xp-gate 自己的
+`<xp-gate>/hooks/lib/Measure-PowerShellComplexity.ps1`（`gate-3.sh` L79）。两者是**不同的
+实现**，有两处实际差异：
+
+| | 仓库版 | xp-gate live 版 |
+|---|---|---|
+| 输出的 file 路径 | 相对路径 | **绝对路径**（`$_.FullName`） |
+| `clean-residuals.ps1` 的 `Main` ccn | 143 | **139** |
+
+而 `norm()` 只做「反斜杠→斜杠」和「去掉开头 `./`」，**既不把绝对路径相对化，也不展开占位符**。
+所以基线存相对路径 → 一条都匹配不上；存 `<REPO>/...` 占位符 → 同样匹配不上。
+
+结论：`known` 有两个独立的理由为空，任一都足以让**每个** CCN > 阈值（1）的函数被报成
+「新函数」——**只要基线存在，Gate 3 就必然拦住一切提交**。这不是「太严」，是先失效再致命。
+
+已提交 xp-gate issue **#632**。绕过只动数据、不动 xp-gate，生成器现在：
+
+1. 同时写 `function` 与 `name`（同值）；
+2. **优先用 live 版测量器**（未安装 xp-gate 时回退到仓库版并 `Write-Warning` 说明降级），
+   这样记录的 ccn 就是门禁会看到的数；
+3. `file` 写成**绝对原生反斜杠**路径（注意：不是正斜杠，见下）；
+4. 生成时带 `-List`，与门禁收集同一个函数全集。
+
+**缺陷三最难抓：门禁的 `norm()` 在 Windows 上是空操作。** `gate-3.sh` L179：
+
+```javascript
+function norm(p) { return String(p).replace(/\\\\/g, "/").replace(/^\.\//, ""); }
+```
+
+这段代码在 bash 的**单引号** `node -e '...'` 里，bash 原样传递四个反斜杠，于是 JS 收到的
+正则是 `/\\\\/`——匹配**两个连续反斜杠**，而不是一个。实测：
+
+```
+probe norm(D:\Study\x.ps1) -> D:\Study\x.ps1      ← 一个都没换
+```
+
+后果：门禁测量输出 `D:\Study\...\run-all.ps1` 经 `norm()` 仍是反斜杠；而基线若存
+`D:/Study/...`（"已经规范化过了"）则原样保留正斜杠。两侧永远不相等——**`known` 又不是空，
+是「装满了对不上的键」**，症状与缺陷一、二完全相同。我第一次的复现脚本写的是 `/\\/g`
+（正确形式），于是复现出 `regressions=0` 而真实门禁照旧拦人，白跑一轮。
+
+用 `gate-3.sh` 的原逻辑逐行复算（`norm()` 逐字照抄），对比是决定性的：
+
+| 基线形态 | `known` 条目 | 回归数 |
+|---|---|---|
+| 只有 `function` 键 + 相对路径（最初的产物） | **0** | **22（全部误报）** |
+| `+ name` 键，仍是相对路径 | 155 | **22（仍全错）** |
+| `+ name` + 绝对**正斜杠** + live 测量器 | 168 | **22（仍全错）** |
+| `+ name` + 绝对**反斜杠** + live 测量器 + `-List`（现在） | **168** | **0** |
+
+三行中间结果各自「修好了」却毫无变化——这就是它耗掉三轮的原因：**三个缺陷的症状一字不差**。
+
+守卫：`tests/unit/complexity-tool.Tests.ps1` 新增一条用例，一次性钉住三个前提
+（每条都必须有 `name`、生成器必须优先用 live 测量器、基线 `file` 必须是绝对反斜杠路径），
+并断言生成器里不出现把反斜杠转正斜杠的 `-replace`。反向验证过：改回任一旧形态立即变红。
+
+接受的权衡：基线现在含本机绝对路径。这不影响 CI，因为 CI 不跑 xp-gate 的 pre-commit
+（见 `.github/workflows/ci.yml`），基线只服务本地棘轮；换机器重跑一次生成器即重写前缀。
+基线里没有任何既有函数的 ccn 被抬高：`UP=0 DOWN=0`，只新增 3 个 `Get-AdminState`（各 ccn=3）。
+待 #632 修复后可恢复成纯 `function` + 相对路径。
+
 ## [1.4.8.0] - 2026-10-26
 
 ### 把不该由本仓维护的东西还回去：删除 `githooks/` 与那条一致性断言

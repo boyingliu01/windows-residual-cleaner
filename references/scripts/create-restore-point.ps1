@@ -19,13 +19,35 @@ if (Test-Path -LiteralPath $script:nativeInvokeLib) {
     $script:RollbackLibsMissing += 'native-invoke.ps1'
 }
 
+# Admin-state resolution lives in its own function so Test-AdminPrivilege keeps its
+# original control flow (Gate 3's CCN ratchet is one-way). See run-all.ps1's
+# Get-AdminState for the full rationale: `IsInRole` is constant per process, so the
+# non-admin branch was unreachable on an admin CI runner and its lines never counted
+# toward coverage -- coverage must not depend on the runner's identity.
+function Get-AdminState {
+    [CmdletBinding()]
+    param([System.Nullable[bool]]$IsAdminOverride)
+
+    if ($PSBoundParameters.ContainsKey('IsAdminOverride')) {
+        return ($IsAdminOverride -eq $true)
+    }
+    $injected = [Environment]::GetEnvironmentVariable('WRC_TEST_IS_ADMIN')
+    if (-not [string]::IsNullOrWhiteSpace($injected)) {
+        return ($injected -eq 'true')
+    }
+    return [Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 # Admin privilege check (mandatory for write operations)
 function Test-AdminPrivilege {
     [CmdletBinding()]
-    param([switch]$Mandatory)
-    $isAdmin = [Security.Principal.WindowsPrincipal]::new(
-        [Security.Principal.WindowsIdentity]::GetCurrent()
-    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    param(
+        [switch]$Mandatory,
+        [System.Nullable[bool]]$IsAdminOverride
+    )
+    $isAdmin = Get-AdminState -IsAdminOverride $IsAdminOverride
     if (-not $isAdmin) {
         if ($Mandatory) {
             Write-Error "Administrator privileges required. Please run PowerShell as Administrator."

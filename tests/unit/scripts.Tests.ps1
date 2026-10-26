@@ -877,21 +877,31 @@ Describe 'clean-residuals.ps1 safety guards (fail-closed, static + subprocess)' 
     }
 
     # @test AC-013
-    It 'Aborts with exit 2 (privilege) or 1 in a child process when no restore point exists (non-admin only)' -Skip:$script:IsAdmin {
+    It 'Aborts with exit 2 (privilege) or 1 in a child process when no restore point exists' {
         # 非 DryRun 且无 backup-* → exit 1；非管理员则先 exit 2。
-        # 注意：这条契约只在**非管理员**会话可观测。管理员会话（如 CI runner）下
-        # 权限门放行，S3「强制精准保护」会自建回滚日志 + 备份目录并正常跑完
-        # （假夹具路径无可清理 → exit 0）——这在 REQ-003/017/025 语义下是正确
-        # 行为，「无还原点必须中止」是 S3 取代 B-M7 之前的旧契约。
+        #
+        # 2026-10-26 起不再 `-Skip:$IsAdmin`：原先只能在非管理员会话观测，CI 的
+        # windows-latest 是管理员 → 整条跳过 → 这条最关键的「无备份绝不 exit 0」
+        # 契约在 CI 上**从来没被验证过**。现在用 `WRC_TEST_IS_ADMIN=false` 把身份
+        # 注入子进程，两个环境下都走「权限门拦截 → exit 2」这条确定路径。
+        # 管理员会话下权限门放行、S3 自建回滚日志并跑完（exit 0）是 REQ-003/017/025
+        # 语义下的正确行为，但它无法验证本条断言，故不再作为本用例的执行环境。
         $confirm = Join-Path $global:_guardDir 'ok-confirm.json'
         [System.IO.File]::WriteAllText($confirm, '["fs_g1"]')
         $outFile = Join-Path $global:_guardDir 'out2.txt'
         $errFile = Join-Path $global:_guardDir 'err2.txt'
-        $p = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-            -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$global:_guardScript,
-                          '-ReportPath',$global:_guardReport,'-ConfirmFile',$confirm,
-                          '-WhitelistPath',$global:_guardNoWhitelist `
-            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        $prevInjected = $env:WRC_TEST_IS_ADMIN
+        try {
+            $env:WRC_TEST_IS_ADMIN = 'false'
+            $p = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+                -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$global:_guardScript,
+                              '-ReportPath',$global:_guardReport,'-ConfirmFile',$confirm,
+                              '-WhitelistPath',$global:_guardNoWhitelist `
+                -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        } finally {
+            if ($null -eq $prevInjected) { Remove-Item Env:\WRC_TEST_IS_ADMIN -ErrorAction SilentlyContinue }
+            else { $env:WRC_TEST_IS_ADMIN = $prevInjected }
+        }
         @(1, 2) | Should -Contain $p.ExitCode
         # 绝不允许 exit 0（那意味着在无备份情况下真的执行了删除）
         $p.ExitCode | Should -Not -Be 0

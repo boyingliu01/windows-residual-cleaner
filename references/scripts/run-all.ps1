@@ -5,13 +5,50 @@ param(
     [switch]$SkipRestorePoint = $false
 )
 
+# Resolve "am I admin?" behind a test-injection seam, as a SEPARATE function so that
+# Test-AdminPrivilege keeps exactly its original control flow. Gate 3's CCN ratchet is
+# one-way: inlining these two branches raised that function's CCN from 3 to 5 and
+# blocked the commit -- correctly, because a ratchet that can be argued up is not a
+# ratchet. The seam belongs in its own function or nowhere.
+#
+# Why a seam at all: `IsInRole(Administrator)` is a CONSTANT within a single process.
+# CI's windows-latest runner is an admin session, so the "not admin" branch never ran
+# there and its lines never entered line coverage -- measured 79.84%, below the 80% gate,
+# while the same code on a non-admin dev box was 80.78%. Coverage must not depend on
+# who happens to run the tests. Two entry points are needed:
+#
+#   -IsAdminOverride   in-process callers pass it directly;
+#   WRC_TEST_IS_ADMIN  a parameter cannot cross a process boundary, and the execution
+#                      guard's `exit` only counts as "really executed" in a child
+#                      process (see the guard-path tests).
+#
+# Existence uses $PSBoundParameters (AGENTS.md trap 11). The value is compared with
+# `-eq $true`, NOT `$IsAdminOverride.Value`: PowerShell returns nothing for
+# [Nullable[bool]] parameter properties (both engines; trap 11, third variant).
+function Get-AdminState {
+    [CmdletBinding()]
+    param([System.Nullable[bool]]$IsAdminOverride)
+
+    if ($PSBoundParameters.ContainsKey('IsAdminOverride')) {
+        return ($IsAdminOverride -eq $true)
+    }
+    $injected = [Environment]::GetEnvironmentVariable('WRC_TEST_IS_ADMIN')
+    if (-not [string]::IsNullOrWhiteSpace($injected)) {
+        return ($injected -eq 'true')
+    }
+    return [Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 # Admin privilege check (mandatory — includes create-restore-point)
 function Test-AdminPrivilege {
     [CmdletBinding()]
-    param([switch]$Mandatory)
-    $isAdmin = [Security.Principal.WindowsPrincipal]::new(
-        [Security.Principal.WindowsIdentity]::GetCurrent()
-    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    param(
+        [switch]$Mandatory,
+        [System.Nullable[bool]]$IsAdminOverride
+    )
+    $isAdmin = Get-AdminState -IsAdminOverride $IsAdminOverride
     if (-not $isAdmin) {
         if ($Mandatory) {
             Write-Error "Administrator privileges required. Please run PowerShell as Administrator."
