@@ -12,3 +12,10 @@
 .xp-gate-powershell-coverage-ignore text eol=lf
 githooks/**                      text eol=lf
 *.sh                             text eol=lf
+
+# Markdown is read by tools/Update-DocTables.ps1, which preserves whatever
+# newlines the target file already carried. Two docs were CRLF while every
+# other doc was LF, so the same -Check could report differently depending on
+# which file you were looking at. Pin LF so a checkout cannot reintroduce the
+# split.
+*.md                             text eol=lf

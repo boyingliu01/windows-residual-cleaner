@@ -2,6 +2,13 @@
 
 > **Round 1 评审后修订版** — 修复了 4 个 Critical Issues + 6 个 Major Concerns
 
+> **历史文档（2026-06）** — 这是 v2.0 发布改造的设计稿，早于整个自动回滚子系统。
+> 它描述的目标用户是「Qoder AI 用户」，而本项目已不再以 Qoder 为分发目标。
+> 保留原因是其中的问题分析（为什么半完成、为什么 CLI 优先）仍有参考价值；
+> **不要把它当作当前状态**。现状见 [CHANGELOG.md](../../CHANGELOG.md)。
+> 原路径 `docs/superpowers/specs/`，2026-10-27 扁平化——`superpowers` 是第三方工具的
+> 命名空间，不是文档分类。
+
 ## 概述
 
 对半完成的 Windows 卸载残留清理 skill 进行全面评估和改造，目标：方便使用、实用、可分享给其他 Qoder AI 用户。

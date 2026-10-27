@@ -4,6 +4,12 @@
 
 Scan and clean up residuals left by uninstalled software on Windows systems.
 
+This is an **agent-facing skill**, not a hands-off utility: it produces a risk-classified
+itemized report, and a human decides what actually gets deleted. Three confirmation gates
+stand between "scan" and "delete", and every destructive step is preceded by a restore
+point plus a per-item backup. See [docs/agent-workflow-pattern.md](docs/agent-workflow-pattern.md)
+for why the flow is shaped that way.
+
 ## Features
 
 - **Multi-source installed software index** — Registry, winget, scoop, chocolatey, MSI, UWP (6 sources)
@@ -18,8 +24,21 @@ Scan and clean up residuals left by uninstalled software on Windows systems.
 ## Compatibility
 
 - **Platform:** Windows 10/11
-- **Requires:** PowerShell 5.1, Administrator privileges
-- **Execution Mode:** Interactive — scan first, report, then user confirms cleanup
+- **Requires:** PowerShell 5.1 for the scripts (PowerShell 7 also works); Administrator
+  privileges **for deletion only** — see [SKILL.md](SKILL.md) for the exact per-script split
+- **Execution Mode:** Agent-driven — the user states intent, the agent scans and presents
+  the list, the user selects the items to clean
+
+## Documentation
+
+| Document | What it is | Status |
+|----------|-----------|--------|
+| [SKILL.md](SKILL.md) | Agent execution manual — privilege model, the three gates, four-tier deletion semantics, exit codes | **Current**, ships in the package |
+| [docs/agent-workflow-pattern.md](docs/agent-workflow-pattern.md) | The domain-free design contract for "let an agent perform destructive operations", written so other teams can lift it | **Current**, most portable asset |
+| [docs/decisions/ADR-001-main-ref-exit-code.md](docs/decisions/ADR-001-main-ref-exit-code.md) | Why every `Main` returns its exit code via `[ref]` instead of `exit` | **Current**, enforced by an AST test |
+| [AGENTS.md](AGENTS.md) | Maintainer guide — 16 PowerShell 5.1 traps, architecture rules, test strategy | **Current** |
+| [CHANGELOG.md](CHANGELOG.md) | Release history | **Current** |
+| [docs/README.md](docs/README.md) | Index of the documents above plus the historical records | — |
 
 ## Quick Start
 
@@ -60,34 +79,48 @@ powershell -ExecutionPolicy Bypass -File references/scripts/rollback.ps1
 
 ```
 windows-residual-cleaner/
-├── SKILL.md                          # OpenCode skill definition
-├── README.md                         # This file
-├── LICENSE                           # MIT License
-├── setup.ps1                         # Environment compatibility check
-├── .gitignore
+├── SKILL.md                       # Agent execution manual (ships inside the skill package)
+├── README.md                      # This file
+├── AGENTS.md                      # Maintainer guide: PS 5.1 traps, architecture rules
+├── CHANGELOG.md                   # Release-by-release history
+├── LICENSE                        # MIT License
+├── setup.ps1                      # Environment compatibility check
+├── specification.yaml             # REQ/AC registry (source of the exit-code contract)
 ├── references/
 │   ├── config/
-│   │   ├── config.json               # Scan thresholds and target directories
-│   │   └── whitelist.json            # Protected patterns (never delete)
-│   └── scripts/
-│       ├── run-all.ps1               # Unified scan pipeline entry point (scan only)
-│       ├── build-installed-index.ps1 # Build installed software index
-│       ├── create-restore-point.ps1  # Create restore point + registry backup
-│       ├── scan-uninstalled.ps1      # Scan uninstalled registry entries
-│       ├── scan-filesystem-residuals.ps1 # Scan empty/orphan directories
-│       ├── scan-residuals.ps1        # Scan registry/services/tasks/COM/Shell
-│       ├── generate-report.ps1       # Consolidate reports with risk IDs
-│       ├── confirm-cleanup.ps1     # Interactive cleanup confirmation
-│       ├── clean-residuals.ps1       # Execute cleanup (4 modes + DryRun + ConfirmFile)
-│       └── rollback.ps1              # Show rollback instructions
-└── tests/
-    ├── unit/
-    │   ├── scripts.Tests.ps1         # Unit tests for pure functions
-    │   └── config.Tests.ps1          # Unit tests for config validation
-    └── integration/
-        ├── main-flow.Tests.ps1       # Per-script Main execution against fixtures
-        └── pipeline.Tests.ps1        # End-to-end pipeline tests
+│   │   ├── config.json            # Scan thresholds and target directories
+│   │   └── whitelist.json         # Protected patterns (never delete)
+│   └── scripts/                   # 17 scripts; see the pipeline table below
+├── tools/                         # Repo-maintenance tooling (not shipped to users)
+│   ├── Update-DocTables.ps1       # Regenerates the exit-code tables in all docs
+│   ├── Measure-PowerShellComplexity.ps1  # CCN measurement for the Gate 3 ratchet
+│   ├── Update-ComplexityBaseline.ps1     # Rewrites the CCN baseline
+│   ├── Test-PowerShellArchitecture.ps1   # Gate 6 architecture check
+│   └── New-SkillPackage.ps1       # Builds the distributable skill package
+├── ui/                            # Optional local web UI (React + Express, binds 127.0.0.1)
+│   ├── src/
+│   └── server/                    # Local API; spawns the scripts above with admin rights
+├── tests/
+│   ├── unit/                      # 24 files: one per script plus cross-cutting contracts
+│   └── integration/               # 2 files: per-script Main against fixtures, and the
+│                                  #   end-to-end pipeline
+└── docs/
+    └── README.md                  # Index of every document, with its status
 ```
+
+`references/scripts/` is split into the scan pipeline and the rollback subsystem:
+
+| Group | Scripts |
+|-------|---------|
+| Pipeline entry point | `run-all.ps1` — runs steps 1–6 below, scan only |
+| Scan steps | `create-restore-point.ps1`, `build-installed-index.ps1`, `scan-uninstalled.ps1`, `scan-filesystem-residuals.ps1`, `scan-residuals.ps1`, `generate-report.ps1` |
+| Confirm / clean | `confirm-cleanup.ps1`, `clean-residuals.ps1` |
+| Rollback | `rollback.ps1` (CLI) plus the libraries it shares with `clean-residuals.ps1`: `rollback-journal.ps1`, `rollback-backup.ps1`, `rollback-verdicts.ps1`, `rollback-recovery.ps1`, `rollback-exec.ps1`, `rollback-producer.ps1` |
+| Shared helper | `native-invoke.ps1` — the only sanctioned way to launch a native executable |
+
+Rollback libraries have no top-level `param()` on purpose: `clean-residuals.ps1` and
+`rollback.ps1` dot-source the same five files in the same order, so a stray `param()`
+would clobber the caller's variables (see `AGENTS.md` trap 8a).
 
 ## Risk Levels
 
@@ -106,16 +139,19 @@ windows-residual-cleaner/
 
 ## Running Tests
 
+The suite is Pester 5, and it must pass on **both** engines: the runtime baseline is
+PowerShell 5.1, while the pre-commit gate runs Pester under `pwsh` 7.
+
 ```powershell
-# Install Pester if not present
-Install-Module Pester -Force -SkipPublisherCheck
+Install-Module Pester -Scope CurrentUser -Force   # if not present
 
-# Run unit tests
-Invoke-Pester tests/unit/
-
-# Run integration tests (requires admin)
-Invoke-Pester tests/integration/
+powershell.exe -NoProfile -Command "Invoke-Pester tests"   # 5.1
+pwsh -NoProfile -Command "Invoke-Pester tests"             # 7
 ```
+
+Run the two **serially, never concurrently** — some fixtures use fixed paths under the
+repo root and the two runs will corrupt each other. Integration tests that touch real
+registry/service state expect an elevated session.
 
 ## Code Quality
 
@@ -132,7 +168,7 @@ flagged (`run-all.ps1 -Verbose`) was removed instead of suppressed.
 
 ### Pre-commit quality gates (xp-gate)
 
-Commits run a 13-gate quality chain (static analysis, tests + coverage ≥ 80%,
+Commits run a 12-gate quality chain (static analysis, tests + coverage ≥ 80%,
 semgrep SAST on `.ps1`, secret scanning, architecture diff, sprint-flow
 enforcement). The chain lives **outside this repo** in a user-level hook install
 (`core.hooksPath` → `~/.config/xp-gate/hooks`), so a **fresh clone on a machine

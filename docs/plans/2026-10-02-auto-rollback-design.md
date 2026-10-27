@@ -1,8 +1,12 @@
 # Auto-Rollback — Design Document
 
 - **Sprint**: `sprint-2026-10-01-01`
-- **Status**: draft — pending HARD-GATE user approval, then R2 delphi-review
-- **Depends on**: `requirements-auto-rollback.md` (R1 input)
+- **Status**: **implemented (2026-10)** — retained as the design record. This line said
+  "draft — pending HARD-GATE user approval" long after the feature shipped across
+  releases 1.4.2.0–1.4.5.0; corrected 2026-10-27. The current behaviour is defined by
+  `specification.yaml` and the exit-code contract in [SKILL.md](../../SKILL.md), not by
+  this document — read it for **why** the design is shaped this way, not for **what** runs.
+- **Depends on**: `requirements-auto-rollback.md` (R1 input — gitignored, absent from any clone)
 - **Baseline commit**: `34a0817` (ADR-001 refactor; 287 tests, 80.0% coverage)
 
 ---

@@ -1,5 +1,14 @@
 # Windows Residual Cleaner v2.0 — Implementation Plan
 
+> **Historical record (2026-06).** This is the planning document from the v2.0 build.
+> It is kept because the reasoning behind the four-layer split is still readable, but it
+> describes a product that predates the entire rollback subsystem, and it targets a
+> "Qoder skill" that this project no longer ships. **Do not treat it as current state.**
+> For what exists today see [CHANGELOG.md](../../CHANGELOG.md) and
+> [ADR-001](../decisions/ADR-001-main-ref-exit-code.md).
+> Formerly `docs/superpowers/plans/`; flattened 2026-10-27 because `superpowers` is a
+> third-party tool's namespace, not a document category.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Transform the half-complete Windows residual cleaner into a production-ready Qoder skill with correct scanning logic, robust cleanup, comprehensive tests, and CLI-first distribution.
@@ -8,8 +17,8 @@
 
 **Tech Stack:** PowerShell 5.1, Pester 5.x, PSScriptAnalyzer, React/Vite (optional UI)
 
-**Design Doc:** `docs/superpowers/specs/2026-06-04-windows-residual-cleaner-release-design.md`
-**Specification:** `.sprint-state/phase-outputs/specification-sprint2.yaml`
+**Design Doc:** `docs/specs/2026-06-04-windows-residual-cleaner-release-design.md`
+**Specification:** `.sprint-state/phase-outputs/specification-sprint2.yaml` (gitignored; absent from any clone)
 
 ---
 
