@@ -168,7 +168,7 @@ flagged (`run-all.ps1 -Verbose`) was removed instead of suppressed.
 
 ### Pre-commit quality gates (xp-gate)
 
-Commits run a 12-gate quality chain (static analysis, tests + coverage ≥ 80%,
+Commits run a 13-gate quality chain, Gate 0–12 (static analysis, tests + coverage ≥ 80%,
 semgrep SAST on `.ps1`, secret scanning, architecture diff, sprint-flow
 enforcement). The chain lives **outside this repo** in a user-level hook install
 (`core.hooksPath` → `~/.config/xp-gate/hooks`), so a **fresh clone on a machine
