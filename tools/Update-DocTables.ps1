@@ -283,66 +283,102 @@ function Merge-MarkedBlock {
     return [pscustomobject]@{ Path = $Path; Original = $text; Updated = $updated; Changed = ($text -ne $updated) }
 }
 
-try {
-    $extracted = Get-ExitCodeRow -Path $producerPath
-}
-catch {
-    Write-Error $_
-    exit 1
-}
+# ---------------------------------------------------------------------------
+# 3. Splice into documents between marker comments.
+#
+# Everything below lives inside Main so that dot-sourcing this file only DEFINES
+# functions -- it never writes documents, never exits, and (crucially) is
+# instrumentable by Pester's coverage profiler.
+#
+# Why this matters beyond tidiness: the unit tests for these helpers live in
+# tests/unit/doc-tables-generator.Tests.ps1. When the top-level code ran
+# unconditionally, that file could not dot-source the generator, so it had to
+# reconstruct the parseable part via [scriptblock]::Create -- and code executed
+# from a dynamically created scriptblock is NOT instrumented. Measured
+# 2026-10-27: 23 passing tests against these functions, coverage still 0/138.
+# With the guard, plain dot-sourcing works and the lines count.
+#
+# `Main` reports its exit code via [ref] per ADR-001: no `exit` inside, no
+# `return <number>` (both would kill the Pester host or pollute the pipeline).
+# ---------------------------------------------------------------------------
+function Main {
+    param([ref]$ExitCode)
 
-$rows = $extracted.Rows
-$priority = Get-PriorityOrder -OrderedRows $extracted.OrderedRows
+    $setRc = { param([int]$v) if ($null -ne $ExitCode) { $ExitCode.Value = $v } }
 
-# Render each document's table with THAT document's newline. The block must be
-# byte-identical to what the target document uses, otherwise
-# -Check flips depending on how the working tree was checked out (CRLF on one
-# machine, LF in the repo).
-$targets = @(
-    @{ Path = (Join-Path $repoRoot 'SKILL.md'); Style = 'agent' },
-    @{ Path = (Join-Path $repoRoot 'docs/agent-workflow-pattern.md'); Style = 'pattern' },
-    @{ Path = (Join-Path $repoRoot 'AGENTS.md'); Style = 'maintainer' }
-)
-foreach ($t in $targets) {
-    $t.Block = Format-ExitCodeTable -Rows $extracted.Rows -Style $t.Style -DocumentPath $t.Path
-}
-
-$results = @()
-foreach ($t in $targets) {
-    $results += Merge-MarkedBlock -Path $t.Path -Block $t.Block
-}
-
-$drifted = @($results | Where-Object { $_.Changed })
-
-if ($Check) {
-    if ($drifted.Count -gt 0) {
-        Write-Output '退出码表与代码不一致（用 tools/Update-DocTables.ps1 重新生成）：'
-        foreach ($d in $drifted) {
-            Write-Output "  OUT OF DATE: $($d.Path)"
-            # Print WHERE it differs, not just that it does. Without this, a drift that
-            # reproduces only on one machine (CI vs local) is undebuggable from the log:
-            # the first CI failure for this generator said "all three OUT OF DATE" and
-            # nothing about why, so the next step was guesswork about line endings.
-            # Showing the first differing line and both sides turns that into a fact.
-            $origLines = $d.Original -split "`r?`n"
-            $newLines = $d.Updated -split "`r?`n"
-            $i = 0
-            while ($i -lt $origLines.Count -and $i -lt $newLines.Count -and $origLines[$i] -ceq $newLines[$i]) { $i++ }
-            Write-Output ("    首个差异在第 {0} 行；长度 原={1}/新={2}；CRLF 原={3}/新={4}" -f `
-                    ($i + 1), $origLines.Count, $newLines.Count, `
-                    ([regex]::Matches($d.Original, "`r`n").Count), ([regex]::Matches($d.Updated, "`r`n").Count))
-            if ($i -lt $origLines.Count) { Write-Output ("    文档现有: " + $origLines[$i]) }
-            if ($i -lt $newLines.Count) { Write-Output ("    生成结果: " + $newLines[$i]) }
-        }
-        exit 1
+    try {
+        $extracted = Get-ExitCodeRow -Path $producerPath
     }
-    Write-Output "退出码表与代码一致（$($rows.Count) 条，优先级 $priority）"
-    exit 0
+    catch {
+        Write-Error $_
+        & $setRc 1
+        return
+    }
+
+    $rows = $extracted.Rows
+    $priority = Get-PriorityOrder -OrderedRows $extracted.OrderedRows
+
+    # Render each document's table with THAT document's newline. The block must be
+    # byte-identical to what the target document uses, otherwise
+    # -Check flips depending on how the working tree was checked out (CRLF on one
+    # machine, LF in the repo).
+    $targets = @(
+        @{ Path = (Join-Path $repoRoot 'SKILL.md'); Style = 'agent' },
+        @{ Path = (Join-Path $repoRoot 'docs/agent-workflow-pattern.md'); Style = 'pattern' },
+        @{ Path = (Join-Path $repoRoot 'AGENTS.md'); Style = 'maintainer' }
+    )
+    foreach ($t in $targets) {
+        $t.Block = Format-ExitCodeTable -Rows $extracted.Rows -Style $t.Style -DocumentPath $t.Path
+    }
+
+    $results = @()
+    foreach ($t in $targets) {
+        $results += Merge-MarkedBlock -Path $t.Path -Block $t.Block
+    }
+
+    $drifted = @($results | Where-Object { $_.Changed })
+
+    if ($Check) {
+        if ($drifted.Count -gt 0) {
+            Write-Output '退出码表与代码不一致（用 tools/Update-DocTables.ps1 重新生成）：'
+            foreach ($d in $drifted) {
+                Write-Output "  OUT OF DATE: $($d.Path)"
+                # Print WHERE it differs, not just that it does. Without this, a drift that
+                # reproduces only on one machine (CI vs local) is undebuggable from the log:
+                # the first CI failure for this generator said "all three OUT OF DATE" and
+                # nothing about why, so the next step was guesswork about line endings.
+                # Showing the first differing line and both sides turns that into a fact.
+                $origLines = $d.Original -split "`r?`n"
+                $newLines = $d.Updated -split "`r?`n"
+                $i = 0
+                while ($i -lt $origLines.Count -and $i -lt $newLines.Count -and $origLines[$i] -ceq $newLines[$i]) { $i++ }
+                Write-Output ("    首个差异在第 {0} 行；长度 原={1}/新={2}；CRLF 原={3}/新={4}" -f `
+                        ($i + 1), $origLines.Count, $newLines.Count, `
+                        ([regex]::Matches($d.Original, "`r`n").Count), ([regex]::Matches($d.Updated, "`r`n").Count))
+                if ($i -lt $origLines.Count) { Write-Output ("    文档现有: " + $origLines[$i]) }
+                if ($i -lt $newLines.Count) { Write-Output ("    生成结果: " + $newLines[$i]) }
+            }
+            & $setRc 1
+            return
+        }
+        Write-Output "退出码表与代码一致（$($rows.Count) 条，优先级 $priority）"
+        & $setRc 0
+        return
+    }
+
+    foreach ($r in $drifted) {
+        [System.IO.File]::WriteAllText($r.Path, $r.Updated, $script:Utf8Read)
+        Write-Output "updated: $($r.Path)"
+    }
+    if ($drifted.Count -eq 0) { Write-Output '所有文档已是最新' }
+    Write-Output "codes: $($rows.Count)   priority: $priority"
+    & $setRc 0
 }
 
-foreach ($r in $drifted) {
-    [System.IO.File]::WriteAllText($r.Path, $r.Updated, $script:Utf8Read)
-    Write-Output "updated: $($r.Path)"
+# Execution guard -- only run when invoked directly, not when dot-sourced.
+# $MyInvocation.InvocationName is '.' for dot-sourcing.
+if ($MyInvocation.InvocationName -ne '.') {
+    $exitCode = 0
+    Main -ExitCode ([ref]$exitCode)
+    exit $exitCode
 }
-if ($drifted.Count -eq 0) { Write-Output '所有文档已是最新' }
-Write-Output "codes: $($rows.Count)   priority: $priority"

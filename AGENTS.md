@@ -822,6 +822,30 @@ It 'Works against real registry data' {
   > `references\scripts\` / `tools\` / `setup.ps1` 之一，再拼当前 checkout 检查存在性。
   > 它守的不变式是「没有死条目」（文件改名/删除没同步基线），与「本机路径能否解析」无关。
   > 已用脚本把 168 条全改成 CI 前缀验证过：0 条无法解析。
+- **覆盖率「本地绿、CI 红」先看分子分母的方向（2026-10-27 实测）**：
+  两边都只打印 `pct% (covered/total)`，判断依据就在这四个数字里。
+  - **分子大、分母也大** → 统计**口径**不同，不是少覆盖。去查工具链版本，补测试没用。
+    实测 2026-10-27：CI `79.62% (3082/3871)` vs 本机 `80.28% (3069/3823)`；
+    真因是 `ci.yml` 的 `Install-Module Pester -MinimumVersion 5.5.0 -Force` ——
+    `-MinimumVersion` 是**下限**，PSGallery 最新是 6.2.0 时 CI 就装 6.2.0，而本机是 5.7.1。
+    Pester 6 把更多**单语句** `continue`/`break`/`throw` 计为序列点：
+    同一份 `confirm-cleanup.ps1` 在 5.7.1 下插桩 282 行、6.2.0 下 294 行。
+  - **分子小、分母相同** → 真的少覆盖，去补测试。
+  排查时**三个看起来很像的假设要先用隔离实验否证**，否则会照着假线索改：
+  ① 行尾 CRLF/LF —— 字节差异真实存在（CI 检出 CRLF、本机 LF），但对插桩行集**无影响**
+  （真实文件双份 × 双引擎 2×2 矩阵实测，行集完全相同）；② 双引擎剖析器不同 ——
+  CI 两份产物行集**逐行相同**；③ Pester 版本 —— 成立。
+  **复现方式**：`Save-Module Pester -RequiredVersion 6.2.0` 到临时目录，
+  `Import-Module <临时>/Pester/6.2.0/Pester.psd1` 后跑全量覆盖率，实测复现出
+  `79.64% (3083/3871)`——分母与 CI 完全一致。
+- **`tools/*.ps1` 与 `references/scripts` 一样必须能被 dot-source（2026-10-27）**：
+  补 `tools/Update-DocTables.ps1` 的单测时发现做不到——顶层代码会写文档并 `exit`。
+  最初用 `[scriptblock]::Create` 重建可解析片段，结果 23 个用例全绿而覆盖率**仍是
+  0/138**：**动态 scriptblock 里的代码不被 Pester 插桩**。该脚本已改为 `Main` +
+  `[ref]$ExitCode` + 执行守卫（与 ADR-001 同一套结构），dot-source 后覆盖率正常计入。
+  判断口径：**「能被 dot-source」与「能被测试覆盖」在本项目是同一件事**，
+  `hermeticity.Tests.ps1` 的穷举契约目前只覆盖 `references/scripts` + `setup.ps1`，
+  新增 `tools/` 脚本请一并遵守。
 - **coverage.xml 的口径与污染（2026-10-16 走查实测）**：引用覆盖率数字前先核对产物：
   (1) 本地包装脚本的 `CoveragePercent`（如 80.40%）是 **Pester 命令口径**；
   (2) JaCoCo `coverage.xml` 的 LINE counter 是**行口径**，两者不可互引；Gate 5 读的是后者。
