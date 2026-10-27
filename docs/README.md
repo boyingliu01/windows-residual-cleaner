@@ -21,6 +21,7 @@
 | 文档 | 内容 | 谁在读它 |
 |------|------|---------|
 | [`agent-workflow-pattern.md`](agent-workflow-pattern.md) | **让 agent 执行不可逆操作**的设计契约。刻意去掉了清理领域的细节，五个构件 + 自检清单，可直接移植到别的系统 | 想复用这套模式的团队；本项目自己的退出码表就在这里生成 |
+| [`gate-operations.md`](gate-operations.md) | 门禁实操细节：覆盖率口径（分子/分母方向、阈值、污染形态）、Gate 1/3 的专用坑、本机工具链与适配器行为。2026-10-27 从 `AGENTS.md` 拆出——那里只留「判断口径」，逐条的实测细节搬到这里 | 排查门禁红、调覆盖率分母、看 Gate 3 基线的人 |
 | [`decisions/ADR-001-main-ref-exit-code.md`](decisions/ADR-001-main-ref-exit-code.md) | 为什么每个 `Main` 用 `[ref]$ExitCode` 回传而不 `exit`——含三种被实测否决的写法 | 任何改脚本的人；`tests/unit/hermeticity.Tests.ps1` 穷举强制它 |
 
 `agent-workflow-pattern.md` 的**路径被代码钉死**（`tools/Update-DocTables.ps1:327`、
@@ -50,6 +51,7 @@
 docs/
 ├── README.md                    # 本文件
 ├── agent-workflow-pattern.md    # 路径被代码钉死，勿移动
+├── gate-operations.md           # 门禁实操细节（覆盖率口径 / Gate 1、3 的坑 / 工具链）
 ├── decisions/                   # ADR：可长期引用的决策记录
 ├── plans/                       # 计划与设计稿
 ├── specs/                       # 需求/发布规格
