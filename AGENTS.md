@@ -526,80 +526,30 @@ if (-not $inIndex -and ($pathMissing -or $uninstallMissing)) {
 
 ### 文件删除: 四层降级策略
 
-Windows 文件可能被进程占用或权限锁定，需要逐级降级:
+Windows 文件可能被进程占用或权限锁定，需要逐级降级。**权威来源是
+`references/scripts/clean-residuals.ps1` 里的真实实现**；下面只记每层的**契约与判据**，
+不复制代码——复制的副本会随实现漂移，而漂移的副本比没有更危险：
 
-```powershell
-function Remove-ItemRobust {
-    param([string]$Path, [switch]$WhatIf, [ref]$Outcome)
-    $setOutcome = { param($v) if ($null -ne $Outcome) { $Outcome.Value = $v } }
+| Tier | 手段 | 关键约束 |
+|------|------|----------|
+| 0 | `-WhatIf` 预演 | 立即回传 `dry_run`，不做任何 IO |
+| 1 | `Remove-Item -LiteralPath -Recurse -Force` | 先判 `absent`（已不存在算成功） |
+| 2 | `takeown` + `icacls` 夺权后重试 | 走 `Invoke-NativeExe`（引号封装 + 真实超时，见陷阱 14） |
+| 3 | `cmd /c rd /s /q`（目录）/ `del /f /q`（文件） | 输出必须 `$null =` 吞掉（见陷阱 9） |
+| 4 | 改名 + 预约重启删除 | 路径拆解用 `[System.IO.Path]`（见陷阱 15）；文件另走 `MoveFileEx` |
 
-    if ($WhatIf) { & $setOutcome 'dry_run'; return $true }
-    # 2026-10-16：破坏性函数内一律 -LiteralPath（见陷阱 14 前的 P2 修复）——
-    # -Path 的通配符语义会把含 [ ] 的目录名误判 absent，甚至错删匹配项。
-    if (-not (Test-Path -LiteralPath $Path)) { & $setOutcome 'absent'; return $true }
-
-    # Tier 1: 标准 PowerShell 删除
-    try {
-        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-        & $setOutcome 'deleted'; return $true
-    } catch { Write-Warning "  → Standard delete failed: $($_.Exception.Message)" }
-
-    # Tier 2: 夺取所有权 + 修改 ACL（走 Invoke-NativeExe：引号封装 + 真实超时，见陷阱 14）
-    try {
-        $isDir = (Get-Item -LiteralPath $Path).PSIsContainer
-        $takeownArgs = if ($isDir) { '/r', '/d', 'Y', '/f', $Path } else { '/f', $Path }
-        $takeown = Invoke-NativeExe -FilePath 'takeown.exe' -Arguments $takeownArgs -TimeoutSeconds 600
-        if (-not $takeown.ok) { Write-Warning "  → takeown.exe failed with exit code $($takeown.exit_code)" }
-        $icaclsArgs = if ($isDir) { $Path, '/grant', 'Administrators:F', '/T', '/C' }
-                      else { $Path, '/grant', 'Administrators:F', '/C' }
-        $icacls = Invoke-NativeExe -FilePath 'icacls.exe' -Arguments $icaclsArgs -TimeoutSeconds 600
-        if (-not $icacls.ok) { Write-Warning "  → icacls.exe failed with exit code $($icacls.exit_code)" }
-        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-        & $setOutcome 'deleted'; return $true
-    } catch { Write-Warning "  → Takeown+ACL delete failed: $($_.Exception.Message)" }
-
-    # Tier 3: CMD 强制删除 —— 原生命令输出必须显式 $null = 吞掉（见陷阱 9）
-    #   cmd 内建命令（rd/del）只能经 `cmd /c <单串>` 传递，无法按元素加引号，
-    #   故**有意**不经 Invoke-NativeExe（AST 守卫只约束 Start-Process 与裸 reg/sc）。
-    try {
-        $null = cmd /c "rd /s /q `"$Path`"" 2>&1
-        if ($LASTEXITCODE -eq 0 -and -not (Test-Path -LiteralPath $Path)) { & $setOutcome 'deleted'; return $true }
-    } catch { Write-Warning "  → cmd delete failed: $($_.Exception.Message)" }
-
-    # Tier 4: 重命名 + 延迟删除（下次启动时）—— 走 Warning，不得污染成功流
-    # 注意：路径拆解必须用 [System.IO.Path]，不能用 Split-Path ——
-    #   -Path 有通配符语义（同 Tier 0 注入面），而 -LiteralPath 参数集**不接受**
-    #   -Parent/-Leaf（两个引擎都抛「Parameter set cannot be resolved」，见陷阱 15）。
-    #   拆解已收敛为可单测纯函数 Get-RenameTarget（尾反斜杠归一化 + 盘根拒绝）：
-    #   [System.IO.Path]::GetFileName('C:\dir\') 返回**空串**，不归一化会把改名
-    #   目标落到 'C:\dir\~.deleted'（Round-2 走查 2026-10-16 严码关 Minor）。
-    try {
-        $isDir = (Get-Item -LiteralPath $Path).PSIsContainer
-        $parts = Get-RenameTarget -Path $Path
-        if (-not $parts.ok) { throw $parts.reason }
-        $renamed = Join-Path $parts.parent "~$($parts.leaf).deleted"
-        $counter = 0
-        while (Test-Path -LiteralPath $renamed) {
-            $counter++
-            $renamed = Join-Path $parts.parent "~$($parts.leaf).deleted$counter"
-        }
-        Rename-Item -LiteralPath $parts.normalized -NewName ([System.IO.Path]::GetFileName($renamed)) -Force -ErrorAction Stop
-        Write-Warning "  → Renamed to $([System.IO.Path]::GetFileName($renamed)) (deferred delete - may be in use)"
-        # REQ-002: 改名不是删除（内容仍在磁盘上），必须回传 renamed:<新名>
-        & $setOutcome ('renamed:' + [System.IO.Path]::GetFileName($renamed))
-        return $true
-    } catch { Write-Warning "  → Rename fallback also failed: $($_.Exception.Message)" }
-
-    & $setOutcome 'failed'
-    return $false
-}
-```
+**每层的成功判据都是「目标真的不在了」**，不是「命令没报错」：
+`if ($LASTEXITCODE -eq 0 -and -not (Test-Path -LiteralPath $Path))`。
 
 契约：**成功流只允许携带最终布尔返回值**；所有诊断输出走 Warning 流；语义结果经
 `[ref]$Outcome` 回传（`dry_run` / `absent` / `deleted` / `renamed:<新名>` / `failed`），
 其中 `renamed:` **不得**被记成删除成功（REQ-002，DD-006 规定其不参与自动恢复）。
 `$deleted = Remove-ItemRobust …` 拿到的必须是**裸布尔**——任何多余输出都会让它变成
 真值恒为 `$true` 的数组（见陷阱 9）。
+
+> **Tier 4 的实证边界**：share=0 独占句柄 / 内存映射文件 / 只读目录属性下，
+> 「删除被挡 ⇒ 改名同样被拒」——tier-4 的成功窗口在标准语义下几乎不存在。
+> 它是如实的最后尝试，**不是**可依赖的兜底；测试与文档都不应假定它成功。
 
 ### 注册表路径处理 checklist
 
@@ -701,33 +651,18 @@ It 'Works against real registry data' {
   6 个纯展示函数已覆盖。**注意**：`Main` 内原有的 12 处 `exit` 已于 2026-10-01 全部改为
   `[ref]` 回传（ADR-001），所以「在 Pester 进程内调用会杀死宿主」这一障碍**已消除**；
   剩下的只是 `Read-Host` 本身需要重定向 stdin 才能驱动。
-- ~~任何 `Main` 内含 `exit` 的脚本都不能在 Pester 进程内直接调用~~
-  → **已于 2026-10-01 修复（ADR-001）**：`references/scripts` 下所有含 `Main` 的脚本
-  加上根目录 `setup.ps1` 都不再于 `Main` 内 `exit`，改为 `[ref]$ExitCode` 回传。
-  因此「dot-source + 进程内调用 `Main`」对**所有**脚本都可用，覆盖率插桩不再有
-  「执行一行都不计入」的盲区。该契约现为**穷举式 AST 断言**（`tests/unit/hermeticity.Tests.ps1`），
-  新增脚本一旦违反即在门禁变红。
-- ~~`setup.ps1` 是例外：没有 `Main`/`[ref]` 结构、结构性不可插桩，已在
-  `.xp-gate-powershell-coverage-ignore` 中排除~~ → **2026-10-08 修正**：那条豁免**是把代码缺陷
-  写成了结构性限制**。`setup.ps1` 现已重构为 `function Main` + `param([ref]$ExitCode)` +
-  统一守卫（唯一注入接缝 `-PSVersionOverride`，用于测「环境不满足 → 回传 1」），
-  可在 Pester 进程内插桩；`.xp-gate-powershell-coverage-ignore` 现为**空列表**。
-  子进程端到端用例仍保留（验证真实 `exit` 码与输出）。
 - 产品源（`references/scripts` + `setup.ps1` + `tools/`）行覆盖率**已超过** pre-commit
   门禁的 80% 阈值。**具体百分比与 sourcefile 数不写在这里**——它们随每次提交变化，
   权威来源是 `coverage.xml` 的 LINE counter（口径与污染判据见下方
   「coverage.xml 的口径与污染」条目）。**当前 number 请现跑现读，不要引用本文**。
-  历史轨迹（说明「靠补真实测试而非放宽规则」）：ADR-001 前 70.4% → 补测到 80.0% →
-  自动回滚 Sprint 落地后 83.94% → `setup.ps1` 摘掉豁免后 84.08% → 加入 `tools/` 后持续
-  保持在阈值之上。剩余缺口已定位且是**结构性**的，不是「懒得写测试」：
+  剩余缺口已定位且是**结构性**的，不是「懒得写测试」：
   - `confirm-cleanup.ps1` —— 未覆盖行中绝大多数是 `Read-Host` 交互式 TUI 循环
     （`Show-Page` 之后的命令分发）；只有少量属于可单测范围，已补测。
   - `clean-residuals.ps1` —— 未覆盖行集中在 HKLM/PATH 写入分支与 tier 2-4 的**成功**路径
     （需管理员 + ACL 受限文件；失败路径已由 `WrcRirLock` share=0 独占锁测试覆盖）。
-  这两块属于 AGENTS.md 明确划给「管理员环境集成演练」的范围，**不用 Mock 硬拉**。
+  这两块属于本文明确划给「管理员环境集成演练」的范围，**不用 Mock 硬拉**。
   达到 80%+ 靠的是把可测逻辑抽成纯函数并补真实测试，**未使用 `--no-verify`、
-  未向 `.xp-gate-powershell-coverage-ignore` 添加任何文件**（该文件现已**不排除任何文件**；
-  历史上进过列表的唯一一项 `setup.ps1` 于 2026-10-08 以重构方式解决）。
+  未向 `.xp-gate-powershell-coverage-ignore` 添加任何文件**（该文件**不排除任何文件**）。
 - **测试与门禁的双引擎要求**：pre-commit 的 Gate 5 用 **`pwsh` 7** 跑 Pester，
   而项目运行时基线是 **PS 5.1**。两者对 `ConvertFrom-Json` 的处理不同
   （见陷阱 6），因此**测试断言必须在两个引擎下都成立**。
@@ -779,8 +714,8 @@ It 'Works against real registry data' {
   的清理测试都需要它存在，否则 `Main` 会在备份门提前中止。**测试必须自建自清该 fixture**，
   不得依赖主仓里遗留的 `backup-*`（否则新克隆 / CI 下会出现假绿或假红）。
   见 `tests/unit/hermeticity.Tests.ps1`、`tests/unit/rollback.Tests.ps1`（`BackupRoot` 可注入）
-  与 `scripts.Tests.ps1` 的 `backup-svcregress` fixture。**2026-10-07 复查**：主仓
-  `backup-*` 目录数为 0，双引擎 710 全绿——隐藏前置依赖确已消除。
+  与 `scripts.Tests.ps1` 的 `backup-svcregress` fixture。**复查判据**：从干净工作树
+  （`backup-*` 目录数为 0）起跑双引擎，两个引擎都 0 失败——那才证明隐藏前置依赖已消除。
 - **覆盖率门禁的口径**：`xp-gate` 的 80% 阈值写死在共享 hook 里。**2026-10-16 第三批
   加固后**，调节分母的正确手段是 `.xp-gate-powershell-prune-dirs`（非产品脚手架目录在
   **发现阶段**整体离场，发现=分母）；`.xp-gate-powershell-coverage-ignore` 保持**空列表**
@@ -825,7 +760,7 @@ It 'Works against real registry data' {
   > **连带后果：CI 上不能用「绝对路径存在」来校验基线。** 基线写的是**作者机器**的前缀
   > （`D:\Study\...`），而 CI 跑在 `D:\a\windows-residual-cleaner\...`——直接断言那条
   > 绝对路径存在，会在 CI 上对**每一条**都失败（2026-10-26 实测：CI run 40356891173
-  > 的红就是这条，`Tests Passed: 804, Failed: 1`，而本地 812 全绿）。
+  > 的红就是这条（`Tests Passed` 有 1 条失败），而本地当时全绿）。
   > `tests/unit/complexity-tool.Tests.ps1` 因此按**仓库相对尾段**校验：把绝对前缀剥到
   > `references\scripts\` / `tools\` / `setup.ps1` 之一，再拼当前 checkout 检查存在性。
   > 它守的不变式是「没有死条目」（文件改名/删除没同步基线），与「本机路径能否解析」无关。
@@ -1001,401 +936,38 @@ if ($MyInvocation.InvocationName -ne '.') {
 
 ## 变更历史
 
-- 2026-05-05: 从 v1.0.0 → v1.1.0.0 session 中提取并整理
-  - 新增 PowerShell 5.1 陷阱清单
-  - 新增多条件检测逻辑设计原则
-  - 新增四层降级删除策略
-  - 新增测试策略（Mock 局限性 + 集成测试要求）
-- 2026-06-04: Sprint 2 发布级改造（sprint 分支）
-  - 新增脚本架构规范（函数/执行分离、退出码、权限分级）
-  - 新增 run-all.ps1 统一入口说明
-  - 修正执行守卫模式（`$MyInvocation.InvocationName`）
-- 2026-09-08: Sprint 2 改动移植回主线
-  - 陷阱清单新增第 6 条：`ConvertFrom-Json` 数组不展开（PS 5.1）
-  - `scan-filesystem-residuals.ps1` 补齐 Main 包装，10 个脚本架构完全统一
-  - `rollback.ps1` 补只读权限警告，权限分级覆盖全部脚本
-  - 集成测试改为「fixture 驱动 + 真实只读扫描」，98 个测试 0 失败
-- 2026-09-30: v1.4.1.0 接管审计
-  - 陷阱清单新增第 7 条：幽灵服务清理的 `$LASTEXITCODE` 幂等判定缺陷（+ 部分流重定向的环境相关风险）
-  - 修复 `clean-residuals.ps1` 幽灵服务清理（裸 `sc.exe ... 2>&1` + `-ne 0` → `Invoke-ScExe` + 1060 幂等判定）
-  - 新增 `service cleanup (sc.exe regression)` 测试组，断言可观测副作用而非打印字符串
-  - 测试数 98 → 141，PSScriptAnalyzer 维持 0 error / 0 warning
-  - 修正 `main-flow.Tests.ps1` 的覆盖率盲区（`&` 子进程执行不计入插桩 → dot-source + 进程内 `Main`）
-  - 记录 `references/scripts` 行覆盖率约 70% 及其结构性原因（见「已知限制」）
-  - 真实环境演练：非管理员范围（文件/注册表/计划任务）3/3 通过；管理员范围
-    （服务删除 + HKLM）经用户实测 2/2 通过（`cleanup-log.json`: `service_deleted` + `registry_deleted`）
-  - **更正**：本条最初把 7b 的 `StandardOutputEncoding` 风险写成「必然抛异常」，
-    复核后无法稳定复现，已拆分为 7a（已复现主缺陷）与 7b（环境相关风险）
-- 2026-10-01: ADR-001 —— 退出码统一 `[ref]` 回传 + 测试密闭性修复
-  - 陷阱清单新增第 8 条：dot-source 覆盖调用方同名变量 / 函数 `param()` 无条件遮蔽调用方变量
-  - **Critical**：修复测试套件在干净 worktree / 新克隆 / CI 下**整份静默塌掉**的假绿
-    （`Main` 内 `exit 1` 杀死 Pester 宿主 → `Passed= Failed= Total=` 全空 → CI 显示绿色）
-  - 8 个脚本的 `Main` 退出码改为 `[ref]$ExitCode` 回传，移除 `Main` 内共 25 处 `exit`
-  - `Test-AdminPrivilege -Mandatory` 改为 `return $false`，由调用方决定退出码 2
-  - 新增 `tests/unit/hermeticity.Tests.ps1`（AST 契约：`Main` 内不得 `exit`、不得 `return <数字>`）
-  - 新增 `docs/decisions/ADR-001-main-ref-exit-code.md`（含三种被实测否决的写法）
-  - 可测逻辑抽成纯函数并补测：`ConvertFrom-WingetJson/Text`、`ConvertFrom-ScoopJson/Text`、
-    `ConvertFrom-ChocoText`、`Test-PathMissing`、`Get-UninstallExePath`、
-    `Get-ResidualVerdict`、`Get-ResidualEvidence`、`Get-BackupDirectory`、
-    `Get-RegistryBackupFile`、`Get-MatchingRestorePoint`
-  - 顺带修复：`scan-uninstalled.ps1` 里一段**不可达的重复代码**（`& $setRc 3; return` 写了两遍）
-  - 顺带修复：`build-installed-index.ps1` / `scan-uninstalled.ps1` / `rollback.ps1` 的
-    `Main` 此前**静默忽略** `-OutputPath` 之类的实参（改为 `-XxxOverride` 显式参数）
-  - `rollback.ps1` 补 `try/catch`：清理日志或 `restore-status.json` 损坏时不再中断指引输出
-  - 测试数 141 → **254**；覆盖率 70.4% → **77%**；PSScriptAnalyzer 维持 0 error / 0 warning
-  - 剩余覆盖率缺口为结构性（`Read-Host` TUI 109 行 + 管理员专属 ACL/HKLM 分支），已记录于「已知限制」
-- 2026-10-02: 覆盖率补到 80%（真实测试，零 `--no-verify`）+ 又抓到 3 个真实产品缺陷
-  - **门禁口径**：用户明确否决「`--no-verify` 先提交」与「向 ignore 文件加文件」两条捷径，
-    要求把门禁做成**名副其实**的通过。本次靠补真实测试把覆盖率 77% → **80.0%**
-    （1065/1331），**未使用 `--no-verify`，未改 `.xp-gate-powershell-coverage-ignore`**。
-  - 测试数 254 → **287**（PS 5.1 与 pwsh 7 双引擎均 287/287 通过）
-  - **真实缺陷 1（PS 5.1 哈希表 + 空数组）**：`generate-report.ps1` 里
-    `candidate_directories = if (...) { ... } else { @() }` 会让
-    `final-report.json` 写出 `"candidate_directories": {}`（**空对象**，不是空数组）。
-    根因：`if` 语句**作为表达式**产出空数组时结果是 `$null`，`ConvertTo-Json` 把 `$null`
-    渲染成 `{}`。另外 `@($null)` 也不是空数组（Count=1、唯一元素为 `$null`）。
-    修复：先判空赋变量再 `[array]` 转型。**注意不能写 `[array]( if ... )`——那是语法错误**
-    （`if` 不是表达式），本次先踩了这个坑，且由于脚本加载失败时旧定义仍在作用域内，
-    一度产生「改好了」的假象。
-  - **真实缺陷 2（辅助函数依赖调用方变量）**：`scan-filesystem-residuals.ps1` 的
-    `Get-EffectiveFileCount` / `Get-DirectorySizeMB` 在 `catch` 里调用 `& $setRc 0`，
-    但它是**顶层纯函数**，被单测或其它脚本直接调用时 `$setRc` 并不存在 →
-    抛 `The expression after '&' ... was not valid`。改为 `return 0`。
-  - **真实缺陷 3（不可达重复代码 ×3）**：`generate-report.ps1` / `scan-residuals.ps1` /
-    `scan-filesystem-residuals.ps1` 各有一处 `& $setRc 3; return` 被写了两遍，
-    第二份永不执行。已删除。
-  - **双引擎断言教训**：pre-commit Gate 5 用 **pwsh 7** 跑 Pester，而运行时基线是 PS 5.1。
-    `restore-status.json` 的 timestamp 断言在 5.1 下通过、在 pwsh 7 下失败
-    （7 会把 ISO 串解析成 `[datetime]` 再序列化出小数秒）。已改为断言
-    「可 `[datetime]::Parse`」+ 断言**原始 JSON 文本**。**提交前必须两个引擎各跑一次。**
-  - 新增测试文件：`tests/unit/create-restore-point.Tests.ps1`（注册表备份 + 还原点分支）、
-    `tests/unit/rollback.Tests.ps1`（备份目录/注册表备份/还原点匹配 + 单条匹配计数回归）
-  - `generate-report.ps1` 与 `rollback.ps1` 现已 **100% 行覆盖**
-- 2026-10-02: Gate 11（Sprint Flow Enforcement）状态校正
-  - `.sprint-state/sprint-state.json` 的 `phase` 由 `1` 改为 `0`：Phase 1 PLAN 尚未产出
-    经 delphi 评审的 auto-rollback 设计，此前填 `1` 会让 Gate 11 误以为可以要求
-    `.sprint-state/delphi-reviewed.json`。**如实记录相位，不伪造评审产物。**
-  - 阻塞项 B1（测试不密闭）标记为 `resolved`，并附复查证据：本 worktree 内
-    `backup-*` 目录数为 **0**，而 287 个测试全绿 —— 原先的隐藏前置依赖确已消除。
-- 2026-10-07: 自动回滚 Sprint VERIFY —— drill5 修复、双引擎 710 测试、PATH 证据留痕
-  - **真实缺陷（drill5 实测命中）**：`Remove-ItemRobust` 的 tier-3/tier-4 原生命令输出经
-    `2>&1` 被包成 ErrorRecord 写进**成功流**，调用方 `$deleted` 拿到
-    `@(ErrorRecord, $false)` 非空数组（真值恒 `$true`）→ 四层全失败被记「删除成功」→
-    `failedCount=0` → **自动回滚不触发**（REQ-002 / AC-016）。修复（`def77d9`）：
-    tier-3 显式 `$null =` 吞输出、tier-4 走 `Write-Warning`；新增 `WrcRirLock`
-    P/Invoke share=0 独占锁测试（断言成功流**恰为**单个 `$false`）+ 进程内自动回滚
-    链路集成测试（期望 rc=10）。见陷阱 9。
-  - **PATH 冲突判定 fail-open 关闭（`0d7b658`）**：`rollback-verdicts.ps1` 曾把
-    「两侧证据都缺席」（`'' -cne ''` 为假）当「相符」放行恢复。改用
-    `$PSBoundParameters.ContainsKey` 判证据存在性，四态 `PathCompare`（mismatch /
-    current_null / expected_null / equal）与两侧值留痕进 `rollback-result.json`。
-    见陷阱 11。
-  - **pwsh 7 兼容修复（`b613d71`）**：journal 自校验把 pwsh 7 反序列化出的合法
-    `[datetime]` 判为「不可解析」，现直接接受。见陷阱 10。
-  - **管理员真实演练（drill5，2026-10-07 21:41，用户已授权）**：23 项检查 18 项通过。
-    share=0 锁目录的不变量全部通过（tier-4 改名未伪装成功、journal 如实记
-    `mutation_failed`、清理摘要 6/5/1）。5 项失败全部级联自同一起点：PATH 条目
-    `pe_951` 的恢复被自我校验拒绝（`conflict(external_change_sign_iii)`，fail-closed）
-    → rc=11（期望 10）、`completed_at` 未写、PATH 段未回填（drill 自身 finally 已把
-    PATH 还原为字节一致）。该冲突未能在后续受控复现中重现，且当时的报告未记录比较
-    两侧的值——本次落地的证据字段（`0d7b658`）即为让下次发生可诊断。
-  - 测试数 287 → **710**（PS 5.1 与 pwsh 7 双引擎均 710/710 通过）；`references/scripts`
-    行覆盖率 80.0% → **83.94%**（2765/3294，16 脚本）。
-  - 陷阱清单新增第 9/10/11 条；退出码规范补 10–15 自动回滚矩阵。
-  - `wrc-drill/`（drill3/4/5 + rdlab + teardown）**按用户决定保持 untracked**（本机管理员演练
-    脚手架，会创建真实服务/PATH/注册表对象，不进仓）。
-    **2026-10-16 更正**：该目录实际处于 **tracked** 状态（6 个文件已随早期推送入仓，
-    `git ls-files wrc-drill` 可复核）——「保持 untracked」的决定并未真正落地。门禁侧已通过
-    `.xp-gate-powershell-prune-dirs` 把它隔离出文件发现/覆盖率分母；是否按原决定移出
-    git 跟踪留待维护者决策（drill 脚本会创建真实系统对象，克隆者误跑有风险）。
-    **2026-10-20 落地**：原决定执行——`git rm -r --cached` 移出跟踪（本地文件保留）+
-    `.gitignore` 钉住 `wrc-drill/`；公开仓库不再分发会动真实系统对象的脚本，clone 者只
-    得到 README 之外的空目录。门禁三处分母的隔离（prune-dirs）与本决定无关，继续生效。
-- 2026-10-08: 自动回滚 Sprint 收尾 —— drill5 根因、CORS 收紧、REQ-031 盲区、setup.ps1 摘豁免
-  - **drill5 根因定位（`12bf152`，Critical）**：`$null -ne $MachinePathOverride` 在三处
-    （两处转发 + 一处读取）把「未注入」读成「注入了空 PATH」，跳过真实注册表读取 →
-    每个 `path_entry` 恒被 fail-closed 拒为 `conflict(external_change_sign_iii)` →
-    2026-10-07 那 5 项级联失败（rc=11、PATH 未回填、`completed_at` 为空）由此解释并消除。
-    这是陷阱 11 的**注入接缝**变体：Mock 用例本来就传 override，所以单测永远看不到。
-    存在性改用 `$PSBoundParameters.ContainsKey`，并钉住「不传 ⇒ 读到活系统值」的端到端断言。
-  - **UI CORS 收紧（`d2cd8c6`，Security）**：loopback 服务上的 `app.use(cors())` 发出
-    `Access-Control-Allow-Origin: *`，而它的 POST 路由会拉起**管理员权限的破坏性 PowerShell** ——
-    用户打开的任意页面都能触发清理并读回结果。改为 `ui/server/security.cjs` 的同源守卫
-    （放行同源 / vite dev 源 / 无 Origin 头的本地客户端，拒绝非 loopback `Host` 头以挡 DNS
-    rebinding）、`/api/confirm` 按报告形状校验 id、`/api/status` 不再泄露项目根。
-  - **REQ-031 的 15 号盲区（`fec90f6` + 规范修订 `5dd0a17`）**：只有 11 会跳过写 `completed_at`，
-    于是 rc=15 照常标记「本轮已正常结束」，而 T3 只吃未完成日志 —— 下一轮的恢复机会被永久抹掉。
-    新增纯函数 `Test-CompletionMarkerSuppressed`，按「系统此刻是否仍有本轮没能修复的改动」判定，
-    覆盖 (a) `restore_failed>0` / (b) 未记账变更>0 / (c) `failedCount>0` 且回滚整轮未跑 三种形状；
-    其中 (c) 是必须的，因为 `$persistenceError` 会让 T2 整轮跳过，导致**每个 15 的
-    `restore_failed` 恒为 0**（只写 (a) 是不可达代码）。见「退出码规范」的完成标记表。
-  - **setup.ps1 摘掉覆盖率豁免（`721cada`）**：`.xp-gate-powershell-coverage-ignore` 里唯一一项
-    把「违反 ADR-001」写成了「结构性不可插桩」。现已重构为 `Main` + `[ref]$ExitCode` +
-    `-PSVersionOverride` 接缝，该忽略列表为**空**；`hermeticity.Tests.ps1` 的 ADR-001 契约
-    改成对**所有含 `function Main` 的脚本**（现 11 个）穷举 AST 断言，防止同类债再长回来。
-  - **管理员真实演练复跑（drill5，2026-10-08 09:43，用户已授权 UAC）**：23 项检查 **23 项通过**，
-    `pe_951` 的 `path_entry=restored`、rc=10、计数 3/0/3/0、journal 写出 `completed_at`、
-    机器 PATH 回合 `-ceq` 字节一致；share=0 锁目录不变量继续通过。
-  - 陷阱清单新增第 12/13 条（Pester 宿主偏好会凭空造失败；`It` 标题尖括号 + `BeforeDiscovery`
-    的 `-ForEach` 数据不可用）；测试数 710 → **727**（双引擎各 727/727）；行覆盖率
-    83.94%（2765/3294，16 脚本）→ **84.08%（2804/3335，17 文件）**（历史值；现口径
-    18 sourcefile / 84.17%，见「coverage.xml 的口径与污染」）；PSScriptAnalyzer 维持 0。
-  - 未复现抖动如实记录：pwsh 7 一次全量运行报 720/1，随后两次同样运行 721/0、定向 5 轮各 243/0，
-    本次收尾双引擎复跑 727/727；未能定位到具体用例，判为环境级争用。
-- 2026-10-16: 门禁加固与平台层原语收敛（接管审计第二批）
-  - **xp-gate 门禁体检**：官方 13 道门禁逐一对底层工具实测（官方 9 PASS/3 SKIP 多为
-    「单文件提交」下的空转），产出 `docs/audits/2026-10-16-gate-status.md`；向
-    `boyingliu01/xp-gate` 提交 4 个缺陷 issue（lib source fail-open #535、Gate 10
-    工具缺席静默 PASS #536、Gate 3/4/6 对 PowerShell 零覆盖 #537、文件发现不 prune
-    演练目录 #538）；semgrep 1.171.0 就位，Gate 10 下次代码提交起为真扫描。
-  - **新增 `references/scripts/native-invoke.ps1`**：原生 exe 调用唯一通道
-    （ConvertTo-NativeArgument 引号封装 + Invoke-NativeExe 真实超时）。
-    `Invoke-ScExe` / `Invoke-RegExe` 收敛为其包装（返回形状不变）；
-    `Remove-ItemRobust` Tier2 的 takeown/icacls 改道（含空格路径此前从未真正生效）。
-  - **PS 5.1 句柄陷阱（陷阱 14b）**：`-PassThru` 无 `-Wait` 时必须先触碰
-    `$proc.Handle`，否则进程退出后 `ExitCode` 恒为 `$null`——双引擎实测差异，
-    pwsh 7 无此问题。
-  - **`Remove-ItemRobust` 全部路径操作改 `-LiteralPath`**（通配符注入面关闭）；
-    `create-restore-point.ps1` 裸 `reg export` 改走 Invoke-NativeExe + 失败落
-    `valid=$false` 记录 + 缺库 fail-closed 回传 3。
-  - **新增 `tests/unit/platform-hygiene.Tests.ps1`**（22 用例，Round 2 起守卫升级为
-    `Remove-*` 名字模式穷举）：引号单测 + 真实进程
-    行为（sc 1060/1639 判别、服务名单引号形态、HKCU 含空格/含内嵌引号键导出、
-    含空格+尾反斜杠参数、真实超时击杀、run-all 逃生舱形态）+ AST 守卫
-    （Start-Process 白名单、数组字面量禁裸变量、`Remove-*` 函数体一律
-    -LiteralPath 且禁 Split-Path、禁裸 reg/sc）+ rollback 库清单一致性。
-    测试数 727 → **751**（双引擎各 751/751）。
-  - **UI**：`ui/server/index.cjs` 可测化（`require.main === module` 守卫 + 导出 app），
-    新增 `ui/server/index.test.mjs` 12 用例；测试抓到真实缺陷——带 dist 部署时未知
-    `/api` 路由掉进 SPA catch-all 且不回应（浏览器挂起），已补 `/api/*` 404 分支。
-    删除孤儿类型 `CategoryInfo` 与 AppPhase 死值 `'selecting'`；vitest 59 → **71**；
-    `.architecture-baseline.json` + `architecture.yaml` 入库激活 Gate 6 diff 模式
-    （28 smells 存量如实记录）。
-  - **delphi code-walkthrough Round 1（三专家三模型）**：其 Critical（Start-Process
-    再包引号）经双引擎端到端实证驳回并以真实进程测试钉死；证实项已修——超时
-    击杀失败写进 error 字段 + Dispose、clean-residuals 显式加载 native-invoke、
-    /api 畸形 JSON 结构化 400、architecture.yaml 入库。
-  - **自查抓到自己的回归（陷阱 15）**：上一批把 tier-4 的路径拆解写成
-    `Split-Path -LiteralPath X -Parent/-Leaf`（参数集在两个引擎上都无法解析），
-    tier-4 整体变成死分支且被 locked-fixture 的预期失败路径吞掉；已改
-    `[System.IO.Path]` 字面量方法，新增 tier-4 必须到达 Rename-Item 的行为测试。
-    陷阱清单新增第 14/15 条；四层降级示例同步至现状；ui/package.json 补
-    `test`/`lint` 脚本。
-  - **delphi code-walkthrough Round 2（三专家三模型）**：1 APPROVED / 2
-    PASS_WITH_CAVEATS，无 Critical/Major 阻塞，证实项（全部 Minor 级）当场落实：
-    `ConvertTo-NativeArgument` 尾反斜杠一律进引号分支（因果口径经 Round 3 复核更正，
-    见下）；tier-4 拆解收敛为纯函数 `Get-RenameTarget`（尾反斜杠归一化 + 盘根/
-    空白如实拒绝）；备份文件名净化补 `/`；rollback 缺库记录幂等去重；run-all
-    逃生舱形态补真实进程回归；AST 守卫升级为 `Remove-*` 名字模式穷举；移除与
-    AST 守卫强弱不一致的弱文本守卫；vitest 根配置显式 `reportsDirectory`；
-    PROJECT_ROOT 声明为不可环境覆盖的模块契约。
-  - **delphi code-walkthrough Round 3（三专家三模型）**：严码关 APPROVED（0.95，
-    零发现）；构远图/稳落地 PASS_WITH_CAVEATS，证实项（全部 Minor）当场落实——
-    (a) **陷阱 7 纪律的自我适用**：`ConvertTo-NativeArgument` 的注释与 CHANGELOG
-    曾把「裸尾反斜杠让 takeown 报 Invalid argument/option」写成 PS 5.1 引擎特有
-    缺陷，实测复核为**两引擎共有**失败形态（两引擎裸形态均 exit=1，经
-    Invoke-NativeExe 引号+翻倍后两引擎均成功），已按「写下必然/100% 必须附可复现
-    命令」的纪律改为诚实口径；**R5 再更正（2026-10-16）**：R3 的「两引擎共有」
-    仍只对 **Start-Process 纯拼接**形态成立——`&` 原生绑定形态实为**引擎分歧**
-    （PS 5.1 失败 / pwsh 7 的原生实参绑定正确转义——R6 实测三种
-    PSNativeCommandArgumentPassing 模式均成功，非 7.2 特性门控），三形态真值已由可执行钉子
-    （platform-hygiene「三形态真值钉子」用例）双引擎持续钉住；(b) `create-restore-point.ps1` 的 '/' 净化被指出为
-    **不可达预留**（当前 regPaths 三条键名均无 '/'），注释改为如实标注「预留，
-    当前不可达，落地 HKCR CLSID 形态时须同步补测」；(c) `Get-RenameTarget` 对无
-    目录成分的相对路径先 `GetFullPath` 解析（否则 Join-Path 抛错被 catch 伪装成
-    环境失败，陷阱 15 同型）并补测试钉住；(4) coverage.xml 口径与污染实测记录进
-    「已知限制」（命令口径 vs 行口径；评审会话用默认 CodeCoverage 跑 Pester 会把
-    `.workbuddy/` 等混进 sourcefile，引用前先数 18）。留待后续：rollback-backup
-    不写宿主作用域状态、AST 守卫按破坏性语义而非名字模式判定、/api/confirm 落点
-    断言、reg 备份文件名两套命名方案的碰撞面。测试数 751 → **752**（双引擎各
-    752/752，新增相对路径 Get-RenameTarget 用例）；PSScriptAnalyzer 维持 0。
-- 2026-10-16: **门禁真生效加固（接管审计第三批）**——把「SKIP/空转」的 XP 门禁变成
-  真跑且 fail-closed（用户点名的重要事项）
-  - **背景**：第二批体检结论是 13 道门禁里 PowerShell 侧大量空转——Gate 5 靠旧
-    coverage.xml、Gate 10 对 .ps1 零扫描、Gate 1 没有 powershell 分支、文件发现不
-    prune 演练目录。本批全部落地修复（钩子层文件在 `~/.config/xp-gate`，仓库外，
-    已留 `.bak-gate-harden-20261016` 备份）：
-    1. `adapters/powershell.sh`：`_detect_pwsh` 显式回退探测（WindowsApps pwsh →
-       System32 powershell.exe，PATH 剥离可复现）；`_find_powershell_files` prune 列表
-       补 xp-gate 脚手架 dot 目录 + `.xp-gate-powershell-prune-dirs` 项目注入（实测
-       发现 20 测试 + 18 产品源，wrc-drill 出局）；Gate 1 静态分析新增**范围文件
-       模式**（`.xp-gate-powershell-analysis-paths`，本仓 = references/scripts +
-       setup.ps1）与逐路径 PSSA 循环（`$ErrorActionPreference='Stop'` 防静默；
-       PSSA `-Path` 不接受数组的实测坑已绕开）；引擎/PSSA 模块缺席 → WARN 计入
-       分母，不再静默 PASS；Pester 超时 300 → 900 秒（752+ 用例 + 覆盖率运行）。
-    2. `hooks/pre-commit`：Gate 1 入口正则补 `ps1|psm1` + 新增 fail-closed
-       `powershell)` 分支（0 告警 + reason → WARN；非零 → BLOCK exit 1）；
-       Gate 10 包装正则补 `ps1|psm1`。
-    3. `adapters/gate-10.sh`：SEMGREP_FILES 补 `ps1|psm1`；semgrep 回退探测
-       `%APPDATA%\Python\*\Scripts\semgrep.exe`。
-  - **仓库侧配套（本提交）**：`.xp-gate-powershell-prune-dirs`（wrc-drill，#538）与
-    `.xp-gate-powershell-analysis-paths`（产品范围 + 硬边界：新增产品脚本必须同提交
-    加路径）入库；`.xp-gate-powershell-coverage-ignore` 清空（prune 已覆盖其历史条目，
-    保留硬边界规则）；AGENTS.md「已知限制」两条门禁降级记录改写为加固后现实。
-  - **单元验证（Git bash 直测钩子函数）**：探测在剥离 PATH 下找到 pwsh；发现剪枝
-    精确；范围 PSSA 干净 → exit 0；告警探针文件 → exit 1 + PSSA 发现表（真 BLOCK）；
-    3 轮重复无抖动；`bash -n` 全部通过。
-  - **R5 可执行钉子更正了 R3 的因果口径**：为落实构远图残余项写的
-    「三形态真值钉子」用例实测发现——R3 的「裸透传 takeown **两引擎**共有失败」
-    只对 **Start-Process 纯拼接**形态成立；`&` 原生绑定形态是**引擎分歧**
-    （PS 5.1 失败 / pwsh 7 的原生实参绑定正确转义，R6 实测三种 passing 模式均成功）。已按三形态真值改写
-    native-invoke.ps1 注释、测试注释与 CHANGELOG/AGENTS.md 记录。教训入册：
-    「两引擎共有」与「引擎分歧」是两个不同的命题，换验证形态即换命题。
-  - **测试侧 PSSA 技术债如实入册**：以仓库设置测 tests/ 全量为 328 条告警
-    （PSUseDeclaredVarsMoreThanAssignments 164 + PSAvoidGlobalVars 131 +
-    PSAvoidOverwritingBuiltInCmdlets 18 + PSUseShouldProcessForStateChangingFunctions 11
-    + PSUseApprovedVerbs 3 + PSUseSingularNouns 1），属 Pester 执行模型的误报面；
-    门禁按「产品范围」收敛而非放宽规则，测试文件不进 PSSA 判据。
-  - 测试数 752 → **753**（三形态真值钉子，双引擎各 753/753）；PSScriptAnalyzer
-    产品范围维持 0。
-- 2026-10-17: 门禁真生效收口 + R6 走查证实项 + **钩子回退事故**（接管审计第三批续）
-  - **试金石提交——结论先错后正（陷阱 7 纪律再次自适用）**：第三批加固以真实
-    `git commit`（`a78ac47`）验收时，仅凭报告末尾的 PASS 汇总与 Gate 5 新鲜
-    coverage.xml（18 sourcefile，2844/3379 = 84.17%，这一项为真）就写下
-    「Gate 1 PSSA 真扫 / Gate 10 首次真扫描」。**R6 Round-2 严码关+稳落地用
-    分歧证据（pre-commit 行号 + 文件 mtime）逼出复查，实测推翻**：Gate 1 段
-    的实际输出是 `✅ PASSED - No code files changed, skipping lint.`（skip
-    谓词不含 .ps1，skip-as-pass 也记 PASS）；Gate 10 的 `files scanned: 2`
-    扫的是 2 个无扩展名配置文件而非 .ps1。教训：**引用门禁证据必须读该门禁
-    段的输出行，不能只读报告汇总**——汇总把 SKIP/SKIP-as-PASS 与真 PASS 记成
-    同一个 PASS。
-  - **钩子回退事故（R6 Round-2 发现，本会话实测确认，共三种形态）**：一个外部
-    xp-gate 维护进程把 batch-3 硬化的三个用户级文件**全部还原为 legacy 且保留旧
-    mtime**（`adapters/powershell.sh` 272 行 2026-10-13、`gate-10.sh`
-    2026-10-13、`pre-commit` 谓词无 ps1），`.bak-gate-harden-20261016` 备份
-    除 pre-commit 一份（后被证实与 live 同为 legacy）外全部消失。本会话早前
-    的 missing-path 探针（12:33 仍能发 `XP_G1_REASON`）证明回退发生在探针与
-    专家检查之间。**同一窗口（12:53:28）`.git/config` 被写入空的 repo 级
-    `core.hooksPath`**（空值覆盖全局 → 钩子目录回落到无钩子的 `.git/hooks`，
-    提交零门禁零输出）——第三种形态，靠「提交必须看到门禁段输出」的核对才
-    抓到。这是继 .delphi-config.json 两次改写事故后**第三次实证**的「用户级
-    钩子基础设施会被外部进程改写」。
-  - **重建 + 防回退（本轮收口提交）**：(1) 三个钩子文件按原设计重打全部补丁
-    （`_detect_pwsh` 回退、发现 prune + prune-dirs 注入、范围 PSSA + Stop 纪律、
-    fail-closed XP_G1_REASON 族、pre-commit Gate 1 谓词 + `powershell)` 分支 +
-    Gate 10 谓词、gate-10 semgrep APPDATA 回退 + ps1|psm1），五探针复测通过
-    （发现 20+18 / 干净 PASS / 缺失条目 WARN / scope 内脏文件 BLOCK / 引擎探测）；
-    (2) **vendored 进仓库**：`githooks/adapters/powershell.sh` +
-    `githooks/adapters/gate-10.sh`（权威副本）+ `githooks/README.md`（安装/同步
-    指引），pre-commit 以标记断言覆盖；(3) 一致性测试新增第 4 用例「钩子安装与
-    vendored 副本一致」——live 适配器与 vendored 哈希比对 + pre-commit 标记
-    断言（本机钩子缺席时 Inconclusive，CI/新克隆不受影响）；(4) 本组用例补
-    自有 BeforeAll（过滤单跑不再依赖首个 Describe）、prune 前缀从
-    prune-dirs 文件推导（消掉第四份硬编码清单）。
-  - **R6 code-walkthrough Round 1（三专家三模型）**：1 APPROVED / 2 PASS_WITH_CAVEATS，
-    零 Critical；三位专家各自实测复现了同类根因——**analysis-paths 的「硬边界」此前
-    只有散文承诺**：列表条目缺失时钩子静默跳过（fail-open），根级产品脚本带真告警也
-    PASS（两位专家以临时探针脚本实证）；coverage 分母与 Gate 1 分析范围是两条
-    独立维护的边界，无交叉校验；发现是 `*.ps1` 端到端，`.psm1` 模块不在三处分母内；
-    ci.yml 硬编码产品清单并仍引用已清空的 coverage-ignore；R5 的因果归属
-    「7.2+ 标准实参传递」被实测否定（三种 PSNativeCommandArgumentPassing 模式均
-    成功，非 7.2 特性门控）。drill3 的 `Test-AdminPrivilege` 桩 `return $true`
-    让演练在非管理员会话静默驱动真实清理。
-  - **R6 Round 3/4（重建复核 + 修复闭环）**：Round 3 三专家独立复测证实重建
-    成立（哈希一致/发现 20+18/三态映射正确/WARN 真降 verdict），但以探针抓出
-    两处 Critical 并全部落地：(1) **PSSA settings 的 Severity 过滤把 ParseError
-    整条丢弃**——语法损坏脚本静默过 Gate 1（实测裸跑 2 条/Error-Warning settings
-    0 条），修法 `Severity += 'ParseError'`（IncludeRules 变体实测无效）；
-    (2) **防回退闭环缺口**——pre-commit 无恢复源 + live 文件被删除时哈希断言
-    静默跳过；修法 pre-commit 完整 vendored + 「目录存在 ⇒ 文件必须存在」 +
-    vendored 存在性断言前移。Major 全处理：CRLF 行尾静默降级（适配器剥 CR +
-    `.gitattributes` eol=lf 双层）、prune `-name` 任意深度语义对齐注释、
-    XP_G1_REASON 多条聚合 + `grep -v || true`、标记断言升级为分支专属符号
-    （PS_G1_REASON / GATE_1_DETAIL="powershell:）、`git -C` 钉定、两层防御
-    口径澄清。详见审计 7.7。
-  - **证实项当场落实**：(1) 钩子适配器缺失条目改为发 `XP_G1_REASON:
-    analysis-path-missing:<路径>`（fail-closed WARN，同 analysis-paths-empty 语义）+
-    超时文案 300 字面量改用真值；(2) 新增「门禁边界一致性」测试组（tracked 产品源
-    必须全被 analysis-paths 覆盖 + scope 条目必须存在 + coverage-ignore 必须空 +
-    prune-dirs 必须含 wrc-drill + 钩子与 vendored 一致）——散文边界变成门禁守卫；
-    (3) ci.yml 产品清单改读 `.xp-gate-powershell-analysis-paths`（scope 空即 fail），
-    移除陈旧 coverage-ignore 引用与 727 历史计数；(4) README 新增
-    「Pre-commit quality gates」节（钩子链在仓库外 + 新克隆静默降级的事实 +
-    三份 tracked 边界文件）；(5) wrc-drill/README 同步 prune 机制口径；
-    (6) drill3 权限桩改真实管理员检测（非管理员中止）；(7) 三形态因果归属全文
-    更正为「原生实参绑定正确转义（三种 passing 模式实测）」；(8) analysis-paths
-    文件头补 `.psm1` 盲区 note；AGENTS.md 补新产品脚本 checklist。
-  - 测试数 753 → **757**（+3 边界一致性 + 1 钩子一致性；双引擎各 757/757）；
-    产品范围 PSSA 维持 0。
-- 2026-10-20: **第四次改写——xp-gate upstream 更新覆盖硬化（防回退机制首次实战触发）**
-  - xp-gate 升级把三个钩子文件整体替换为新 upstream 版（pre-commit 173K→189K）：
-    新版吸收 #538 prune 与其余语言修复，但 PowerShell 加固清零（PS_G1_REASON /
-    powershell 分支 / ps1 谓词 / semgrep Windows 回退全缺席）——**合法更新与恶意
-    回退在内容层不可区分，一致性测试按设计变红**。hooksPath 双写在此次幸存。
-  - 恢复流程（审计 7.8）：以 vendored 为基 → diff 合入 upstream 真增量
-    （5 条 prune 路径 + #538 注释）→ 新 pre-commit 重打三补丁、gate-10 重打两补丁
-    → 重新 vendored → 探针复测（ParseError 拦截 rc=1 / 缺条目 WARN / semgrep 回退）
-    → 双引擎 27/27 → 实弹提交。**恢复 ≠ `cp` 回去：必须合并 upstream 增量，否则
-    下次更新把本仓独有的 PowerShell 支持再冲掉一次。**
-  - **当晚第二波（审计 7.8.1）**：维护者在 `D:\projects\xp-gate` 活跃开发并多次
-    部署（部署保留 mtime——live 被覆盖后 mtime 显示旧值是指纹）；适配器（含
-    SC2034 disable）被吸收进 upstream（与 vendored 逐字节一致），但 pre-commit
-    三补丁未吸收且 live 被部署回滚，一致性测试双引擎各红 1 次（另有本会话校验
-    脚本路径替换 bug 自比自的假 match——**哈希核对以测试套件为准**）。恢复：
-    重打三补丁于 195K 新基座（顺带获得 upstream 的 Gate 5「没跑不许报 PASS」
-    修复）→ vendored 拷回 live → 27/27 → 实弹提交。**upstream 吸收 pre-commit
-    三补丁前，每次部署都可能再回滚，信号=一致性测试红，恢复=以 vendored 为权威。**
-- 2026-10-22: **xp-gate 重基线到 0.30.5 + 三处 fail-closed 漏洞修复**
-  - 用最新版（0.30.5）重新体检本仓，发现 vendored 门禁落后 upstream **两个版本**，
-    且 upstream 已独立吸收我们报的 #547/#548（两个 issue 均已 CLOSED），我们的 fork
-    反而跑着「旧基座 + 重打补丁」的混合体。**重建**：以 0.30.5 为基（pre-commit
-    196176B / powershell.sh 12165B / gate-10.sh 17407B），只重打 upstream 没有的
-    三处增量——analysis-paths 作用域、prune-dirs 注入、semgrep 的 `%APPDATA%` 回退。
-    upstream 的 CRLF 自检（#546）、单一覆盖率阈值解析器（#555）、`XP_G1_REASON`
-    协议、`ps1|psm1` 合并正则全部照收。gate-10 的 APPDATA 计数由 1 归零后再补齐
-    （upstream 侧为 0），确认重打无遗漏。
-  - **三处 fail-closed 漏洞（真实缺陷，均已实证复现后修复）**：
-    (1) **critical**：`analysis-path-missing` 只 echo 了 reason、没有改变返回值。父
-    hook 对 reason 行做 `grep -v` 剥离后按键退出码判定，于是「一个有效路径 + 一个
-    幽灵路径」实测 `rc=0` → 报 **PASSED**，而产品代码已经逃出作用域。修复：用
-    `scope_missing` 计数，分析跑完后 `>0` 强制 `return 3`。**教训：没有配套返回值的
-    reason 是装饰品，必须与退出码绑定。**
-    (2) **major**：作用域模式下 `PSScriptAnalyzerSettings.psd1` 缺失时仍照跑片段；
-    `-Settings` 指向不存在的路径是**非终止错误**，配合 `-ErrorAction
-    SilentlyContinue` 结果集为空 → 未分析的树被判 PASS。修复：作用域模式前置校验
-    settings 存在（`analysis-settings-missing`），片段改 `-ErrorAction Stop` +
-    try/catch → exit 3 → WARN。
-    (3) **major**：prune-dirs 条目未校验，`*` 能把发现清空、分隔符能指向产品目录，
-    而发现同时供给测试发现/覆盖率分母/分析范围三个口径。修复：只接受裸目录名
-    （拒绝 `/`、`\`、`*`、`?`、`[`、`.`、`..`），拒绝项打印通知并忽略，采纳项也
-    公告。两个配置读取器同时剥离 UTF-8 BOM 与行尾 CR（PS 5.1 的 `Set-Content
-    -Encoding UTF8` 默认写 BOM，会把首个条目和 `#` 注释头一起吃成路径）。
-  - 验证：wrc 生产作用域 18 文件 PASS；注入一个幽灵条目 → `rc=3` + reason +
-    「1 scope entry(ies) did not exist」；wrc-drill 剪枝仍生效（泄漏 0）；
-    `bash -n` 全过、shellcheck CLEAN；Pester 757/757（pwsh 7）。
-  - **delphi 三专家 code-walkthrough 实跑两轮**（三模型：g-deepseek-v4-pro /
-    s-deepseek-v4.1-flash / doubao-seed-2.0-pro）。Round 1 **REQUEST_CHANGES**
-    （1 APPROVED / 2 REQUEST_CHANGES），critical A1 与 major A3/A4 均为真问题、
-    已全部按上述修复并补测试；Round 2 复核 APPROVED。**这是本项目第一次由自动化
-    评审抓住自己引入的 fail-open**，说明门禁评审流程有效。
-  - 提交门禁 12 道全过（含 Gate 5 测试、覆盖率），无 `--no-verify`、未加忽略项。
-  - 运维备注：期间 live 钩子被外部 xp-gate 部署覆盖 4 次（198247B 等变体，均不含
-    analysis-paths 增量），一致性测试每次如实报红，均以 vendored 同步恢复。
-- 2026-10-27: **文档去快照化 + 一致性守卫**——让 AGENTS.md 里的质量数据不再腐烂
-  - 起因：本文曾同时写着「23 个产品源文件」和「18 个 sourcefile」，两个数字都过期且
-    互相矛盾（前一版还写着 757 个测试，实测已是 844）。审计确认这些数字**没有任何
-    可执行文件读它**（`757`/`798`/`84.17`/`18 个 sourcefile`/`23 个产品源` 在
-    `tests/`、`tools/`、`ci.yml`、门禁适配器里命中数均为 0），所以过期不会让门禁变红，
-    只会让下一个读文档的人按错的前提做判断——比不写更糟。
-  - 改法：**删掉会腐烂的快照，保留不会腐烂的判断口径**。正文里的当期数字（测试数、
-    覆盖率百分比、covered/total、sourcefile 数、含 `Main` 的脚本数）一律改写为
-    「权威来源 + 现查方式」；`## 变更历史` 里的历史数字是**当时的实测值**，作为记录保留。
-  - 新增 `tests/unit/doc-consistency.Tests.ps1`（9 个用例，两个方向）：
-    (a) 正文（`## 变更历史` 之前）不得出现两位小数百分比、`pct% (a/b)`、裸分数对、
-    `N 个 sourcefile`；白名单只放**判断口径类**用法（历史轨迹箭头、论证现场），
-    注释里写死判据「这个数字三个月后会变成错的吗」；
-    (b) 本文对结构的陈述必须与被守卫的对象一致——从 `hermeticity.Tests.ps1` 的
-    `$script:HerdCandidates` **反推**契约目录，再断言本文把每个目录都写到了，
-    且不再宣称「契约只覆盖 `references/scripts` + `setup.ps1`」。
-    方向 (b) 让文档跟着代码走，而不是让测试跟着文档硬编码。
-  - **hermeticity 契约补齐 `tools/`**：此前只枚举 `references/scripts/*.ps1` + `setup.ps1`，
-    而 `tools/Update-DocTables.ps1` 同属产品源（同样进覆盖率分母），漏掉它意味着新脚本
-    能在契约之外悄悄混进来。顺带把读取改成显式 UTF-8 解码（陷阱 16 的同一形态）。
-  - 反向验证：把「当前 84.17%，18 个 sourcefile」塞回正文 → 守卫当场 8/9 并印出命中行；
-    撤掉后 9/9。
-  - 静态检查：`tools/Update-DocTables.ps1 -Check` exit 0（退出码表 10 条一致）。
-    Pester **双引擎各 844/844**（PS 5.1 与 pwsh 7，串行）。
-  - 踩坑记录：新建的 `doc-consistency.Tests.ps1` 写中文却没带 UTF-8 BOM，被
-    `platform-hygiene.Tests.ps1` 的「非 ASCII 的 .ps1 一律带 BOM」当场拦下——
-    **这条守卫是有效的**，它抓的正是 CI 编码守卫会拒绝的文件。
-  - 提交门禁全过，无 `--no-verify`、未加任何忽略项。
+本文只记**改变了做法或判断口径**的事，逐条的实测细节、缺陷复现与验证过程在
+[`CHANGELOG.md`](CHANGELOG.md) 与 [`docs/audits/`](docs/audits/)。写在这里的理由只有一条：
+它改变了以后该怎么判断，而不是「那天发生了什么」。
+
+- 2026-09-30: 幽灵服务清理的 `$LASTEXITCODE` 幂等判定缺陷 → 陷阱 7。
+  **纪律**：写下「必然/100%」必须附可复现命令；分不清「无条件必然」与「环境相关」时，
+  先按后者写。
+- 2026-10-01: ADR-001 —— `Main` 内不得 `exit`，退出码走 `[ref]` 回传。
+  起因是 `Main` 里的 `exit 1` 会杀死 Pester 宿主，导致整份套件静默塌掉而 CI 显示绿色。
+  **判断口径**：测试「全绿」但 `Passed/Failed/Total` 全是空的时候，先怀疑宿主被杀，
+  而不是庆祝。
+- 2026-10-02: 覆盖率 70.4% → 77% → 80.0%，方式全是补真实测试。
+  **口径**：`--no-verify` 与「往忽略列表加文件」是两条被明确否决的捷径——门禁要么名副其实，
+  要么它就只是个仪式。
+- 2026-10-08: `setup.ps1` 摘掉覆盖率豁免。那条豁免把**代码缺陷**写成了**结构性限制**（违反
+  ADR-001），而结构性理由是不该被审计的。
+  **判断口径**：某脚本看起来「不可插桩」时，先查它是否违反了 ADR-001，而不是加一行豁免。
+- 2026-10-16: 门禁加固三批 + 平台层原语收敛（陷阱 14/15，`native-invoke.ps1`）。
+  **最有价值的一条**：引用门禁证据必须读**该门禁段自己的输出行**。报告汇总把
+  SKIP / SKIP-as-PASS 和真 PASS 记成同一个 PASS——只看汇总会得出与事实相反的结论
+  （那次就先写下了「Gate 1 真扫」，复查后被推翻）。
+- 2026-10-17: 钩子回退事故 —— 外部进程把加固过的用户级钩子文件还原成 legacy，且保留旧 mtime。
+  **教训**：`.git/config` 里的空 `core.hooksPath` 会让钩子目录回落到 `.git/hooks`，
+  提交零门禁零输出。所以「提交必须看得见门禁段输出」本身是一条安全检查。
+- 2026-10-20 起: 放弃在仓库里 vendored 一份钩子副本。前提（本仓维护 xp-gate 的下游加固）
+  被上游每次发版证明不成立，每次升级都让套件变红且与仓库质量无关。
+  **判断口径**：一条断言如果红的原因与仓库质量无关，它就不该存在——那会让本地验证失去意义。
+- 2026-10-26: Gate 3 基线四前提（键名 / 测量器 / 路径拼写 / 全集），见「已知限制」。
+  **判断口径**：门禁说「new function」时按 `gate-3.sh` 原逻辑**逐字照抄**复算，
+  不要「顺手修正」它的正则——改成正则看起来对了，真实门禁照旧拦人。
+- 2026-10-27: 删掉会腐烂的快照，保留不会腐烂的判断口径。正文不再写测试数、覆盖率百分比、
+  sourcefile 数与脚本数；权威来源是实跑本身。
+  **判据**：**「这个数字三个月后会变成错的吗」**——会变就改写成描述，而不是加进白名单。
+  这条由 `tests/unit/doc-consistency.Tests.ps1` 守着，也包括「本文声称的契约范围必须与
+  `hermeticity.Tests.ps1` 实际枚举的目录一致」，让文档跟着代码走。
