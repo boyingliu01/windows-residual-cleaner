@@ -20,13 +20,22 @@ Describe 'ADR-001 契约覆盖全仓：每个含 Main 的脚本都必须用 [ref
     # 这里把契约做成**穷举**：新增脚本一旦违反就会在这里红。
     BeforeAll {
         $script:HerdRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
+        # tools/ 的产品脚本与 references/scripts 同等对待（2026-10-27）：
+        # tools/Update-DocTables.ps1 就曾因「顶层代码 + exit」无法被 dot-source，
+        # 而覆盖率同样是 0/138 —— 「能被 dot-source」与「能被测试覆盖」在本项目是同一件事。
+        # 漏掉某一个目录，新脚本就能在契约之外悄悄混进来。
         $script:HerdCandidates = @(
             (Get-ChildItem -LiteralPath (Join-Path $script:HerdRoot 'references\scripts') -Filter '*.ps1' -File).FullName
+            (Get-ChildItem -LiteralPath (Join-Path $script:HerdRoot 'tools') -Filter '*.ps1' -File).FullName
             (Join-Path $script:HerdRoot 'setup.ps1')
         )
+        # 编码陷阱 16：PS 5.1 的 Get-Content -Raw 对无 BOM UTF-8 按系统代码页解码。
+        # 这里只需要 ASCII 形态的 `function Main`，但统一走显式 UTF-8 解码更稳。
+        $script:HerdUtf8 = New-Object System.Text.UTF8Encoding($false)
         $script:HerdCases = @(
             foreach ($f in $script:HerdCandidates) {
-                if ((Get-Content -LiteralPath $f -Raw) -match '(?m)^function Main\b') {
+                $text = $script:HerdUtf8.GetString([System.IO.File]::ReadAllBytes($f))
+                if ($text -match '(?m)^function Main\b') {
                     @{ Path = $f ; Label = (Split-Path $f -Leaf) }
                 }
             }

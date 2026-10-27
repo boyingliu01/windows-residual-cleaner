@@ -10,7 +10,13 @@
 涉及注册表、文件系统、Windows 服务、计划任务、COM 扩展等敏感系统区域。
 
 **运行环境**: Windows 10/11 + PowerShell 5.1 + Administrator 权限
-**测试框架**: Pester 5.x — `Invoke-Pester tests/`（当前 757 个测试，PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
+**测试框架**: Pester 5.x — `Invoke-Pester tests/`（PS 5.1 与 pwsh 7 双引擎均通过，目标 0 失败）
+
+> 本文**不记录**测试数/覆盖率/sourcefile 数这类每次提交都会变的快照。它们的权威来源是
+> 实跑本身（`Invoke-Pester` 的 `PassedCount`、`coverage.xml` 的 LINE counter）。
+> 历史变更记录里出现过的数字是**当时的实测值**，不是当前状态——想知道现在多少，去跑。
+> 唯一保留的硬数字是**结构数**（哪些目录、哪些脚本），因为它们变了就意味着规则变了，
+> 而那正是需要同提交更新本文的事件；这类数字由 `tests/unit/doc-consistency.Tests.ps1` 守着。
 **代码质量**: PSScriptAnalyzer 0 error / 0 warning，**必须带设置文件运行**：
 
 ```powershell
@@ -358,7 +364,7 @@ if ($PSBoundParameters.ContainsKey('IsAdminOverride')) {
 ```powershell
 # ❌ 错误: 本地覆盖率/验证包装脚本里加这一行
 $ErrorActionPreference = 'Stop'
-Invoke-Pester -Configuration $cfg     # 实测凭空 30 个失败，行覆盖率被压到 79.63%
+Invoke-Pester -Configuration $cfg     # 实测凭空多出 30 个失败，覆盖率被压低一截
 
 # ✅ 正确: 不设该偏好（钩子适配器的片段同样不设，所以只有本地包装会骗人）
 $cfg = New-PesterConfiguration
@@ -696,8 +702,8 @@ It 'Works against real registry data' {
   `[ref]` 回传（ADR-001），所以「在 Pester 进程内调用会杀死宿主」这一障碍**已消除**；
   剩下的只是 `Read-Host` 本身需要重定向 stdin 才能驱动。
 - ~~任何 `Main` 内含 `exit` 的脚本都不能在 Pester 进程内直接调用~~
-  → **已于 2026-10-01 修复（ADR-001）**：全部含 `Main` 的脚本（现 **11 个**：`references/scripts` 下
-  10 个 + 根目录 `setup.ps1`）都不再于 `Main` 内 `exit`，改为 `[ref]$ExitCode` 回传。
+  → **已于 2026-10-01 修复（ADR-001）**：`references/scripts` 下所有含 `Main` 的脚本
+  加上根目录 `setup.ps1` 都不再于 `Main` 内 `exit`，改为 `[ref]$ExitCode` 回传。
   因此「dot-source + 进程内调用 `Main`」对**所有**脚本都可用，覆盖率插桩不再有
   「执行一行都不计入」的盲区。该契约现为**穷举式 AST 断言**（`tests/unit/hermeticity.Tests.ps1`），
   新增脚本一旦违反即在门禁变红。
@@ -707,12 +713,13 @@ It 'Works against real registry data' {
   统一守卫（唯一注入接缝 `-PSVersionOverride`，用于测「环境不满足 → 回传 1」），
   可在 Pester 进程内插桩；`.xp-gate-powershell-coverage-ignore` 现为**空列表**。
   子进程端到端用例仍保留（验证真实 `exit` 码与输出）。
-- `references/scripts` + `setup.ps1` 行覆盖率 **84.08%**（2804/3335，**17 个文件**，
-  2026-10-08 JaCoCo 实测；**历史值**——native-invoke.ps1 入列后清单变为 **18 个
-  sourcefile**、2026-10-16 实测 **84.17%**（2844/3379），权威口径见下方
-  「coverage.xml 的口径与污染」条目），已超过 pre-commit 门禁的 80% 阈值（ADR-001 前为 70.4%；
-  随后补真实测试到 80.0%；自动回滚 Sprint 落地后为 83.94%（2765/3294，16 个文件）；
-  `setup.ps1` 摘掉豁免后为 84.08%）。剩余缺口已定位且是**结构性**的，不是「懒得写测试」：
+- 产品源（`references/scripts` + `setup.ps1` + `tools/`）行覆盖率**已超过** pre-commit
+  门禁的 80% 阈值。**具体百分比与 sourcefile 数不写在这里**——它们随每次提交变化，
+  权威来源是 `coverage.xml` 的 LINE counter（口径与污染判据见下方
+  「coverage.xml 的口径与污染」条目）。**当前 number 请现跑现读，不要引用本文**。
+  历史轨迹（说明「靠补真实测试而非放宽规则」）：ADR-001 前 70.4% → 补测到 80.0% →
+  自动回滚 Sprint 落地后 83.94% → `setup.ps1` 摘掉豁免后 84.08% → 加入 `tools/` 后持续
+  保持在阈值之上。剩余缺口已定位且是**结构性**的，不是「懒得写测试」：
   - `confirm-cleanup.ps1` —— 未覆盖行中绝大多数是 `Read-Host` 交互式 TUI 循环
     （`Show-Page` 之后的命令分发）；只有少量属于可单测范围，已补测。
   - `clean-residuals.ps1` —— 未覆盖行集中在 HKLM/PATH 写入分支与 tier 2-4 的**成功**路径
@@ -761,9 +768,10 @@ It 'Works against real registry data' {
   `_find_powershell_files` 的 prune 列表覆盖 xp-gate 脚手架 dot 目录
   （`.worktrees/.workbuddy/.sprint-state/.delphi-work/.qoder/.vscode/.idea/.xp-gate`），
   项目专属目录经 `.xp-gate-powershell-prune-dirs`（本仓含 `wrc-drill`）注入；
-  实测发现结果 = 20 个测试文件 + **23 个产品源文件**（17 脚本 + setup.ps1 + 5 个 tools 门禁工具），wrc-drill
+  实测发现结果包含全部测试文件 + 全部产品源（`references/scripts/*.ps1` + `setup.ps1`
+  + `tools/*.ps1`，**具体条数以发现命令实跑为准**），wrc-drill
   不再进测试发现与覆盖率分母。Gate 1 的 PSSA 经 `.xp-gate-powershell-analysis-paths`
-  收敛到产品范围（references/scripts + setup.ps1），Pester 测试文件按 Pester 执行模型
+  收敛到产品范围（references/scripts + tools + setup.ps1），Pester 测试文件按 Pester 执行模型
   产生的数百条规则误报不再进入门禁判据（328 条清单见审计文档；同规则、收范围，
   非放宽规则）。~~想真正启用 pwsh，必须连同分析范围一起收敛~~ → 已落地，pwsh 可安全
   上钩子 PATH。
@@ -825,7 +833,8 @@ It 'Works against real registry data' {
 - **覆盖率「本地绿、CI 红」先看分子分母的方向（2026-10-27 实测）**：
   两边都只打印 `pct% (covered/total)`，判断依据就在这四个数字里。
   - **分子大、分母也大** → 统计**口径**不同，不是少覆盖。去查工具链版本，补测试没用。
-    实测 2026-10-27：CI `79.62% (3082/3871)` vs 本机 `80.28% (3069/3823)`；
+    例：CI 报约 79.6%、本机报约 80.3%，而**分母也同时变大**（CI 的 total 比本机大一截）
+    ——分子分母同向变化就是口径差异，不是少覆盖。
     真因是 `ci.yml` 的 `Install-Module Pester -MinimumVersion 5.5.0 -Force` ——
     `-MinimumVersion` 是**下限**，PSGallery 最新是 6.2.0 时 CI 就装 6.2.0，而本机是 5.7.1。
     Pester 6 把更多**单语句** `continue`/`break`/`throw` 计为序列点：
@@ -835,25 +844,26 @@ It 'Works against real registry data' {
   ① 行尾 CRLF/LF —— 字节差异真实存在（CI 检出 CRLF、本机 LF），但对插桩行集**无影响**
   （真实文件双份 × 双引擎 2×2 矩阵实测，行集完全相同）；② 双引擎剖析器不同 ——
   CI 两份产物行集**逐行相同**；③ Pester 版本 —— 成立。
-  **复现方式**：`Save-Module Pester -RequiredVersion 6.2.0` 到临时目录，
-  `Import-Module <临时>/Pester/6.2.0/Pester.psd1` 后跑全量覆盖率，实测复现出
-  `79.64% (3083/3871)`——分母与 CI 完全一致。
+  **复现方式**：把 CI 同版本的 Pester（`ci.yml` 里实际装到的那个）`Save-Module` 到临时目录，
+  `Import-Module <临时>/Pester/<版本>/Pester.psd1` 后跑全量覆盖率——分母会与 CI 逐项相同。
+  这一步本身就是「口径确认」：分母对上就证明差异在工具版本，不必再补测试。
 - **`tools/*.ps1` 与 `references/scripts` 一样必须能被 dot-source（2026-10-27）**：
   补 `tools/Update-DocTables.ps1` 的单测时发现做不到——顶层代码会写文档并 `exit`。
   最初用 `[scriptblock]::Create` 重建可解析片段，结果 23 个用例全绿而覆盖率**仍是
   0/138**：**动态 scriptblock 里的代码不被 Pester 插桩**。该脚本已改为 `Main` +
   `[ref]$ExitCode` + 执行守卫（与 ADR-001 同一套结构），dot-source 后覆盖率正常计入。
-  判断口径：**「能被 dot-source」与「能被测试覆盖」在本项目是同一件事**，
-  `hermeticity.Tests.ps1` 的穷举契约目前只覆盖 `references/scripts` + `setup.ps1`，
-  新增 `tools/` 脚本请一并遵守。
+  判断口径：**「能被 dot-source」与「能被测试覆盖」在本项目是同一件事**。
+  hermeticity 契约枚举 `references/scripts/*.ps1` + `tools/*.ps1` + `setup.ps1` 三处
+  （见该文件 BeforeAll 的 `$script:HerdCandidates`）；新增脚本无论落在哪个目录，都会被穷举到。
 - **coverage.xml 的口径与污染（2026-10-16 走查实测）**：引用覆盖率数字前先核对产物：
-  (1) 本地包装脚本的 `CoveragePercent`（如 80.40%）是 **Pester 命令口径**；
+  (1) 本地包装脚本打印的 `CoveragePercent` 是 **Pester 命令口径**（与行口径不是一回事）；
   (2) JaCoCo `coverage.xml` 的 LINE counter 是**行口径**，两者不可互引；Gate 5 读的是后者。
-  权威口径 = `references/scripts` **17 脚本**（native-invoke 入列后）+ `setup.ps1` 共
-  **18 个 sourcefile**（2026-10-16 JaCoCo 实测 84.17%，2844/3379）；脚本数再变时以
-  17 文件清单命令的实数为准。
+  权威口径 = **产品源全集**（`.xp-gate-powershell-analysis-paths` 列出的三个范围：
+  `references/scripts/*.ps1` + `tools/*.ps1` + `setup.ps1`），一个不多、一个不少。
+  **不要背数字**：脚本增删都要同提交改 `analysis-paths`，count 自然变；当前 count 用
+  `coverage.xml` 里 `<sourcefile>` 的条数现查（正常应与 analysis-paths 发现数相等）。
   (3) 产物会被**任何**用默认 CodeCoverage 配置跑 Pester 的会话覆写污染——实测评审期间
-  一次运行把 `.workbuddy/`（3 文件）与根目录本地脚本混进 23 个 sourcefile，顶层 counter
+  一次运行把 `.workbuddy/` 下的文件与根目录本地脚本混进了 sourcefile 列表，顶层 counter
   随之失真；**另一种观测形态（R5 走查实测）**：产物被整个写成 **2 字节空文档
   （0 sourcefile）**。两种形态都会被 sourcefile 计数自检抓出，混入/清空即重跑覆盖率管线。
 
@@ -863,7 +873,7 @@ It 'Works against real registry data' {
 
 ### 函数/执行分离模式
 
-`references/scripts/` 下全部 10 个含 `Main` 的脚本 + 根目录 `setup.ps1`（共 **11 个**）统一使用
+`references/scripts/` 与 `tools/` 下所有含 `Main` 的脚本 + 根目录 `setup.ps1` 统一使用
 函数/执行分离模式，确保可测试性（dot-source 只加载函数定义，不触发任何副作用）：
 
 ```powershell
@@ -1361,5 +1371,31 @@ if ($MyInvocation.InvocationName -ne '.') {
   - 提交门禁 12 道全过（含 Gate 5 测试、覆盖率），无 `--no-verify`、未加忽略项。
   - 运维备注：期间 live 钩子被外部 xp-gate 部署覆盖 4 次（198247B 等变体，均不含
     analysis-paths 增量），一致性测试每次如实报红，均以 vendored 同步恢复。
-
-
+- 2026-10-27: **文档去快照化 + 一致性守卫**——让 AGENTS.md 里的质量数据不再腐烂
+  - 起因：本文曾同时写着「23 个产品源文件」和「18 个 sourcefile」，两个数字都过期且
+    互相矛盾（前一版还写着 757 个测试，实测已是 844）。审计确认这些数字**没有任何
+    可执行文件读它**（`757`/`798`/`84.17`/`18 个 sourcefile`/`23 个产品源` 在
+    `tests/`、`tools/`、`ci.yml`、门禁适配器里命中数均为 0），所以过期不会让门禁变红，
+    只会让下一个读文档的人按错的前提做判断——比不写更糟。
+  - 改法：**删掉会腐烂的快照，保留不会腐烂的判断口径**。正文里的当期数字（测试数、
+    覆盖率百分比、covered/total、sourcefile 数、含 `Main` 的脚本数）一律改写为
+    「权威来源 + 现查方式」；`## 变更历史` 里的历史数字是**当时的实测值**，作为记录保留。
+  - 新增 `tests/unit/doc-consistency.Tests.ps1`（9 个用例，两个方向）：
+    (a) 正文（`## 变更历史` 之前）不得出现两位小数百分比、`pct% (a/b)`、裸分数对、
+    `N 个 sourcefile`；白名单只放**判断口径类**用法（历史轨迹箭头、论证现场），
+    注释里写死判据「这个数字三个月后会变成错的吗」；
+    (b) 本文对结构的陈述必须与被守卫的对象一致——从 `hermeticity.Tests.ps1` 的
+    `$script:HerdCandidates` **反推**契约目录，再断言本文把每个目录都写到了，
+    且不再宣称「契约只覆盖 `references/scripts` + `setup.ps1`」。
+    方向 (b) 让文档跟着代码走，而不是让测试跟着文档硬编码。
+  - **hermeticity 契约补齐 `tools/`**：此前只枚举 `references/scripts/*.ps1` + `setup.ps1`，
+    而 `tools/Update-DocTables.ps1` 同属产品源（同样进覆盖率分母），漏掉它意味着新脚本
+    能在契约之外悄悄混进来。顺带把读取改成显式 UTF-8 解码（陷阱 16 的同一形态）。
+  - 反向验证：把「当前 84.17%，18 个 sourcefile」塞回正文 → 守卫当场 8/9 并印出命中行；
+    撤掉后 9/9。
+  - 静态检查：`tools/Update-DocTables.ps1 -Check` exit 0（退出码表 10 条一致）。
+    Pester **双引擎各 844/844**（PS 5.1 与 pwsh 7，串行）。
+  - 踩坑记录：新建的 `doc-consistency.Tests.ps1` 写中文却没带 UTF-8 BOM，被
+    `platform-hygiene.Tests.ps1` 的「非 ASCII 的 .ps1 一律带 BOM」当场拦下——
+    **这条守卫是有效的**，它抓的正是 CI 编码守卫会拒绝的文件。
+  - 提交门禁全过，无 `--no-verify`、未加任何忽略项。
