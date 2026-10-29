@@ -55,7 +55,7 @@ Describe 'confirm-cleanup.ps1 Main (in-process, ADR-001 unlocked)' {
         $NonInteractive = $true; $AutoSelect = 'safe'; $SelectIds = ''
         Main -ExitCode ([ref]$script:rc) *>&1 | Out-Null
         $script:rc | Should -Be 0
-        $idsDoc = Get-Content $script:out -Raw | ConvertFrom-Json
+        $idsDoc = [System.IO.File]::ReadAllText($script:out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $ids = @($idsDoc)
         $ids | Should -Contain 'fs_001'
         $ids | Should -Contain 'fs_003'
@@ -69,7 +69,7 @@ Describe 'confirm-cleanup.ps1 Main (in-process, ADR-001 unlocked)' {
         $NonInteractive = $true; $AutoSelect = 'caution'; $SelectIds = ''
         Main -ExitCode ([ref]$script:rc) *>&1 | Out-Null
         $script:rc | Should -Be 0
-        $idsDoc = Get-Content $script:out -Raw | ConvertFrom-Json
+        $idsDoc = [System.IO.File]::ReadAllText($script:out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $ids = @($idsDoc)
         $ids | Should -Contain 'fs_002'
         $ids.Count | Should -Be 1
@@ -81,7 +81,7 @@ Describe 'confirm-cleanup.ps1 Main (in-process, ADR-001 unlocked)' {
         $NonInteractive = $true; $AutoSelect = 'all'; $SelectIds = ''
         Main -ExitCode ([ref]$script:rc) *>&1 | Out-Null
         $script:rc | Should -Be 0
-        $idsDoc = Get-Content $script:out -Raw | ConvertFrom-Json
+        $idsDoc = [System.IO.File]::ReadAllText($script:out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $ids = @($idsDoc)
         $ids | Should -Not -Contain 'path_001'
         $ids.Count | Should -Be 3
@@ -93,7 +93,7 @@ Describe 'confirm-cleanup.ps1 Main (in-process, ADR-001 unlocked)' {
         $NonInteractive = $true; $AutoSelect = 'safe'; $SelectIds = '["fs_002"]'
         Main -ExitCode ([ref]$script:rc) *>&1 | Out-Null
         $script:rc | Should -Be 0
-        $idsDoc = Get-Content $script:out -Raw | ConvertFrom-Json
+        $idsDoc = [System.IO.File]::ReadAllText($script:out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $ids = @($idsDoc)
         $ids | Should -Contain 'fs_002'
         $ids.Count | Should -Be 1
@@ -105,7 +105,7 @@ Describe 'confirm-cleanup.ps1 Main (in-process, ADR-001 unlocked)' {
         $NonInteractive = $true; $AutoSelect = 'none'; $SelectIds = '["path_001","fs_001"]'
         Main -ExitCode ([ref]$script:rc) *>&1 | Out-Null
         $script:rc | Should -Be 0
-        $idsDoc = Get-Content $script:out -Raw | ConvertFrom-Json
+        $idsDoc = [System.IO.File]::ReadAllText($script:out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $ids = @($idsDoc)
         $ids | Should -Contain 'fs_001'
         $ids | Should -Not -Contain 'path_001'
@@ -185,7 +185,7 @@ Describe 'confirm-cleanup.ps1 display helpers via Main (coverage of sort/filter 
 
     It 'sorts items by risk (safe before caution before danger)' {
         . $script:ConfirmScript
-        $doc = Get-Content $script:report -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($script:report, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         # 直接驱动排序辅助函数
         $items = @()
         foreach ($c in 'filesystem_residuals','path_residuals') {

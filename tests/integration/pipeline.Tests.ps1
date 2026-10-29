@@ -67,7 +67,7 @@ Describe 'Pipeline Integration - generate-report.ps1' {
         $reportPath = "$testDir\final-report.json"
         if (Test-Path $reportPath) {
             $report = $null
-            { $report = Get-Content $reportPath -Raw | ConvertFrom-Json } | Should -Not -Throw
+            { $report = [System.IO.File]::ReadAllText($reportPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } | Should -Not -Throw
         } else {
             Write-Warning "Report file not found, skipping"
         }
@@ -76,7 +76,7 @@ Describe 'Pipeline Integration - generate-report.ps1' {
     It 'Final report has all required sections' {
         $reportPath = "$testDir\final-report.json"
         if (Test-Path $reportPath) {
-            $report = Get-Content $reportPath -Raw | ConvertFrom-Json
+            $report = [System.IO.File]::ReadAllText($reportPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             $report.scan_time | Should -Not -BeNullOrEmpty
             $report.summary | Should -Not -BeNullOrEmpty
             $report.filesystem_residuals | Should -Not -BeNullOrEmpty
@@ -91,7 +91,7 @@ Describe 'Pipeline Integration - generate-report.ps1' {
     It 'Summary has correct risk counts' {
         $reportPath = "$testDir\final-report.json"
         if (Test-Path $reportPath) {
-            $report = Get-Content $reportPath -Raw | ConvertFrom-Json
+            $report = [System.IO.File]::ReadAllText($reportPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             $report.summary.total_residuals | Should -BeGreaterThan 0
             $report.summary.safe | Should -BeGreaterThan 0
         }
@@ -100,7 +100,7 @@ Describe 'Pipeline Integration - generate-report.ps1' {
     It 'Filesystem items have correct ID prefix fs_' {
         $reportPath = "$testDir\final-report.json"
         if (Test-Path $reportPath) {
-            $report = Get-Content $reportPath -Raw | ConvertFrom-Json
+            $report = [System.IO.File]::ReadAllText($reportPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             foreach ($item in $report.filesystem_residuals) {
                 $item.id | Should -Match '^fs_\d{3}$'
             }
@@ -110,7 +110,7 @@ Describe 'Pipeline Integration - generate-report.ps1' {
     It 'Registry items have correct ID prefix reg_' {
         $reportPath = "$testDir\final-report.json"
         if (Test-Path $reportPath) {
-            $report = Get-Content $reportPath -Raw | ConvertFrom-Json
+            $report = [System.IO.File]::ReadAllText($reportPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             foreach ($item in $report.registry_residuals) {
                 $item.id | Should -Match '^reg_\d{3}$'
             }
@@ -120,7 +120,7 @@ Describe 'Pipeline Integration - generate-report.ps1' {
     It 'PATH items have risk=danger' {
         $reportPath = "$testDir\final-report.json"
         if (Test-Path $reportPath) {
-            $report = Get-Content $reportPath -Raw | ConvertFrom-Json
+            $report = [System.IO.File]::ReadAllText($reportPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             foreach ($item in $report.path_residuals) {
                 $item.risk | Should -Be 'danger'
             }
@@ -130,7 +130,7 @@ Describe 'Pipeline Integration - generate-report.ps1' {
     It 'All IDs are unique across categories' {
         $reportPath = "$testDir\final-report.json"
         if (Test-Path $reportPath) {
-            $report = Get-Content $reportPath -Raw | ConvertFrom-Json
+            $report = [System.IO.File]::ReadAllText($reportPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             $allIds = @()
             foreach ($cat in @('filesystem_residuals','registry_residuals','ghost_services','ghost_tasks','startup_residuals','shell_residuals','path_residuals')) {
                 $items = $report.$cat

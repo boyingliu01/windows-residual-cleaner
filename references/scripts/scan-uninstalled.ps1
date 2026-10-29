@@ -132,7 +132,8 @@ function Main {
         & $setRc 3
         return
     }
-    $installedIndex = Get-Content $IndexPath -Raw | ConvertFrom-Json
+    # ReadAllText+UTF8：索引为无 BOM UTF-8，PS 5.1 的 Get-Content -Raw 在 ANSI 代码页下会解码损坏（陷阱 16）。
+    $installedIndex = [System.IO.File]::ReadAllText($IndexPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     $installedNames = @{}
     foreach ($i in $installedIndex) { $installedNames[$i.name] = $true }
 

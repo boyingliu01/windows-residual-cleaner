@@ -522,7 +522,7 @@ Describe 'Invoke-RollbackRestore (REQ-024 两阶段 + REQ-021 PATH + REQ-030/031
         $vA.ExpectedPath | Should -Be 'C:\Windows'
         $vA.PathCurrent | Should -Be 'C:\Windows;C:\WRC-AppB'
         # 证据必须穿过 Get-ReportedRollbackVerdict 的投影进入 rollback-result.json。
-        $doc = Get-Content -LiteralPath $r.ResultPath -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($r.ResultPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $jvA = @($doc.verdicts | Where-Object { $_.Id -eq 'path_001' })[0]
         $jvA.PathCompare | Should -Be 'mismatch'
         $jvA.ExpectedPath | Should -Be 'C:\Windows'
@@ -675,7 +675,7 @@ Describe 'Invoke-RollbackRestore (REQ-024 两阶段 + REQ-021 PATH + REQ-030/031
         )
         $r = Invoke-RollbackRestore -Journal $j -BackupDir $script:rrBackup -ProjectRoot $script:rrRoot -Now $script:rrNow
         $r.PersistenceError | Should -BeFalse
-        $doc = Get-Content -LiteralPath $r.ResultPath -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($r.ResultPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $doc.run_id | Should -Be $r.RunId
         $doc.counts.restore_failed | Should -Be 2
         (@($doc.verdicts)).Count | Should -Be 2

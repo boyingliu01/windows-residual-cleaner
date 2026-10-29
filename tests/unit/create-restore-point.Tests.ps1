@@ -34,7 +34,7 @@ Describe 'create-restore-point.ps1 registry backup branch' {
 
         $statusFile = Join-Path $dirs[0].FullName 'restore-status.json'
         Test-Path $statusFile | Should -Be $true
-        $doc = Get-Content $statusFile -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($statusFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         # CI runner 的 TEMP 可能是 8.3 短路径（C:\Users\RUNNER~1\...），
         # 脚本按 $env:TEMP 原样落盘；经文件系统提供者归一化后再比较。
         (Get-Item -LiteralPath $doc.backup_dir).FullName | Should -Be $dirs[0].FullName
@@ -68,7 +68,7 @@ Describe 'create-restore-point.ps1 registry backup branch' {
 
         $dir = @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory)[0]
         $statusFile = Join-Path $dir.FullName 'restore-status.json'
-        $doc = Get-Content $statusFile -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($statusFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         # HKCU 的 Uninstall 键在任何会话下都可导出，因此至少 1 条
         @($doc.backup_files).Count | Should -BeGreaterThan 0
         # 每条必须有 key/file/size/valid 四字段
@@ -102,7 +102,7 @@ Describe 'create-restore-point.ps1 registry backup branch' {
         @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory).Count | Should -Be 1
         # 状态文件必须如实说明「没试过、未建立」，而不是留下一个看起来像成功的空档
         $statusFile = Join-Path @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory)[0].FullName 'restore-status.json'
-        $doc = Get-Content $statusFile -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($statusFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $doc.restore_point_attempted | Should -BeFalse
         $doc.restore_point_enabled | Should -BeFalse
     }
@@ -149,7 +149,7 @@ Describe 'create-restore-point.ps1 restore point branches' {
         @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory).Count | Should -Be 1
         $out | Should -Match 'Failed to create restore point'
         $statusFile = Join-Path @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory)[0].FullName 'restore-status.json'
-        $doc = Get-Content $statusFile -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($statusFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $doc.restore_point_attempted | Should -BeTrue
         $doc.restore_point_enabled | Should -BeFalse
     }
@@ -215,7 +215,7 @@ Describe 'create-restore-point.ps1 restore point branches' {
         $rc | Should -Be 4
         @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory).Count | Should -Be 1
         $statusFile = Join-Path @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory)[0].FullName 'restore-status.json'
-        $doc = Get-Content $statusFile -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($statusFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $doc.restore_point_attempted | Should -BeTrue
         $doc.restore_point_enabled | Should -BeFalse
         $out | Should -Match 'exit code 4'
@@ -232,7 +232,7 @@ Describe 'create-restore-point.ps1 restore point branches' {
         Main -ExitCode ([ref]$rc) -BackupRootOverride $script:root *>&1 | Out-Null
         $rc | Should -Be 0
         $statusFile = Join-Path @(Get-ChildItem -Path $script:root -Filter 'backup-*' -Directory)[0].FullName 'restore-status.json'
-        $doc = Get-Content $statusFile -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($statusFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $doc.restore_point_attempted | Should -BeTrue
         $doc.restore_point_enabled | Should -BeTrue
     }

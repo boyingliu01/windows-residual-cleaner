@@ -157,7 +157,7 @@ Describe 'build-installed-index.ps1 Main (in-process)' {
             Main -ExitCode ([ref]$rc) *>&1 | Out-Null
             $rc | Should -Be 0
             Test-Path $out | Should -Be $true
-            $doc = Get-Content $out -Raw | ConvertFrom-Json
+            $doc = [System.IO.File]::ReadAllText($out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             $idx = @($doc)
             # 真实机器上一定有已安装软件；索引不应为空
             $idx.Count | Should -BeGreaterThan 0
@@ -191,7 +191,7 @@ Describe 'build-installed-index.ps1 Main (in-process)' {
             $rc = 0
             $OutputPath = $out
             Main -ExitCode ([ref]$rc) *>&1 | Out-Null
-            $doc = Get-Content $out -Raw | ConvertFrom-Json
+            $doc = [System.IO.File]::ReadAllText($out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             $idx = @($doc)
             $keys = @($idx | ForEach-Object { "$($_.name)|$($_.version)|$($_.source)" })
             # 复合键必须唯一（这才是脚本承诺的不变式）

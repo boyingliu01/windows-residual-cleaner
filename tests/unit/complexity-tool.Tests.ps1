@@ -64,7 +64,7 @@ Describe 'Measure-PowerShellComplexity (Gate 3 PowerShell arm)' {
         $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $baselinePath).Path)
         ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) |
             Should -BeFalse -Because '基线文件不得带 UTF-8 BOM；带 BOM 时 node 侧解析失败，ratchet 静默降级为 WARN'
-        $doc = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($baselinePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         @($doc.entries).Count | Should -BeGreaterThan 0 -Because '基线里必须有存量条目，否则「基线存在」只是空壳'
         foreach ($e in @($doc.entries)) {
             $e.file | Should -Match '\.ps1$'
@@ -89,7 +89,7 @@ Describe 'Measure-PowerShellComplexity (Gate 3 PowerShell arm)' {
         # renamed or deleted while its entry lingers) and is machine-independent.
         $baselinePath = Join-Path $PSScriptRoot '..\..\.xp-gate-powershell-ccn-baseline.json'
         Test-Path -LiteralPath $baselinePath | Should -BeTrue
-        $doc = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($baselinePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path.TrimEnd('\')
         $missing = @()
         foreach ($e in @($doc.entries)) {

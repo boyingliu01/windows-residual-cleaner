@@ -36,7 +36,8 @@ function Main {
         & $setRc 3
         return
     }
-    $uninstalled = Get-Content $UninstalledPath -Raw | ConvertFrom-Json
+    # ReadAllText+UTF8：输入为无 BOM UTF-8，PS 5.1 的 Get-Content -Raw 在 ANSI 代码页下会解码损坏（陷阱 16）。
+    $uninstalled = [System.IO.File]::ReadAllText($UninstalledPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     $uninstalledNames = @{}
     foreach ($u in $uninstalled.uninstalled_software) { $uninstalledNames[$u.name.ToLower()] = $true }
 

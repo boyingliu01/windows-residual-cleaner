@@ -193,7 +193,7 @@ Describe 'scan-uninstalled.ps1 Main contract' {
             $script:scanRc | Should -Be 0
             Test-Path $outPath | Should -Be $true
 
-            $doc = Get-Content $outPath -Raw | ConvertFrom-Json
+            $doc = [System.IO.File]::ReadAllText($outPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             # 输出是对象（两个集合），不是扁平数组
             $doc.PSObject.Properties.Name | Should -Contain 'uninstalled_software'
             $doc.PSObject.Properties.Name | Should -Contain 'candidate_directories'

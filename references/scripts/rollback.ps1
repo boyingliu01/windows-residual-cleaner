@@ -230,7 +230,8 @@ function Main {
     $cleanupTime = $null
     if (Test-Path $CleanupLogPath) {
         try {
-            $log = Get-Content $CleanupLogPath -Raw | ConvertFrom-Json
+            # ReadAllText+UTF8：日志为无 BOM UTF-8，PS 5.1 的 Get-Content -Raw 按 ANSI 代码页解码会损坏 JSON（陷阱 16）。
+            $log = [System.IO.File]::ReadAllText($CleanupLogPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             $cleanupTime = $log.summary.timestamp
             Write-Output "Last cleanup: $cleanupTime"
         } catch { Write-Verbose "Rollback operation skipped: $_" }
@@ -294,7 +295,8 @@ function Main {
         $statusFile = Join-Path $latestDir.FullName "restore-status.json"
         if (Test-Path $statusFile) {
             try {
-                $status = Get-Content $statusFile -Raw | ConvertFrom-Json
+                # ReadAllText+UTF8：还原点描述可能含非 ASCII，PS 5.1 的 ANSI 解码会损坏 JSON（陷阱 16）。
+                $status = [System.IO.File]::ReadAllText($statusFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
                 Write-Output ""
                 Write-Output "Restore point: $($status.restore_point_description)"
             } catch {

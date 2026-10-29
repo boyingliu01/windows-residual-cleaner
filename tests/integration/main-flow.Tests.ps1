@@ -41,7 +41,7 @@ Describe 'Main-flow: build-installed-index.ps1 real scan' {
         Test-Path $out | Should -Be $true
         # PS 5.1: ConvertFrom-Json 把 JSON 数组作为单个 Object[] 输出，
         # 必须先赋值给变量再 @()，否则 @(cmd | ConvertFrom-Json) 恒为 Count=1
-        $idxDoc = Get-Content $out -Raw | ConvertFrom-Json
+        $idxDoc = [System.IO.File]::ReadAllText($out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $idx = @($idxDoc)
         $idx.Count | Should -BeGreaterThan 10
         @($idx | Where-Object { -not $_.name }) | Should -BeNullOrEmpty
@@ -66,7 +66,7 @@ Describe 'Main-flow: scan-uninstalled.ps1 real scan' {
         $OutputPath = $out
         Main 2>&1 | Out-Null
         Test-Path $out | Should -Be $true
-        $result = Get-Content $out -Raw | ConvertFrom-Json
+        $result = [System.IO.File]::ReadAllText($out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         # 真实扫描结果可能为空数组，但结构必须完整
         $result.PSObject.Properties.Name | Should -Contain 'uninstalled_software'
         $result.PSObject.Properties.Name | Should -Contain 'candidate_directories'
@@ -116,7 +116,7 @@ Describe 'Main-flow: scan-filesystem-residuals.ps1 fixture tree' {
         [IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
 
         & "$PSScriptRoot\..\..\references\scripts\scan-filesystem-residuals.ps1" -ConfigPath $cfgPath -OutputPath "$TestDrive\fs-residuals.json" 2>&1 | Out-Null
-        $fsDoc = Get-Content "$TestDrive\fs-residuals.json" -Raw | ConvertFrom-Json
+        $fsDoc = [System.IO.File]::ReadAllText("$TestDrive\fs-residuals.json", [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $script:fsResult = @($fsDoc)
     }
 
@@ -167,7 +167,7 @@ Describe 'Main-flow: scan-residuals.ps1 real scan' {
         [IO.File]::WriteAllText($ulPath, $ul, [Text.UTF8Encoding]::new($false))
 
         & "$PSScriptRoot\..\..\references\scripts\scan-residuals.ps1" -UninstalledPath $ulPath -OutputPath "$TestDrive\other-residuals.json" 2>&1 | Out-Null
-        $script:other = Get-Content "$TestDrive\other-residuals.json" -Raw | ConvertFrom-Json
+        $script:other = [System.IO.File]::ReadAllText("$TestDrive\other-residuals.json", [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     }
 
     It 'Produces all expected residual categories' {
@@ -359,7 +359,7 @@ Describe 'Main-flow: create-restore-point.ps1 backup flow' {
         $result | Should -Match 'Status saved to'
         $backupDir = Get-ChildItem "$TestDrive\backups" -Directory | Select-Object -First 1
         $backupDir | Should -Not -BeNullOrEmpty
-        $status = Get-Content "$($backupDir.FullName)\restore-status.json" -Raw | ConvertFrom-Json
+        $status = [System.IO.File]::ReadAllText("$($backupDir.FullName)\restore-status.json", [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $status.backup_files.Count | Should -Be 3
     }
 
@@ -390,7 +390,7 @@ Describe 'Main-flow: confirm-cleanup.ps1 auto-select modes' {
     It 'AutoSelect safe writes only safe ids' {
         $out = "$TestDrive\confirmed-safe.json"
         & "$PSScriptRoot\..\..\references\scripts\confirm-cleanup.ps1" -ReportPath $reportPath -OutputPath $out -NonInteractive -AutoSelect 'safe' 2>&1 | Out-Null
-        $idsDoc = Get-Content $out -Raw | ConvertFrom-Json
+        $idsDoc = [System.IO.File]::ReadAllText($out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $ids = @($idsDoc)
         $ids | Should -Contain 'fs_201'
         $ids | Should -Not -Contain 'fs_202'
@@ -401,7 +401,7 @@ Describe 'Main-flow: confirm-cleanup.ps1 auto-select modes' {
         $out = "$TestDrive\confirmed-caution.json"
         & "$PSScriptRoot\..\..\references\scripts\confirm-cleanup.ps1" -ReportPath $reportPath -OutputPath $out -NonInteractive -AutoSelect 'caution' 2>&1 | Out-Null
         # AutoSelect 语义为"精确匹配风险级别"：caution 只选 fs_202，不含 safe 的 fs_201
-        $idsDoc = Get-Content $out -Raw | ConvertFrom-Json
+        $idsDoc = [System.IO.File]::ReadAllText($out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $ids = @($idsDoc)
         $ids | Should -Contain 'fs_202'
         $ids | Should -Not -Contain 'fs_201'
@@ -413,7 +413,7 @@ Describe 'Main-flow: confirm-cleanup.ps1 auto-select modes' {
         # 只有 fs_202 被写入输出文件
         $out = "$TestDrive\confirmed-select.json"
         & "$PSScriptRoot\..\..\references\scripts\confirm-cleanup.ps1" -ReportPath $reportPath -OutputPath $out -NonInteractive -SelectIds '["reg_201","fs_202"]' 2>&1 | Out-Null
-        $idsDoc = Get-Content $out -Raw | ConvertFrom-Json
+        $idsDoc = [System.IO.File]::ReadAllText($out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $ids = @($idsDoc)
         $ids | Should -Contain 'fs_202'
         $ids | Should -Not -Contain 'reg_201'

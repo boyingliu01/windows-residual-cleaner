@@ -85,7 +85,8 @@ function Main {
         & $setRc 3
         return
     }
-    $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    # ReadAllText+UTF8：配置文件可能含非 ASCII 条目，PS 5.1 的 Get-Content -Raw 按 ANSI 代码页解码会损坏 JSON（陷阱 16）。
+    $config = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     $maxFileCount = $config.file_thresholds.max_file_count
     $maxSizeMB = $config.file_thresholds.max_size_mb
     $excludedFiles = $config.file_thresholds.excluded_files

@@ -673,7 +673,7 @@ Describe 'S2 Write-RecoveryMarker' {
     # @test AC-003
     It '未传 Timestamp → 自动生成可解析的 UTC 串' {
         $p = Write-RecoveryMarker -BackupDir $script:MarkerDir -Kind 'consumed' -RunId $script:runId
-        $o = Get-Content $p -Raw | ConvertFrom-Json
+        $o = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $tmp = [datetime]::MinValue
         [datetime]::TryParse([string]$o.consumed_at, [ref]$tmp) | Should -BeTrue
     }
@@ -787,7 +787,7 @@ Describe 'S2 Write-UnrepairedList' {
         $items = Add-UnrepairedItem -List @() -ItemId 'a' -Reason 'r1' -Kind 'path_deleted' -Target 'C:\a'
         $items = Add-UnrepairedItem -List $items -ItemId 'b' -Reason 'r2' -Kind 'service' -Target 'svcB'
         $p = Write-UnrepairedList -ProjectRoot $script:URRoot -RunId $script:runId -Items $items -Reason 'partial'
-        $o = Get-Content $p -Raw | ConvertFrom-Json
+        $o = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         @($o.unrepaired).Count | Should -Be 2
         # 回归：修复前这里会是 @(@(...), ...) 且多出一层 value/Count 信封。
         (@($o.unrepaired)[0].PSObject.Properties.Name) -contains 'item_id' | Should -BeTrue
@@ -799,7 +799,7 @@ Describe 'S2 Write-UnrepairedList' {
 
     It '未传 CreatedAt → 自动生成可解析 UTC' {
         $p = Write-UnrepairedList -ProjectRoot $script:URRoot -RunId $script:runId -Items @() -Reason 'x'
-        $o = Get-Content $p -Raw | ConvertFrom-Json
+        $o = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $tmp = [datetime]::MinValue
         [datetime]::TryParse([string]$o.created_at, [ref]$tmp) | Should -BeTrue
     }

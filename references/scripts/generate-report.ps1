@@ -39,9 +39,11 @@ function Main {
         & $setRc 3
         return
     }
-    $uninstalled = Get-Content "$DataDir\uninstalled-list.json" -Raw | ConvertFrom-Json
-    $fs = Get-Content "$DataDir\fs-residuals.json" -Raw | ConvertFrom-Json
-    $other = Get-Content "$DataDir\other-residuals.json" -Raw | ConvertFrom-Json
+    # 上游 JSON 均为无 BOM UTF-8；PS 5.1 下 Get-Content -Raw 按 ANSI 代码页解码，
+    # 非 ASCII 环境（如中文 GBK）会吞掉引号/大括号导致 ConvertFrom-Json 失败（陷阱 16）。
+    $uninstalled = [System.IO.File]::ReadAllText("$DataDir\uninstalled-list.json", [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $fs = [System.IO.File]::ReadAllText("$DataDir\fs-residuals.json", [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $other = [System.IO.File]::ReadAllText("$DataDir\other-residuals.json", [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 
     # ID counters with D3 zero-padding
     # fs_XXX = filesystem, reg_XXX = registry, svc_XXX = ghost_services,

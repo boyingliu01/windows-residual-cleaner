@@ -141,7 +141,7 @@ Describe 'Skill packaging: CLI 与 UI 的分离（2026-10-24）' {
         (Test-Path -LiteralPath (Join-Path $script:FullPkg 'tests')) | Should -BeTrue
         $manifestPath = Join-Path $script:OutRoot 'packages.json'
         (Test-Path -LiteralPath $manifestPath) | Should -BeTrue
-        $doc = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($manifestPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         @($doc.packages).Count | Should -Be 2
         ($doc.packages | Where-Object { $_.name -eq 'windows-residual-cleaner-skill' }) |
             Should -Not -BeNullOrEmpty

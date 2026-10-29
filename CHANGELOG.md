@@ -7,6 +7,26 @@ All notable changes to this project will be documented in this file.
 > （例如曾把 `setup.ps1` 不可插桩说成结构性限制）以「**更正**」附注标出，
 > 而不改写历史条目本身。
 
+## [1.4.12.0] - 2026-10-29
+
+### 修复：非 ASCII 代码页下运行脚本回读自家 JSON 会解码损坏（issue #4、#5）
+
+AGENTS.md 陷阱 16 记录了「PS 5.1 的 `Get-Content -Raw` 对无 BOM 文件按系统 ANSI
+代码页解码」，但此前只修了文档/门禁路径，**运行脚本回读自家产出的无 BOM UTF-8
+JSON 的 10 处仍用旧写法**。在中文（GBK/cp936）环境实测：`「开始」菜单`、腾讯系
+软件名等非 ASCII 条目会让 GBK 双字节吞掉相邻引号，`ConvertFrom-Json` 抛异常后
+各步 RC 仍为 0，`final-report.json` 静默丢数据（fs 89→0、uninst 1→0，总数
+143→54）。CI 的 en-US runner（cp1252）单字节解码不破坏 JSON 结构，故 CI 全绿、
+本地全红——该 bug 只在 CJK 环境暴露。
+
+- 统一改为仓库内既有写法 `[System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)`
+  （`ReadAllText` 自动识别 BOM，ASCII 内容行为不变，双引擎安全）：
+  `generate-report.ps1` ×3、`clean-residuals.ps1` ×3、`rollback.ps1` ×2、
+  `scan-uninstalled.ps1`、`scan-residuals.ps1`、`scan-filesystem-residuals.ps1`。
+- `scripts.Tests.ps1` 锁文件断言正则去掉「另一个程序正在使用此文件」的整句绑定：
+  「程序/进程」措辞随 Windows 版本变化（本机 10.0.26300 为「进程」），
+  改为稳定公共子串 `正在使用此文件`。
+
 ## [1.4.11.0] - 2026-10-27
 
 ### 文档层的定版：删掉会腐烂的数字，把门禁细节搬出 AGENTS.md

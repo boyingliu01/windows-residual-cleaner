@@ -551,19 +551,22 @@ function Main {
     $script:whitelist = $null
     if (Test-Path $WhitelistPath) {
         try {
-            $script:whitelist = Get-Content $WhitelistPath -Raw | ConvertFrom-Json
+            # ReadAllText+UTF8：本仓库写出的 JSON 均为无 BOM UTF-8，PS 5.1 的
+            # Get-Content -Raw 在非 ASCII 代码页下会按 ANSI 解码而破坏 JSON（陷阱 16）。
+            $script:whitelist = [System.IO.File]::ReadAllText($WhitelistPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         } catch {
             Write-Warning "Failed to load whitelist: $_"
         }
     }
 
     # --- 加载报告并按模式筛选项目 ---
-    # 必须 -ErrorAction Stop：PS 5.1 的 Get-Content 在文件不存在时写的是**非终止**错误，
+    # 必须走会抛异常的读取：PS 5.1 的 Get-Content 在文件不存在时写的是**非终止**错误，
     # try/catch 根本不会触发（实测：catch 不执行、$report 为 $null）。于是「报告丢失」
     # 会被静默当成「本轮没有任何残留可清理」→ 返回 0，调用方（UI / run-all）误报成功。
     # 缺输入是 REQ-026 的 1（输入/前置错误），下面那个 catch 本来就是为此写的。
+    # ReadAllText 对缺失文件抛 FileNotFound（终止性），同时规避陷阱 16 的 ANSI 解码。
     try {
-        $report = Get-Content $ReportPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        $report = [System.IO.File]::ReadAllText($ReportPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     } catch {
         $errMsg = $_.Exception.Message
         Write-Error ("Failed to load report from {0}: {1}" -f $ReportPath, $errMsg)
@@ -602,10 +605,11 @@ function Main {
              return
         }
         try {
-            # 同上：Test-Path 通过之后文件仍可能被移走/锁住，缺 -ErrorAction Stop 时
+            # 同上：Test-Path 通过之后文件仍可能被移走/锁住，缺终止性错误时
             # catch 不会触发，$confirmedIds 变成 $null —— 下面的空值闸门会兜住，
             # 但错误原因会被记成「no confirmed IDs」而不是真实原因。
-            $confirmedIds = Get-Content $ConfirmFile -Raw -ErrorAction Stop | ConvertFrom-Json
+            # ReadAllText 抛终止性异常，同时规避陷阱 16 的 ANSI 解码。
+            $confirmedIds = [System.IO.File]::ReadAllText($ConfirmFile, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         } catch {
             Write-Error "Failed to parse ConfirmFile '$ConfirmFile': $_. Aborting."
             & $setRc 1

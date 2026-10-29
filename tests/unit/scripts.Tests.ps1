@@ -218,7 +218,7 @@ Describe 'generate-report.ps1 Main input validation' {
         $rc | Should -Be 0
         Test-Path $OutputPath | Should -Be $true
 
-        $doc = Get-Content $OutputPath -Raw | ConvertFrom-Json
+        $doc = [System.IO.File]::ReadAllText($OutputPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $doc.PSObject.Properties.Name | Should -Contain 'candidate_directories'
         # 关键不变式：字段存在、且 @() 规整后元素数为 0
         # （JSON 里是 []；不能是缺字段或 null，否则下游 confirm/clean 遍历会出错）
@@ -411,7 +411,7 @@ Describe 'confirm-cleanup.ps1 non-interactive mode' {
         $output | Should -Match 'Safe:.*2'
         $output | Should -Match 'Saved 2 items'
 
-        $confirmed = Get-Content $testOutputPath -Raw | ConvertFrom-Json
+        $confirmed = [System.IO.File]::ReadAllText($testOutputPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $confirmed | Should -Contain 'fs_001'
         $confirmed | Should -Contain 'svc_001'
         $confirmed | Should -Not -Contain 'fs_002'
@@ -424,7 +424,7 @@ Describe 'confirm-cleanup.ps1 non-interactive mode' {
         $output | Should -Match 'Caution:.*1'
         $output | Should -Match 'Saved 1 items'
 
-        $confirmed = Get-Content $testOutputPath -Raw | ConvertFrom-Json
+        $confirmed = [System.IO.File]::ReadAllText($testOutputPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $confirmed | Should -Contain 'fs_002'
         $confirmed | Should -Not -Contain 'fs_001'
         $confirmed | Should -Not -Contain 'path_001'
@@ -435,7 +435,7 @@ Describe 'confirm-cleanup.ps1 non-interactive mode' {
         $output = $result -join "`n"
         $output | Should -Match 'Saved 2 items'
 
-        $confirmed = Get-Content $testOutputPath -Raw | ConvertFrom-Json
+        $confirmed = [System.IO.File]::ReadAllText($testOutputPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         $confirmed | Should -Contain 'fs_001'
         $confirmed | Should -Contain 'fs_002'
         $confirmed | Should -Not -Contain 'svc_001'
@@ -1040,7 +1040,7 @@ public static class WrcRirLock {
             (Test-Path -LiteralPath (Join-Path $global:_arbRoot '~locked.deleted')) | Should -Be $false
 
             # 清理日志：真实失败如实记 cleanup_failed，不得被谎报为成功
-            $log = Get-Content (Join-Path $global:_arbRoot 'cleanup-log.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+            $log = [System.IO.File]::ReadAllText((Join-Path $global:_arbRoot 'cleanup-log.json'), [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             @($log.entries | Where-Object { $_.id -eq 'reg_arb1' -and $_.success -eq $true }).Count | Should -Be 1
             @($log.entries | Where-Object { $_.id -eq 'fs_arb1' -and $_.action -eq 'cleanup_failed' }).Count | Should -Be 1
             $log.summary.succeeded | Should -Be 1
@@ -1048,7 +1048,7 @@ public static class WrcRirLock {
 
             # 回滚留痕：journal 状态如实（失败停 mutation_failed，成功才 mutation_succeeded）
             $bdir = @(Get-ChildItem -Path $global:_arbRoot -Directory -Filter 'backup-*')[0].FullName
-            $j = Get-Content (Join-Path $bdir 'rollback-journal.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+            $j = [System.IO.File]::ReadAllText((Join-Path $bdir 'rollback-journal.json'), [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             $states = @{}
             foreach ($e in @($j.entries)) {
                 $eid = [string]$e.item_id
@@ -1058,7 +1058,7 @@ public static class WrcRirLock {
             [string]$states['registry_key:hkcu\software\wrc-arb-fixture'] | Should -Be 'mutation_succeeded'
 
             # 回滚结果：1 恢复 / 1 不可恢复 / 0 失败
-            $r = Get-Content (Join-Path $bdir 'rollback-result.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+            $r = [System.IO.File]::ReadAllText((Join-Path $bdir 'rollback-result.json'), [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             $r.counts.restored | Should -Be 1
             $r.counts.not_restorable | Should -Be 1
             $r.counts.restore_failed | Should -Be 0
@@ -1147,7 +1147,8 @@ public static class WrcRirLock {
             $renameWarning = @($streamed | Where-Object { $_ -is [System.Management.Automation.WarningRecord] -and "$($_)" -match 'Rename fallback also failed' })
             $renameWarning.Count | Should -Be 1 -Because 'tier-4 必须实际执行到 Rename-Item'
             "$($renameWarning[0])" | Should -Not -Match 'Parameter set|参数集' -Because '参数集错误 = 死分支回归（Split-Path -LiteralPath 不接受 -Parent/-Leaf）'
-            "$($renameWarning[0])" | Should -Match 'being used by another process|另一个程序正在使用此文件' -Because '失败原因必须是真实锁拒绝，不是代码错误'
+            # 锁拒绝文案的「程序/进程」措辞随 Windows 版本变化（issue #5），只断言稳定公共子串
+            "$($renameWarning[0])" | Should -Match 'being used by another process|正在使用此文件' -Because '失败原因必须是真实锁拒绝，不是代码错误'
         } finally {
             if ($h.ToInt64() -ne -1) { [void][WrcRirLock]::CloseHandle($h) }
         }
@@ -1529,7 +1530,7 @@ Describe 'clean-residuals.ps1 service cleanup (sc.exe regression)' {
             $null = Main 2>&1
 
             $script:svcCalls1060 | Should -Not -Contain 'delete WRCGhostSvcRegress'
-            $log = Get-Content (Join-Path $global:_svcProjRoot 'cleanup-log.json') -Raw | ConvertFrom-Json
+            $log = [System.IO.File]::ReadAllText((Join-Path $global:_svcProjRoot 'cleanup-log.json'), [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             $entry = @($log.entries | Where-Object { $_.id -eq 'svc_900' })
             $entry.Count | Should -Be 1
             $entry[0].action | Should -Be 'service_skip'
@@ -1551,7 +1552,7 @@ Describe 'clean-residuals.ps1 service cleanup (sc.exe regression)' {
 
             $logPath = (Join-Path $global:_svcProjRoot 'cleanup-log.json')
             Test-Path $logPath | Should -Be $true
-            $log = Get-Content $logPath -Raw | ConvertFrom-Json
+            $log = [System.IO.File]::ReadAllText($logPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             $entry = @($log.entries | Where-Object { $_.id -eq 'svc_900' })
             $entry.Count | Should -Be 1
             $entry[0].action | Should -Be 'service_deleted'
@@ -1581,7 +1582,7 @@ Describe 'clean-residuals.ps1 service cleanup (sc.exe regression)' {
 
             $script:svcCallsDenied | Should -Contain 'delete WRCGhostSvcRegress'
             $logPath = (Join-Path $global:_svcProjRoot 'cleanup-log.json')
-            $log = Get-Content $logPath -Raw | ConvertFrom-Json
+            $log = [System.IO.File]::ReadAllText($logPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             $entry = @($log.entries | Where-Object { $_.id -eq 'svc_900' })
             $entry.Count | Should -Be 1
             $entry[0].action | Should -Be 'cleanup_failed'
