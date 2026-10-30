@@ -50,6 +50,61 @@ Describe 'Extract-ExecutablePath (scan-residuals.ps1)' {
         $result = Extract-ExecutablePath -pathName '"C:\Program Files\My App\my app.exe" /start'
         $result | Should -Be 'C:\Program Files\My App\my app.exe'
     }
+
+    # issue #8：无引号 + 含空格 + 无参数。旧实现落到 Split(' ')[0]，
+    # 把运行中的服务路径截成 "C:\Program"，再判"文件不存在"→ 假幽灵服务。
+    It 'Keeps unquoted path with spaces and no arguments intact' {
+        $result = Extract-ExecutablePath -pathName 'C:\Program Files (x86)\MERCURY Wireless USB Adapter driver install\AicWifiService.exe'
+        $result | Should -Be 'C:\Program Files (x86)\MERCURY Wireless USB Adapter driver install\AicWifiService.exe'
+    }
+
+    It 'Keeps unquoted path with spaces when arguments follow' {
+        $result = Extract-ExecutablePath -pathName 'C:\Program Files\Vendor App\svc.exe -k netsvcs'
+        $result | Should -Be 'C:\Program Files\Vendor App\svc.exe'
+    }
+
+    It 'Keeps unquoted .sys path with spaces and no arguments' {
+        $result = Extract-ExecutablePath -pathName 'C:\Program Files\My Driver\mydriver.sys'
+        $result | Should -Be 'C:\Program Files\My Driver\mydriver.sys'
+    }
+}
+
+Describe 'Resolve-ExecutablePath / Test-FilePath (scan-residuals.ps1)' {
+    BeforeAll {
+        . "$PSScriptRoot\..\..\references\scripts\scan-residuals.ps1" *>$null
+    }
+
+    It 'Strips surrounding quotes' {
+        Resolve-ExecutablePath -path '"C:\Windows\System32\notepad.exe"' | Should -Be 'C:\Windows\System32\notepad.exe'
+    }
+
+    It 'Strips the \??\ prefix used by kernel service ImagePaths' {
+        Resolve-ExecutablePath -path '\??\C:\Windows\System32\drivers\foo.sys' | Should -Be 'C:\Windows\System32\drivers\foo.sys'
+    }
+
+    It 'Expands \SystemRoot\ against %SystemRoot%' {
+        Resolve-ExecutablePath -path '\SystemRoot\System32\drivers\foo.sys' | Should -Be (Join-Path $env:SystemRoot 'System32\drivers\foo.sys')
+    }
+
+    It 'Expands environment variables' {
+        Resolve-ExecutablePath -path '%SystemRoot%\System32\notepad.exe' | Should -Be (Join-Path $env:SystemRoot 'System32\notepad.exe')
+    }
+
+    It 'Returns null for whitespace input' {
+        Resolve-ExecutablePath -path '   ' | Should -Be $null
+    }
+
+    It 'Treats a bare DLL name as existing when it lives in System32/SysWOW64' {
+        Test-FilePath 'combase.dll' | Should -Be $true -Because '裸 DLL 名由 Windows 按 System32/SysWOW64/PATH 解析（#9）'
+    }
+
+    It 'Reports a missing absolute path as absent' {
+        Test-FilePath 'C:\no-such-dir\no-such-file-2f0b1c.dll' | Should -Be $false
+    }
+
+    It 'Reports a missing bare name as absent' {
+        Test-FilePath 'no-such-file-2f0b1c.dll' | Should -Be $false
+    }
 }
 
 Describe 'Test-Whitelisted (clean-residuals.ps1)' {

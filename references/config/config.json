@@ -4,6 +4,15 @@
     "max_size_mb": 1,
     "excluded_files": [".gitkeep", "desktop.ini", "LICENSE", "README*", "Thumbs.db"]
   },
+  "protected_dir_names": [
+    "WindowsApps", "ModifiableWindowsApps", "Windows Defender", "Microsoft*",
+    "Windows Defender Advanced Threat Protection", "Windows Photo Viewer",
+    "WindowsPowerShell", "Windows Mail", "Windows Security", "Internet Explorer",
+    "wsl", "USOPrivate", "USOShared", "SoftwareDistribution", "Packages", "Windows NT",
+    "Windows Sidebar", "Uninstall Information", "Application Data", "History",
+    "Temporary Internet Files", "VirtualStore", "Documents", "Desktop", "Templates",
+    "Start Menu", "「开始」菜单", "桌面", "Temp", "Programs", "regid.*", "PackageManagement"
+  ],
   "target_directories": [
     "%ProgramFiles%",
     "%ProgramFiles(x86)%",

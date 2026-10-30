@@ -2,7 +2,8 @@
 # 扫描文件系统空目录/孤文件残留（不依赖已卸载软件列表）
 param(
     [string]$ConfigPath = "$PSScriptRoot\..\config\config.json",
-    [string]$OutputPath = "$PSScriptRoot\..\..\fs-residuals.json"
+    [string]$OutputPath = "$PSScriptRoot\..\..\fs-residuals.json",
+    [string]$InstalledIndexPath = "$PSScriptRoot\..\..\installed-software-index.json"
 )
 
 function Get-EffectiveFileCount {
@@ -48,6 +49,123 @@ function Get-DirectorySizeMB {
         # 同上：辅助函数不得依赖调用方的 $setRc，返回 0 表示「无法测量」。
         return 0
     }
+}
+
+# 词元匹配用的通用词：出现在目录名里也不代表归属，不参与判定
+$script:GenericNameTokens = @(
+    'desktop','update','updater','service','services','management','renderer','helper',
+    'installer','setup','server','client','common','shared','default','windows','system',
+    'system32','driver','drivers','program','programdata','local','roaming','cache','data',
+    'tools','tool','apps','application','engine','framework','runtime','library','libraries',
+    'native','custom','loader','platform','telemetry','support','node','addon','state',
+    'software','config','printer','package','singleton','extension','visual','studio','shell'
+)
+
+# 系统/用户数据目录：即使看起来"空"或少文件，也绝不是卸载残留。
+# config.json 的 protected_dir_names 与内置默认值合并，支持 -like 通配（如 'Microsoft*'）。
+function Get-ProtectedDirName {
+    param($config)
+    $defaults = @(
+        'WindowsApps','ModifiableWindowsApps','Windows Defender','Microsoft*',
+        'Windows Defender Advanced Threat Protection','Windows Photo Viewer',
+        'WindowsPowerShell','Windows Mail','Windows Security','Internet Explorer',
+        'wsl','USOPrivate','USOShared','SoftwareDistribution','Packages','Windows NT',
+        'Windows Sidebar','Uninstall Information','Application Data','History',
+        'Temporary Internet Files','VirtualStore','Documents','Desktop','Templates',
+        'Start Menu','「开始」菜单','桌面','Temp','Programs','regid.*','PackageManagement'
+    )
+    $configured = @()
+    if ($null -ne $config -and $null -ne $config.protected_dir_names) {
+        $configured = @($config.protected_dir_names | Where-Object { $_ })
+    }
+    return @($defaults + $configured)
+}
+
+function Test-ProtectedDirName {
+    param([string]$name, [string[]]$protectedNames)
+    foreach ($pattern in $protectedNames) {
+        if ($name -like $pattern) { return $true }
+    }
+    return $false
+}
+
+# 运行中进程与服务镜像的真实路径：候选目录是其中任一文件的前缀目录 → 正在使用
+function Get-LiveImagePath {
+    $paths = [System.Collections.Generic.List[string]]::new()
+    foreach ($proc in (Get-Process -ErrorAction SilentlyContinue)) {
+        # 受保护/系统进程的 Path 会抛 AccessDenied，跳过即可
+        try { if ($proc.Path) { $paths.Add($proc.Path) } } catch { Write-Verbose "Process path unreadable: $($proc.ProcessName)" }
+    }
+    foreach ($svc in (Get-CimInstance Win32_Service -ErrorAction SilentlyContinue)) {
+        $raw = [string]$svc.PathName
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        if ($raw -match '^\s*"([^"]+)"') { $raw = $Matches[1] }
+        else {
+            $m = [regex]::Match($raw, '^(.+?\.(?:exe|dll|sys))(?=\s|$)', 'IgnoreCase')
+            if ($m.Success) { $raw = $m.Groups[1].Value }
+        }
+        $paths.Add($raw.Trim().Trim('"'))
+    }
+    return $paths.ToArray()
+}
+
+function Test-DirectoryInUse {
+    param([string]$path, [string[]]$livePaths)
+    $prefix = $path.TrimEnd('\') + '\'
+    foreach ($lp in $livePaths) {
+        if ($lp -and $lp.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Split-NameToken {
+    param([string]$name)
+    if ([string]::IsNullOrWhiteSpace($name)) { return @() }
+    $tokens = @(foreach ($part in ([regex]::Split($name, '[^A-Za-z0-9]+'))) {
+        $token = $part.ToLowerInvariant()
+        if ($token.Length -ge 4 -and $script:GenericNameTokens -notcontains $token) { $token }
+    })
+    return $tokens
+}
+
+# 活体名称词元：进程名、服务名/显示名、已安装软件名与发布者。
+# 用于识别"目录名=某个仍在使用的软件"的情形（wetype_renderer ↔ WeType、qoder-updater ↔ Qoder）。
+function Get-LiveNameToken {
+    param([string]$IndexPath)
+    $names = [System.Collections.Generic.List[string]]::new()
+    foreach ($proc in (Get-Process -ErrorAction SilentlyContinue)) { $names.Add($proc.ProcessName) }
+    foreach ($svc in (Get-CimInstance Win32_Service -ErrorAction SilentlyContinue)) {
+        if ($svc.Name) { $names.Add([string]$svc.Name) }
+        if ($svc.DisplayName) { $names.Add([string]$svc.DisplayName) }
+    }
+    if ($IndexPath -and (Test-Path $IndexPath)) {
+        try {
+            $index = [System.IO.File]::ReadAllText($IndexPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            foreach ($app in @($index)) {
+                if ($app.name) { $names.Add([string]$app.name) }
+                if ($app.publisher) { $names.Add([string]$app.publisher) }
+            }
+        } catch {
+            Write-Warning "Installed index unreadable; name-based liveness check disabled: $_"
+        }
+    }
+    $tokens = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($n in $names) { foreach ($t in (Split-NameToken $n)) { [void]$tokens.Add($t) } }
+    return @($tokens)
+}
+
+function Test-NameRelatedToLive {
+    param([string]$dirName, [string[]]$liveTokens)
+    $dirTokens = Split-NameToken $dirName
+    if ($dirTokens.Count -eq 0) { return $false }
+    # 只做词元精确匹配。曾试过「包含匹配」，结果 fontconfig↔config、dtprinter↔printer、
+    # larkshellsingleton↔singleton 全部误命中，把真实残留一起吞掉——宁可漏报不可误杀。
+    foreach ($dt in $dirTokens) {
+        foreach ($lt in $liveTokens) {
+            if ($dt -eq $lt) { return $true }
+        }
+    }
+    return $false
 }
 
 function Test-AllSubdirsEmpty {
@@ -96,11 +214,11 @@ function Main {
 
     # 受保护目录：系统关键目录，永远不标记为残留（即使看起来"空"或文件少）
     # 这些目录由系统/其他软件动态管理，绝不能清理
-    $protectedDirNames = @(
-        'WindowsApps','ModifiableWindowsApps','Windows Defender','Microsoft',
-        'Windows Defender Advanced Threat Protection','Windows Photo Viewer',
-        'WindowsPowerShell','Windows Mail','Windows Security','Internet Explorer'
-    )
+    $protectedDirNames = @(Get-ProtectedDirName -config $config)
+
+    # 活性信号只采集一次：运行中的进程/服务 → 目录是否正在被使用（#10）
+    $liveImagePaths = @(Get-LiveImagePath)
+    $liveNameTokens = @(Get-LiveNameToken -IndexPath $InstalledIndexPath)
 
     foreach ($targetDir in $targetDirs) {
         $expandedDir = [Environment]::ExpandEnvironmentVariables($targetDir)
@@ -110,7 +228,15 @@ function Main {
                 $dirName = [System.IO.Path]::GetFileName($subdir)
 
                 # 受保护目录直接跳过（系统关键目录，绝不清理）
-                if ($protectedDirNames -contains $dirName) {
+                if (Test-ProtectedDirName -name $dirName -protectedNames $protectedDirNames) {
+                    continue
+                }
+
+                # 活性闸门：正在被进程/服务使用的目录不是残留
+                if (Test-DirectoryInUse -path $subdir -livePaths $liveImagePaths) {
+                    continue
+                }
+                if (Test-NameRelatedToLive -dirName $dirName -liveTokens $liveNameTokens) {
                     continue
                 }
 
@@ -150,9 +276,9 @@ function Main {
                     $risk = 'safe'
                     $reason = "Minimal residual ($fileCount files, ${totalSizeMB}MB)"
                 } elseif ($fileCount -le $maxFileCount -and $totalSizeMB -ge $maxSizeMB) {
-                    # 文件少但体积大（如残留的模型缓存/日志）：仍需人工确认
+                    # 文件少但体积大：几乎必然是缓存/更新包/虚拟磁盘，必须人工核实（#10 把 wsl 的 vhdx 判成残留就是因为缺这层提示）
                     $risk = 'caution'
-                    $reason = "Few files but notable size ($fileCount files, ${totalSizeMB}MB)"
+                    $reason = "Few files but notable size ($fileCount files, ${totalSizeMB}MB) - likely cache/update package/virtual disk, verify manually"
                 } else {
                     # 递归计数后文件多 → 活跃程序目录，非残留，跳过（不再误报）
                     $risk = 'skip'

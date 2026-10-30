@@ -8,11 +8,42 @@ param(
 # 提取可执行文件路径（处理引号和参数，Expert B Critical #1 修复）
 function Get-ExecutablePath {
     param([string]$pathName)
-    if ([string]::IsNullOrEmpty($pathName)) { return $null }
-    if ($pathName -match '^"([^"]+)"') { return $Matches[1] }
-    $exeMatch = [regex]::Match($pathName, '^(.+?\.(exe|dll|sys))\s', 'IgnoreCase')
+    if ([string]::IsNullOrWhiteSpace($pathName)) { return $null }
+    $trimmed = $pathName.Trim()
+    if ($trimmed -match '^"([^"]+)"') { return $Matches[1].Trim() }
+    # 无引号：取「以可执行扩展名结尾且后接空白或行尾」的最短前缀。
+    # 不能用 Split(' ')[0] 兜底——那会把无引号、无参数的
+    # "C:\Program Files\Vendor\svc.exe" 截成 "C:\Program"，运行中的服务因此被判幽灵（#8）。
+    $exeMatch = [regex]::Match($trimmed, '^(.+?\.(?:exe|dll|sys|com|bat|cmd))(?=\s|$)', 'IgnoreCase')
     if ($exeMatch.Success) { return $exeMatch.Groups[1].Value }
-    return $pathName.Split(' ')[0].Trim('"')
+    return $trimmed.Split(' ')[0].Trim('"')
+}
+
+# 规范化注册表/服务里存的路径：引号、\??\ 前缀、\SystemRoot\ 前缀、%VAR%
+# （内核驱动与第三方安装器都会产生这几种写法，直接 File.Exists 一律为假）
+function Resolve-ExecutablePath {
+    param([string]$path)
+    if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+    $resolved = $path.Trim().Trim('"')
+    if ($resolved.StartsWith('\??\')) { $resolved = $resolved.Substring(4) }
+    if ($resolved -like '\SystemRoot\*') { $resolved = Join-Path $env:SystemRoot $resolved.Substring(12) }
+    return [Environment]::ExpandEnvironmentVariables($resolved)
+}
+
+# 文件存在性判定：裸文件名（无目录分隔符）按系统搜索顺序解析，
+# 与 Windows 加载器的行为一致；相对当前工作目录的 File.Exists 会误判为不存在（#9）
+function Test-FilePath {
+    param([string]$path)
+    if ([string]::IsNullOrWhiteSpace($path)) { return $false }
+    if ([System.IO.File]::Exists($path)) { return $true }
+    if ($path -match '[\\/]') { return $false }
+    foreach ($dir in @("$env:SystemRoot\System32", "$env:SystemRoot\SysWOW64")) {
+        if ([System.IO.File]::Exists((Join-Path $dir $path))) { return $true }
+    }
+    foreach ($dir in ($env:PATH -split ';')) {
+        if ($dir -and [System.IO.File]::Exists((Join-Path $dir $path))) { return $true }
+    }
+    return $false
 }
 
 function Main {
@@ -81,8 +112,8 @@ function Main {
     # --- b) 幽灵服务 ---
     try {
         Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | ForEach-Object {
-            $exePath = Get-ExecutablePath -pathName $_.PathName
-            if ($exePath -and -not [System.IO.File]::Exists($exePath)) {
+            $exePath = Resolve-ExecutablePath -path (Get-ExecutablePath -pathName $_.PathName)
+            if ($exePath -and -not (Test-FilePath $exePath)) {
                 $ghostServices.Add([PSCustomObject]@{ type='ghost_service'; name=$_.Name; display_name=$_.DisplayName; binary_path=$_.PathName; extracted_path=$exePath; state=$_.State; risk='safe'; reason="Service binary does not exist: $exePath" })
             }
         }
@@ -119,8 +150,8 @@ function Main {
             foreach ($vn in $key.GetValueNames()) {
                 $val = $key.GetValue($vn)
                 if ($val -and $val -match '\.(exe|dll)') {
-                    $exePath = Get-ExecutablePath -pathName $val
-                    if ($exePath -and -not [System.IO.File]::Exists($exePath)) {
+                    $exePath = Resolve-ExecutablePath -path (Get-ExecutablePath -pathName $val)
+                    if ($exePath -and -not (Test-FilePath $exePath)) {
                         $startupResiduals.Add([PSCustomObject]@{ type='startup'; key="HKLM\$rp"; value_name=$vn; value=$val; risk='caution'; reason="Startup entry points to non-existent file" })
                     }
                 }
@@ -156,10 +187,10 @@ function Main {
                 if ($inprocKey) {
                     $dllPath = $inprocKey.GetValue('')
                     if ($dllPath) {
-                        # 展开环境变量（如 %ProgramFiles%）
-                        $expandedPath = [Environment]::ExpandEnvironmentVariables($dllPath)
+                        # 去引号 + 展开 %VAR% / \SystemRoot\ / \??\（#9）
+                        $expandedPath = Resolve-ExecutablePath -path ([string]$dllPath)
                         # 区分原生 COM 和 .NET 程序集 COM（mscoree.dll 加载器）
-                        if ($expandedPath -notmatch 'mscoree\.dll$' -and -not [System.IO.File]::Exists($expandedPath)) {
+                        if ($expandedPath -notmatch 'mscoree\.dll$' -and -not (Test-FilePath $expandedPath)) {
                             $shellResiduals.Add([PSCustomObject]@{ type='com_clsid'; key="$($csp.Label)\$guid\InProcServer32"; path=$expandedPath; risk='caution'; reason="COM InProcServer32 DLL not found" })
                         }
                     }
@@ -185,8 +216,8 @@ function Main {
                     $clsidSubKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SOFTWARE\Classes\CLSID\$clsid\InProcServer32")
                     if ($clsidSubKey) {
                         $dllPath = $clsidSubKey.GetValue('')
-                        $expandedPath = [Environment]::ExpandEnvironmentVariables($dllPath)
-                        if ($dllPath -and -not [System.IO.File]::Exists($expandedPath)) {
+                        if ($dllPath) { $expandedPath = Resolve-ExecutablePath -path ([string]$dllPath) } else { $expandedPath = $null }
+                        if ($expandedPath -and -not (Test-FilePath $expandedPath)) {
                             $shellResiduals.Add([PSCustomObject]@{ type='context_menu_handler'; name=$handler; clsid=$clsid; key="$($cmp.Label)\$handler"; risk='caution'; reason="Context menu handler DLL not found" })
                         }
                     }
