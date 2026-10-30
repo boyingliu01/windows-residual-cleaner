@@ -7,6 +7,33 @@ All notable changes to this project will be documented in this file.
 > （例如曾把 `setup.ps1` 不可插桩说成结构性限制）以「**更正**」附注标出，
 > 而不改写历史条目本身。
 
+## [1.4.13.0] - 2026-10-30
+
+### 修复：三类误报（issue #8、#9、#10）
+
+实机试用时 144 条报告里有 32 条误报，其中 3 条按 `risk=safe/caution` 走完确认
+流程会破坏正在运行的系统组件。三类根因相互独立，自 v1.0.0 起一直存在
+（不是 v1.4.9→v1.4.11 文档/退出码改造引入的；此前的"误报较少"是因为 #4 的
+CJK 解码缺陷把整组结果静默吞掉了）。
+
+- **#8 服务路径被空格截断**：`Get-ExecutablePath` 对「无引号 + 含空格 + 无参数」
+  的 ImagePath 落到 `Split(' ')[0]`，把
+  `C:\Program Files (x86)\MERCURY ...\AicWifiService.exe` 截成 `C:\Program`，
+  判定"文件不存在"→ 运行中的 WiFi 驱动服务被列为可删幽灵服务。
+  改为取「以可执行扩展名结尾且后接空白或行尾」的最短前缀；
+  新增 `Resolve-ExecutablePath`（去引号、`\??\`、`\SystemRoot\`、`%VAR%`）与
+  `Test-FilePath`（裸文件名按 System32/SysWOW64/PATH 解析），服务、启动项、COM 统一使用。
+- **#9 COM 注册值未解析**：`InProcServer32` 的裸 DLL 名（`combase.dll` ×17 等）被
+  `[IO.File]::Exists` 按当前工作目录判定，带引号的值（Defender 平台 DLL）与
+  `\SystemRoot\` 前缀同样必判不存在。52 条中 23 条为误报，全部消除。
+- **#10 文件系统扫描无活性/系统目录判定**：新增三道闸门——
+  `config.json` 的 `protected_dir_names`（支持 `Microsoft*` 通配，默认补 `wsl`、
+  `USOPrivate`、`SoftwareDistribution`、`Packages` 等）；
+  运行中进程/服务镜像路径的前缀判定；目录名与进程名/服务名/已安装索引名称的
+  **词元精确匹配**（尝试过包含匹配，`fontconfig↔config` 等被误命中，已收回）。
+  实测本机 fs 残留 90→46（22.5GB 的 WSL 虚拟磁盘、运行中的 `gh.exe`/Everything/
+  Office/LKY/Qoder 更新缓存均不再上报），ghost service 2→1，COM 52→29。
+
 ## [1.4.12.0] - 2026-10-29
 
 ### 修复：非 ASCII 代码页下运行脚本回读自家 JSON 会解码损坏（issue #4、#5）
