@@ -25,11 +25,16 @@ param(
 # Existence uses $PSBoundParameters (AGENTS.md trap 11). The value is compared with
 # `-eq $true`, NOT `$IsAdminOverride.Value`: PowerShell returns nothing for
 # [Nullable[bool]] parameter properties (both engines; trap 11, third variant).
+#
+# IMPORTANT (issue #14): Test-AdminPrivilege always passes -IsAdminOverride explicitly,
+# so an unset override arrives here as a *bound* $null and ContainsKey would be true.
+# Treat "non-null" as the injection test instead, otherwise the default path is
+# short-circuited to $false and even an elevated session is denied.
 function Get-AdminState {
     [CmdletBinding()]
     param([System.Nullable[bool]]$IsAdminOverride)
 
-    if ($PSBoundParameters.ContainsKey('IsAdminOverride')) {
+    if ($null -ne $IsAdminOverride) {
         return ($IsAdminOverride -eq $true)
     }
     $injected = [Environment]::GetEnvironmentVariable('WRC_TEST_IS_ADMIN')

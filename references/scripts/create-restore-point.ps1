@@ -28,7 +28,10 @@ function Get-AdminState {
     [CmdletBinding()]
     param([System.Nullable[bool]]$IsAdminOverride)
 
-    if ($PSBoundParameters.ContainsKey('IsAdminOverride')) {
+    # issue #14: the caller always passes -IsAdminOverride explicitly, so an unset
+    # override arrives as a bound $null. Keying on $PSBoundParameters would then
+    # treat the default path as an injected $false and deny even elevated sessions.
+    if ($null -ne $IsAdminOverride) {
         return ($IsAdminOverride -eq $true)
     }
     $injected = [Environment]::GetEnvironmentVariable('WRC_TEST_IS_ADMIN')
