@@ -22,14 +22,13 @@ param(
 #                      guard's `exit` only counts as "really executed" in a child
 #                      process (see the guard-path tests).
 #
-# Existence uses $PSBoundParameters (AGENTS.md trap 11). The value is compared with
-# `-eq $true`, NOT `$IsAdminOverride.Value`: PowerShell returns nothing for
-# [Nullable[bool]] parameter properties (both engines; trap 11, third variant).
-#
-# IMPORTANT (issue #14): Test-AdminPrivilege always passes -IsAdminOverride explicitly,
-# so an unset override arrives here as a *bound* $null and ContainsKey would be true.
-# Treat "non-null" as the injection test instead, otherwise the default path is
-# short-circuited to $false and even an elevated session is denied.
+# IMPORTANT (issue #14): the injection test is "non-null", NOT $PSBoundParameters
+# (AGENTS.md trap 11 covers reading the VALUE, not detecting a binding). Every caller
+# passes -IsAdminOverride explicitly, so an unset override arrives as a *bound* $null
+# and ContainsKey would be true -- the default path would be short-circuited to $false
+# and even an elevated session denied. The value is still compared with `-eq $true`,
+# not `$IsAdminOverride.Value`, because PowerShell returns nothing for [Nullable[bool]]
+# parameter properties (both engines).
 function Get-AdminState {
     [CmdletBinding()]
     param([System.Nullable[bool]]$IsAdminOverride)
