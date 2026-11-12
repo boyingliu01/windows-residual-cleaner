@@ -7,6 +7,27 @@ All notable changes to this project will be documented in this file.
 > （例如曾把 `setup.ps1` 不可插桩说成结构性限制）以「**更正**」附注标出，
 > 而不改写历史条目本身。
 
+## [1.4.13.1] - 2026-11-12
+
+### 修复：管理员门禁恒判"未提权"，v1.4.9.0 起所有写操作不可用（issue #14）
+
+**影响范围：v1.4.9.0 – v1.4.13.0 的全部三个写脚本**（`run-all.ps1`、
+`create-restore-point.ps1`、`clean-residuals.ps1`）。以管理员身份运行也一律以
+退出码 `2` 中止，扫描、还原点、清理全部无法执行；`-SkipRestorePoint` 不改变结果。
+
+- **根因**：`63a3b0b`（v1.4.9.0 发布提交）把权限探测抽成 `Get-AdminState`，并用
+  `$PSBoundParameters.ContainsKey('IsAdminOverride')` 判断"是否注入了测试接缝"。
+  但三个调用点都是**显式传参** `Get-AdminState -IsAdminOverride $IsAdminOverride`，
+  未注入时该值以"已绑定 `$null`"的形式到达，`ContainsKey` 恒为真，于是默认分支
+  （环境变量 / 真实 `IsInRole`）永远走不到，返回值退化成 `($null -eq $true)` = `$false`。
+- **修复**：判定条件改为 `if ($null -ne $IsAdminOverride)`，只有真正非空的注入才算注入。
+- **为何 CI 没抓到**：所有既有测试要么显式传 override，要么断言"注入 `false` → 退出码 2"
+  —— 后者在恒 `$false` 下是空真。新增 4 条默认路径测试：`WRC_TEST_IS_ADMIN`
+  经默认分支生效（三个脚本各一条）、显式 `$null` 视为未注入（`Get-AdminState` 直测）、
+  以及 `clean-residuals.ps1` 子进程实测（注入 `true` → 0，注入 `false` → 2）。
+- **实测证据**：提权会话中 DryRun 由 `rc=2` 恢复为 `rc=0` 并正常输出执行计划；
+  非管理员注入 `false` 时仍为 `2`。
+
 ## [1.4.13.0] - 2026-10-30
 
 ### 修复：三类误报（issue #8、#9、#10）

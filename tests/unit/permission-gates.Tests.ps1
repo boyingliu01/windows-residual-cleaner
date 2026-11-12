@@ -43,6 +43,33 @@ Describe 'run-all.ps1 Test-AdminPrivilege' {
         $w = @(Test-AdminPrivilege -IsAdminOverride $false 3>&1 2>&1 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
         $w.Count | Should -Be 1 -Because '非强制路径必须只发警告，不写错误流'
     }
+
+    It 'honors WRC_TEST_IS_ADMIN through the default path (issue #14)' {
+        # 回归 #14：Test-AdminPrivilege 总是**显式**传 -IsAdminOverride（默认 $null），
+        # 而显式传 $null 同样进入 $PSBoundParameters。若用 ContainsKey 判定「是否注入」，
+        # 默认路径会被截断成 false，管理员会话也被拒绝。这里不传 override，只靠注入。
+        $prev = $env:WRC_TEST_IS_ADMIN
+        try {
+            $env:WRC_TEST_IS_ADMIN = 'true'
+            Test-AdminPrivilege -Mandatory | Should -Be $true -Because '注入管理员身份后默认路径必须放行'
+            $env:WRC_TEST_IS_ADMIN = 'false'
+            (Test-AdminPrivilege -Mandatory 2>$null) | Should -Be $false -Because '注入非管理员后默认路径必须拒绝'
+        } finally {
+            if ($null -eq $prev) { Remove-Item Env:\WRC_TEST_IS_ADMIN -ErrorAction SilentlyContinue }
+            else { $env:WRC_TEST_IS_ADMIN = $prev }
+        }
+    }
+
+    It 'treats an explicit $null override as not injected (issue #14)' {
+        $prev = $env:WRC_TEST_IS_ADMIN
+        try {
+            $env:WRC_TEST_IS_ADMIN = 'true'
+            Get-AdminState -IsAdminOverride $null | Should -Be $true
+        } finally {
+            if ($null -eq $prev) { Remove-Item Env:\WRC_TEST_IS_ADMIN -ErrorAction SilentlyContinue }
+            else { $env:WRC_TEST_IS_ADMIN = $prev }
+        }
+    }
 }
 
 Describe 'run-all.ps1 Main permission gate' {
@@ -113,6 +140,17 @@ Describe 'create-restore-point.ps1 Test-AdminPrivilege' {
 
     It 'returns a boolean without -Mandatory' {
         Test-AdminPrivilege | Should -BeOfType [bool]
+    }
+
+    It 'honors WRC_TEST_IS_ADMIN through the default path (issue #14)' {
+        $prev = $env:WRC_TEST_IS_ADMIN
+        try {
+            $env:WRC_TEST_IS_ADMIN = 'true'
+            Test-AdminPrivilege -Mandatory | Should -Be $true
+        } finally {
+            if ($null -eq $prev) { Remove-Item Env:\WRC_TEST_IS_ADMIN -ErrorAction SilentlyContinue }
+            else { $env:WRC_TEST_IS_ADMIN = $prev }
+        }
     }
 }
 
@@ -312,6 +350,60 @@ Describe 'run-all.ps1 pipeline step-abort propagation' {
             if ($null -eq $prevInjected) { Remove-Item Env:\WRC_TEST_IS_ADMIN -ErrorAction SilentlyContinue }
             else { $env:WRC_TEST_IS_ADMIN = $prevInjected }
             Remove-Item $outFile, "$outFile.err" -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+Describe 'clean-residuals.ps1 default permission path (issue #14)' {
+    # 端到端回归：子进程不传 -IsAdminOverride，只能依赖 WRC_TEST_IS_ADMIN。
+    # 修复前无论注入 true 还是 false 都退出 2（默认路径被截断），
+    # 所以「注入 true → 0」是唯一能区分真假的断言。
+    BeforeAll {
+        $script:CleanScript = "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1"
+        $report = [PSCustomObject]@{
+            filesystem_residuals = @(); registry_residuals = @(); ghost_services = @()
+            ghost_tasks = @(); startup_residuals = @(); shell_residuals = @(); path_residuals = @()
+        }
+        $script:reportPath = "$TestDrive\empty-report.json"
+        [IO.File]::WriteAllText($script:reportPath, ($report | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+        $wl = @{ registry_patterns = @(); path_patterns = @(); service_names = @() }
+        $script:wlPath = "$TestDrive\empty-whitelist.json"
+        [IO.File]::WriteAllText($script:wlPath, ($wl | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+    }
+
+    It 'exits 0 (not 2) when the injected identity is admin' {
+        $prev = $env:WRC_TEST_IS_ADMIN
+        $out = "$TestDrive\clean-ok.out"
+        $err = "$TestDrive\clean-ok.err"
+        try {
+            $env:WRC_TEST_IS_ADMIN = 'true'
+            $p = Start-Process -FilePath "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe" `
+                -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$script:CleanScript`"",
+                    '-ReportPath', "`"$script:reportPath`"", '-WhitelistPath', "`"$script:wlPath`"", '-DryRun') `
+                -Wait -PassThru -NoNewWindow `
+                -RedirectStandardOutput $out -RedirectStandardError $err
+            $p.ExitCode | Should -Be 0 -Because '注入管理员身份后不得再因权限门退出 2'
+        } finally {
+            if ($null -eq $prev) { Remove-Item Env:\WRC_TEST_IS_ADMIN -ErrorAction SilentlyContinue }
+            else { $env:WRC_TEST_IS_ADMIN = $prev }
+        }
+    }
+
+    It 'exits 2 when the injected identity is not admin' {
+        $prev = $env:WRC_TEST_IS_ADMIN
+        $out = "$TestDrive\clean-no.out"
+        $err = "$TestDrive\clean-no.err"
+        try {
+            $env:WRC_TEST_IS_ADMIN = 'false'
+            $p = Start-Process -FilePath "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe" `
+                -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$script:CleanScript`"",
+                    '-ReportPath', "`"$script:reportPath`"", '-WhitelistPath', "`"$script:wlPath`"", '-DryRun') `
+                -Wait -PassThru -NoNewWindow `
+                -RedirectStandardOutput $out -RedirectStandardError $err
+            $p.ExitCode | Should -Be 2
+        } finally {
+            if ($null -eq $prev) { Remove-Item Env:\WRC_TEST_IS_ADMIN -ErrorAction SilentlyContinue }
+            else { $env:WRC_TEST_IS_ADMIN = $prev }
         }
     }
 }
