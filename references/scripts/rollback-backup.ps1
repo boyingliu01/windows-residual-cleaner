@@ -393,13 +393,13 @@ function Confirm-RegistryTargetAbsent {
         接受 'HKCU\Foo' 或 'HKCU:\Foo' 形态。读取异常按「未确认」处理
         （fail-closed：宁可判 absent=$false 让上层复查，不得把读失败
         说成「目标已消失」）。
+        一律走 Registry:: 提供程序路径：PowerShell 默认只注册 HKCU:/HKLM: 两个
+        PSDrive，'HKCR:\...' 不抛异常而是静默返回 $false，会把存在的 HKCR 键
+        误判成「已消失」（fail-open）。提供程序路径与 PSDrive 注册状态无关。
     #>
     param([Parameter(Mandatory)][string]$Key)
 
-    $psPath = $Key.Trim().Trim('"')
-    if ($psPath -notmatch '^\w+\\:') {
-        $psPath = $psPath -replace '^(HKLM|HKCU|HKCR|HKU|HKCC):?\\', '$1:\'
-    }
+    $psPath = 'Registry::' + ($Key.Trim().Trim('"').Trim() -replace '^(HKLM|HKCU|HKCR|HKU|HKCC):?\\', '$1\')
     try {
         return @{ Absent = (-not (Test-Path -LiteralPath $psPath)); Path = $psPath }
     } catch {
