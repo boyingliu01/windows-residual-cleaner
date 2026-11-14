@@ -498,6 +498,33 @@ $text = $script:Utf8Read.GetString([System.IO.File]::ReadAllBytes($path))
 
 ---
 
+### 17. `HKCR:` / `HKU:` / `HKCC:` 不是 PSDrive：`Test-Path` 静默返回 `$false`（2026-11-13 实跑）
+
+PowerShell 默认只注册 `HKCU:` 与 `HKLM:` 两个注册表 PSDrive：
+
+```powershell
+Get-PSDrive -PSProvider Registry      # -> HKCU, HKLM
+
+# ❌ 错误: 不抛异常（连非终止错误都没有），静默返回 False → 存在的键被判「已消失」
+Test-Path -LiteralPath 'HKCR:\CLSID\{0119CCC1-8EAC-43E9-AA7D-87F64B44AA4D}\InProcServer32'          # False
+
+# ✅ 正确: 提供程序限定路径，与 PSDrive 注册状态无关
+Test-Path -LiteralPath 'Registry::HKCR\CLSID\{0119CCC1-8EAC-43E9-AA7D-87F64B44AA4D}\InProcServer32' # True
+```
+
+**影响**：`Confirm-RegistryTargetAbsent` 把 `HKCR\...` 转成 `HKCR:\...` 后判断，
+于是真实清理把 30 个 HKCR 残留键**全部记成** `registry_skip / key not found`，
+实际一个都没删，汇总却显示 `0 failed`。同一函数也是 journal 里
+`absent_confirmed_after_mutation` 的证据来源——「没删掉」会被记成「已确认消失」，
+回滚端据此判定，属于 fail-open。
+
+**判据**：用 `Test-Path` 判断注册表键存在性时，路径必须以 `Registry::` 开头；
+单测至少覆盖一个非默认 PSDrive 的 hive（HKCR/HKU/HKCC），只测 HKCU 会漏掉整类缺陷
+（`tests/unit/rollback-backup.Tests.ps1` 已补 4 条）。**「键不存在」与「路径走错提供程序」
+在返回值上不可区分**——写完这种判定，必须在真实存在的键上正反各验一次。
+
+---
+
 ## 多条件检测逻辑设计原则
 
 ### 核心规则: 权威信号必须 gate 辅助信号
@@ -852,3 +879,7 @@ if ($MyInvocation.InvocationName -ne '.') {
   **判据**：**「这个数字三个月后会变成错的吗」**——会变就改写成描述，而不是加进白名单。
   这条由 `tests/unit/doc-consistency.Tests.ps1` 守着，也包括「本文声称的契约范围必须与
   `hermeticity.Tests.ps1` 实际枚举的目录一致」，让文档跟着代码走。
+- 2026-11-13: 真实清理演练暴露 HKCR 判定 fail-open（陷阱 17）：日志「key not found」
+  与「真的没删」在用户视角完全一样，汇总还是 `0 failed`。
+  **判断口径**：删除类操作的「跳过」必须与「执行后复查」用**同一份**存在性判定，
+  且该判定要有真实存在的正例测试；汇总数字只有在逐条复验过之后才能当证据。
