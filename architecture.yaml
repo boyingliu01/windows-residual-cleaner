@@ -1,38 +1,43 @@
 # Architecture constraints for the Windows Residual Cleaner monorepo.
-# `layers` governs the TypeScript UI (checked by archlint in Gate 6).
+# `layers` governs the TypeScript UI (checked in Gate 6 by gate-6-layers.sh).
 # `powershell.layers` governs the PowerShell pipeline (checked in Gate 6 by
 # tools/Test-PowerShellArchitecture.ps1).
+#
+# The map form (layer name as key) with `patterns:` is the only shape
+# gate-6-layers.sh parses. The sequence form (`- name: x` + `paths:`) and the
+# key `paths:` both parse to zero layers, and a zero-layer config is BLOCKED
+# fail-closed — so a "nicer looking" YAML here silently disables the gate.
 layers:
-  - name: types
-    paths: ["ui/src/types/**"]
+  types:
+    patterns: ["ui/src/types/**"]
     allowed_imports: []
 
-  - name: lib
-    paths: ["ui/src/lib/**"]
+  lib:
+    patterns: ["ui/src/lib/**"]
     allowed_imports: [types]
 
-  - name: hooks
-    paths: ["ui/src/hooks/**"]
+  hooks:
+    patterns: ["ui/src/hooks/**"]
     allowed_imports: [types, lib]
 
-  - name: ui-primitives
-    paths: ["ui/src/components/ui/**"]
+  ui-primitives:
+    patterns: ["ui/src/components/ui/**"]
     allowed_imports: [lib]
 
-  - name: components
-    paths: ["ui/src/components/**"]
+  components:
+    patterns: ["ui/src/components/**"]
     allowed_imports: [ui-primitives, hooks, lib, types]
 
-  - name: app
-    paths: ["ui/src/App.tsx", "ui/src/main.tsx"]
+  app:
+    patterns: ["ui/src/App.tsx", "ui/src/main.tsx"]
     allowed_imports: [components, ui-primitives, hooks, lib, types]
 
-  - name: test-support
-    paths: ["ui/src/test/**"]
+  test-support:
+    patterns: ["ui/src/test/**"]
     allowed_imports: [hooks, lib, types]
 
-  - name: server
-    paths: ["ui/server/**"]
+  server:
+    patterns: ["ui/server/**"]
     allowed_imports: []
 
 # PowerShell layering (2026-10-24).
