@@ -7,6 +7,39 @@ All notable changes to this project will be documented in this file.
 > （例如曾把 `setup.ps1` 不可插桩说成结构性限制）以「**更正**」附注标出，
 > 而不改写历史条目本身。
 
+## [1.4.14.0] - 2026-11-14
+
+### 修复：HKCR/HKU/HKCC 键被静默判为"已消失"，清理实际跳过却报 0 failed（issue #16）
+
+**影响范围：所有涉及 HKCR/HKU/HKCC 的删除后复查**。`Confirm-RegistryTargetAbsent`
+同时是两处证据的来源——清理时决定「键还在不在」，回滚日志里写入
+`absent_confirmed_after_mutation`。它判错，等于删除与回滚双双 fail-open。
+
+- **根因**：该函数把 `HKCR\...` 改写成 `HKCR:\...` 后交给 `Test-Path`。PowerShell
+  默认只注册 `HKCU:` / `HKLM:` 两个注册表 PSDrive；`HKCR:` 不存在时 `Test-Path`
+  **不抛异常、静默返回 `$false`**，于是「路径走错提供程序」被读成「键已消失」。
+- **实测表现**：本机真实清理中 30 个 `HKCR\CLSID\...\InProcServer32` 残留键
+  全部记为 `registry_skip / key not found`，汇总仍是 `0 failed`；`reg query`
+  证明一个都没删。日志里「跳过」与「真删了」在用户视角完全一样。
+- **修复**：改用提供程序限定路径 `Registry::HKCR\...`（`Registry::HKCU\` 等同样适用），
+  与 PSDrive 注册状态无关；保留 `HKCR:\` 与 `HKCR\` 两种形态等价。
+- **测试**：补 4 条——`HKCR\.txt` / `HKU\.DEFAULT` / `HKCC\System\CurrentControlSet`
+  三个非默认 hive 的**存在键正例**（断言 `Absent=$false` 且 `Path` 以 `Registry::`
+  开头），以及带冒号形态等价。原有用例只测 HKCU，整类缺陷漏网。
+- **文档**：AGENTS.md 新增陷阱 17（判据：注册表存在性判定必须以 `Registry::` 开头，
+  且至少覆盖一个非默认 hive 的正例测试）。
+
+### 修复：Gate 6 的 TS 分层检查从死配置变成真检查（`architecture.yaml`）
+
+- `gate-6-layers.sh` 只解析「层名作键 + `patterns:`」的 map 形式。原配置用 sequence
+  形式（`- name:` + `paths:`），解析出**零层**，被 fail-closed 判为
+  `layer_config_unparsable`——纯文档提交从此全被 Gate 6 拦死，而 TS 分层实际上
+  从未被检查过。
+- 转为 map 形式后实测 9 层 / 29 个文件归类 / 0 违规；`powershell.layers` 块不受影响
+  （8 层 14 边 0 违规）。
+- 附带修正：`doc-tables` 用例改为优先使用 `WindowsPowerShell\v1.0\powershell.exe`
+  绝对路径，避免宿主 PATH 缺该目录时与代码质量无关的假红。
+
 ## [1.4.13.1] - 2026-11-12
 
 ### 修复：管理员门禁恒判"未提权"，v1.4.9.0 起所有写操作不可用（issue #14）
