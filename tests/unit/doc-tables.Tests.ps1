@@ -45,7 +45,11 @@ Describe 'Doc tables: 退出码表单一事实来源（2026-10-25）' {
 
     It '文档中的退出码表与代码一致（运行生成器的 -Check 模式）' {
         # 这是 CI 跑的同一条命令；不一致即红。
-        $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script:Generator -Check 2>&1
+        # 裸 powershell.exe 依赖 PATH：Git Bash 之类的宿主 PATH 里可能只有
+        # System32 而没有 WindowsPowerShell\v1.0，会让这条与代码无关的用例假红。
+        $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if (-not (Test-Path -LiteralPath $ps51)) { $ps51 = 'powershell.exe' }
+        $out = & $ps51 -NoProfile -ExecutionPolicy Bypass -File $script:Generator -Check 2>&1
         $LASTEXITCODE | Should -Be 0 -Because "退出码表漂移：$($out -join ' | ')"
     }
 

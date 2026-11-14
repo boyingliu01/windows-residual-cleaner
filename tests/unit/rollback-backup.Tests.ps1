@@ -290,6 +290,24 @@ Describe 'Confirm-RegistryTargetAbsent / Confirm-PathEntryRemoved (REQ-024 flag 
         $r.Absent | Should -BeFalse
     }
 
+    It '存在的 <Hive> 键 -> Absent=$false（HKCR/HKU/HKCC 不是 PSDrive，必须走 Registry::）' -TestCases @(
+        @{ Hive = 'HKCR'; Key = 'HKCR\.txt' }
+        @{ Hive = 'HKU';  Key = 'HKU\.DEFAULT' }
+        @{ Hive = 'HKCC'; Key = 'HKCC\System\CurrentControlSet' }
+    ) {
+        param($Hive, $Key)
+        $r = Confirm-RegistryTargetAbsent -Key $Key
+        $r.Absent | Should -BeFalse
+        $r.Path | Should -BeLike 'Registry::*'
+    }
+
+    It '带冒号形态等价：HKCR:\\.txt 与 HKCR\\.txt 判定一致' {
+        $a = Confirm-RegistryTargetAbsent -Key 'HKCR\.txt'
+        $b = Confirm-RegistryTargetAbsent -Key 'HKCR:\.txt'
+        $b.Absent | Should -Be $a.Absent
+        $b.Path | Should -Be $a.Path
+    }
+
     It 'PATH 段已移除 -> Absent=$true；仍在 -> Absent=$false（整段、大小写不敏感）' {
         (Confirm-PathEntryRemoved -PathList 'A;C' -Entry 'B').Absent | Should -BeTrue
         (Confirm-PathEntryRemoved -PathList 'A;b' -Entry 'B').Absent | Should -BeFalse
