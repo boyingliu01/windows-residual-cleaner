@@ -373,7 +373,7 @@ function New-RollbackPlannedEntry {
         [Parameter(Mandatory)][AllowNull()][hashtable]$Journal,
         [string]$BackupDir,
         [Parameter(Mandatory)]$Item,
-        [Parameter(Mandatory)][ValidateSet('registry_key', 'startup_value', 'path_entry', 'path_deleted', 'service', 'task')][string]$Kind,
+        [Parameter(Mandatory)][ValidateSet('registry_key', 'startup_value', 'path_entry', 'path_deleted', 'service', 'task', 'uninstalled_key')][string]$Kind,
         [bool]$PreExisting = $true,
         [hashtable]$ExtraFields
     )
@@ -448,6 +448,227 @@ function Set-MachinePathValue {
     } catch {
         return $null
     }
+}
+
+# ── 孤儿卸载项（uninstalled_software，issue #12）──
+#
+# 注册表里只剩一条 ...\CurrentVersion\Uninstall\<子键>，而它背后的安装目录和卸载程序
+# 都已被删掉。清理动作**只有**「删这一个注册项」：不碰 SharedDLLs、不碰 Installer 缓存、
+# 不碰目录树——那些要么是共享资源，要么重建不出来。
+
+# 允许删除的卸载键根（小写）。必须逐字匹配「直接子键」这一层，不允许任何 deeper 路径：
+#   HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\<name>
+#   HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\<name>
+#   HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\<name>
+# 用正则整串匹配而不是 StartsWith：StartsWith 会把
+# '...\Uninstall\Foo\Bar' 和 '...\UninstallX\Foo' 一起放行（后者根本不在 Uninstall 下）。
+$script:UninstallKeyPatterns = @(
+    '^hklm\\software\\microsoft\\windows\\currentversion\\uninstall\\[^\\]+$'
+    '^hklm\\software\\wow6432node\\microsoft\\windows\\currentversion\\uninstall\\[^\\]+$'
+    '^hkcu\\software\\microsoft\\windows\\currentversion\\uninstall\\[^\\]+$'
+)
+
+function Test-UninstalledKeyShape {
+    <#
+    .SYNOPSIS
+        报告里的 registry_key 是否可能是「Uninstall 的直接子键」（纯字符串判定）。
+    .DESCRIPTION
+        这里**不**证明键存在——存在性由 Test-UninstalledKeyPresent 用真实注册表判定；
+        两者分开是为了让形状违规与「键已消失」在日志里可区分（fail-closed 的不同原因）。
+        大小写不敏感（注册表路径本身不区分大小写），反斜杠归一后整串匹配。
+    #>
+    param([AllowEmptyString()][AllowNull()][string]$Key)
+
+    if ([string]::IsNullOrWhiteSpace($Key)) { return $false }
+    $normalized = ($Key.Trim().Trim('"').Trim().TrimEnd('\') -replace '/', '\').ToLowerInvariant()
+    foreach ($pattern in $script:UninstallKeyPatterns) {
+        if ($normalized -match $pattern) { return $true }
+    }
+    return $false
+}
+
+function Test-UninstalledKeyPresent {
+    <#
+    .SYNOPSIS
+        键此刻是否仍存在**且**带有本项被判可清理时依据的 DisplayName。
+    .DESCRIPTION
+        运行期复核，防止报告生成之后该键被卸载程序复用或改写：
+          - 键不存在 -> @{ Present=$false; Reason='key_absent' }
+          - DisplayName 与报告里记录的不一致 -> Present=$true 但 HasDisplayName=$false
+            （调用方据此跳过，绝不在「这个键已经不是那个软件」时删除）。
+        一律走 Registry:: 提供程序路径：HKCU/HKLM 之外与 PSDrive 注册状态有关的写法会
+        静默返回 False（AGENTS.md 陷阱 17）。读取异常按「无法证明不存在」处理（fail-closed）。
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Key,
+        [AllowNull()][string]$ExpectedDisplayName
+    )
+
+    $psPath = 'Registry::' + ($Key.Trim().Trim('"').Trim().TrimEnd('\'))
+    try {
+        if (-not (Test-Path -LiteralPath $psPath)) {
+            return @{ Present = $false; HasDisplayName = $false; Reason = 'key_absent' }
+        }
+        $name = $null
+        try { $name = (Get-ItemProperty -LiteralPath $psPath -Name 'DisplayName' -ErrorAction Stop).'DisplayName' } catch { $name = $null }
+        if ([string]::IsNullOrWhiteSpace([string]$name)) {
+            return @{ Present = $true; HasDisplayName = $false; Reason = 'display_name_absent' }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedDisplayName) -and
+            [string]$name -cne [string]$ExpectedDisplayName) {
+            return @{ Present = $true; HasDisplayName = $false; Reason = 'display_name_changed' }
+        }
+        return @{ Present = $true; HasDisplayName = $true; Reason = '' }
+    } catch {
+        return @{ Present = $true; HasDisplayName = $false; Reason = "probe_failed($($_.Exception.Message))" }
+    }
+}
+
+function Remove-UninstalledRegistryEntry {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions','')]
+    <#
+    .SYNOPSIS
+        删除一条孤儿卸载注册项（一次完整的「登记 → 备份 → 删除 → 复查 → 落盘」）。
+    .DESCRIPTION
+        外面那层是 Windows 自己的 ...\CurrentVersion\Uninstall 键，误删后果比普通残留重，
+        所以这里比 registry_key 分支多两道运行期校验：形状必须合法，键下的 DisplayName
+        必须仍与扫描时一致。只删注册项，不碰 SharedDLLs / Installer 缓存 / 任何目录。
+
+        返回 @{ Status; Records; Unjournaled; Error }：
+          deleted / skipped（目标已不在）/ failed（键已变或 reg delete 失败）
+          persistence_* 表示日志/备份落盘失败——调用方必须置 $persistenceError 并停止。
+        Records 是该条目应写入清理日志的记录（含 DryRun 的预演记录），由调用方统一
+        追加：本函数不碰调用方的 $log，避免 Main 里同名变量被遮蔽，也便于单测断言。
+    #>
+    param(
+        [Parameter(Mandatory)]$Item,
+        [AllowNull()][hashtable]$Journal,
+        [AllowEmptyString()][string]$BackupDir = '',
+        [switch]$DryRun
+    )
+
+    $regKey = [string]$Item.key
+    if ($DryRun) {
+        return @{ Status = 'deleted'; Records = @(@{ id=$Item.id; action='uninstalled_key_deleted'; key=$regKey; success=$true }) }
+    }
+    # DryRun 不建回滚日志，$backupDir 为空；真正删除时它是前置门禁的产物，缺了就只能中止。
+    if ([string]::IsNullOrWhiteSpace($BackupDir)) {
+        return @{ Status = 'failed'; Error = 'backup_dir_missing' }
+    }
+    # 前置过滤也查过形状；这里重做是 fail-closed——Phase 3 不依赖前置循环是否执行过。
+    if (-not (Test-UninstalledKeyShape -Key $regKey)) {
+        return @{ Status = 'failed'; Error = 'uninstalled_key_out_of_scope'; Records = @(@{ id=$Item.id; action='cleanup_failed'; key=$regKey; success=$false; error='uninstalled_key_out_of_scope' }) }
+    }
+    $probe = Test-UninstalledKeyPresent -Key $regKey -ExpectedDisplayName ([string]$Item.name)
+    if (-not $probe.Present) {
+        Write-Output "  → Uninstall entry does not exist (already removed), skipping"
+        return @{ Status = 'skipped'; Records = @(@{ id=$Item.id; action='registry_skip'; key=$regKey; success=$true; note='key not found' }) }
+    }
+    # 键在、但已经不是这一项：既不能删（会误删别人的卸载项），也不能记成「目标已消失」。
+    if (-not $probe.HasDisplayName) {
+        return @{ Status = 'failed'; Error = $probe.Reason; Records = @(@{ id=$Item.id; action='cleanup_failed'; key=$regKey; success=$false; error="uninstall entry changed since scan ($($probe.Reason))" }) }
+    }
+
+    $planned = New-RollbackPlannedEntry -Journal $Journal -BackupDir $BackupDir -Item $Item -Kind 'uninstalled_key'
+    if (-not $planned.Ok) {
+        return @{ Status = 'persistence_failed'; Error = "journal persistence failed: $($planned.Reason)" }
+    }
+    $rid = [string]$planned.ItemId
+
+    $export = Export-RegistryKeyBackup -Key $regKey -BackupDir $BackupDir -Id ([string]$Item.id)
+    $relBackup = Get-JournalBackupFileRelative -BackupDir $BackupDir -Path ([string]$export.Path)
+    # 没有备份就不删：否则这条删除既无法回滚，也无法向 T3 证明「这是本轮做的」。
+    # 结构化返回而不是 throw —— 抛出去会被外层 catch 记成普通 cleanup_failed，
+    # 丢掉「备份缺失」这个真正的原因（AGENTS.md 陷阱 15 的教训）。
+    if (-not $export.Ok -or [string]::IsNullOrWhiteSpace($relBackup)) {
+        $reason = if ($export.Ok) { 'backup path outside backup dir' } else { [string]$export.Reason }
+        return @{ Status = 'persistence_failed'; Error = $reason; Records = @(@{ id=$Item.id; action='cleanup_failed'; key=$regKey; success=$false; error="uninstalled_key_backup_failed: $reason" }) }
+    }
+    $st1 = Set-RollbackEntryState -Journal $Journal -BackupDir $BackupDir -ItemId $rid -Fields @{
+        state = 'backup_created'
+        backup_file = $relBackup
+        backup_file_sha256 = [string]$export.Sha256
+    }
+    if (-not $st1.Ok) {
+        return @{ Status = 'persistence_failed'; Error = "journal persistence failed: $($st1.Reason)" }
+    }
+
+    $del = Invoke-RegExe -Arguments @('delete', $regKey, '/f')
+    if (-not $del.ok) {
+        $null = Set-RollbackEntryState -Journal $Journal -BackupDir $BackupDir -ItemId $rid -Fields @{ state = 'mutation_failed' }
+        $reason = "reg delete failed with exit code $($del.exit_code): $($del.error)"
+        return @{ Status = 'failed'; Error = $reason; Records = @(@{ id=$Item.id; action='cleanup_failed'; key=$regKey; success=$false; error=$reason }) }
+    }
+
+    $post = Confirm-RegistryTargetAbsent -Key $regKey
+    $baseline = Get-ParentBaselineSnapshot -Key ([string](Get-RegistryParentPath -Key $regKey))
+    $st2 = Set-RollbackEntryState -Journal $Journal -BackupDir $BackupDir -ItemId $rid -Fields @{
+        state = 'mutation_succeeded'
+        absent_confirmed_after_mutation = [bool]$post.Absent
+        parent_baseline = $baseline
+    }
+    if (-not $st2.Ok) {
+        return @{ Status = 'persistence_failed'; Error = "journal persistence failed: $($st2.Reason)"; Unjournaled = @{ ItemId = $rid; Kind = 'uninstalled_key'; Target = $regKey } }
+    }
+    return @{ Status = 'deleted'; Records = @(@{ id=$Item.id; action='uninstalled_key_deleted'; key=$regKey; success=$true }) }
+}
+
+function Get-ItemSkipVerdict {
+    <#
+    .SYNOPSIS
+        前置过滤：这一项为什么不能进入清理（$null = 可以清理）。
+    .DESCRIPTION
+        uninstalled_software 是 issue #12 新引入的可清理种类，不能拿旧注册表残留的
+        白名单来拦：whitelist.json 第一条 `.*Microsoft\\Windows\\CurrentVersion\\.*`
+        的设计意图是「不要按名称匹配删 Windows 组件键」，而孤儿卸载键恰好全在这条路径下，
+        会被 100% 静默跳过。对它改用更窄的白名单——只放行 Uninstall 根下的直接子键；
+        真正保护删除的是 Phase 3 的形状/存在性/DisplayName 三重校验与逐项备份。
+        白名单里那条 CurrentVersion 规则**不要删**：普通 registry_key 条目的防护仍靠它。
+    #>
+    param([Parameter(Mandatory)]$Item)
+
+    if ([string]$Item.kind -eq 'uninstalled') {
+        if (-not (Test-UninstalledKeyShape -Key $Item.key)) {
+            return @{
+                code   = 'uninstalled_key_out_of_scope'
+                Detail = " - $($Item.key)"
+                Log    = @{ id=$Item.id; action='skipped_out_of_scope'; success=$false; reason='uninstalled_key_not_direct_child' }
+            }
+        }
+    } elseif (Test-Whitelisted -Path $Item.path -Key $Item.key -ServiceName $Item.name) {
+        return @{ code = 'whitelisted'; Detail = ''; Log = @{ id=$Item.id; action='skipped_whitelisted'; success=$false } }
+    }
+    if ($Item.risk -eq 'danger') {
+        return @{ code = 'danger'; Detail = " - $($Item.reason)"; Log = @{ id=$Item.id; action='skipped_danger'; success=$false } }
+    }
+    return $null
+}
+
+function Get-ReportCleanupItem {
+    <#
+    .SYNOPSIS
+        把报告里各类残留展开成统一的待清理候选列表。
+    .DESCRIPTION
+        uninstalled_software 只收 actionable=true 的条目（issue #12）——报告层已按
+        「安装目录缺失 AND 卸载程序缺失」判定，其余条目选中也不可能有清理动作。
+        这里再过滤一次是纵深防御：ConfirmFile 是外部输入，不能只信报告层。
+        其余分类原样展开；单对象与数组都要能吃（ConvertFrom-Json 的形状随条目数变化）。
+    #>
+    param([Parameter(Mandatory)]$Report)
+
+    $result = @()
+    foreach ($item in @($Report.uninstalled_software)) {
+        if ($null -ne $item -and $item.actionable -eq $true) { $result += $item }
+    }
+    $cats = @('filesystem_residuals','registry_residuals','ghost_services','ghost_tasks',
+              'startup_residuals','shell_residuals','path_residuals')
+    foreach ($cat in $cats) {
+        $items = $Report.$cat
+        if (-not $items) { continue }
+        if ($items -is [array] -or $items -is [System.Collections.IList]) { $result += @($items) }
+        else { $result += $items }
+    }
+    return $result
 }
 
 function Add-CleanupFailure {
@@ -595,18 +816,12 @@ function Main {
          return
     }
 
-    # 汇总所有项目到统一列表（含 shell_residuals 分类）
-    $allItems = @()
-    foreach ($cat in @('filesystem_residuals','registry_residuals','ghost_services','ghost_tasks','startup_residuals','shell_residuals','path_residuals')) {
-        $items = $report.$cat
-        if ($items) {
-            if ($items -is [array] -or $items -is [System.Collections.IList]) {
-                $allItems += @($items)
-            } else {
-                $allItems += $items
-            }
-        }
-    }
+    # 汇总所有项目到统一列表（含 shell_residuals / uninstalled_software 分类）
+    #
+    # uninstalled_software 只有 actionable=true 的条目进来（issue #12）：报告层已按
+    # 「安装目录缺失 AND 卸载程序缺失」判定，其余条目在报告里 actionable=false，
+    # 选中它们也不可能被清理。这里再过滤一次是纵深防御——ConfirmFile 是外部输入。
+    $allItems = @(Get-ReportCleanupItem -Report $report)
     # B-M4 修复：按 Mode 筛选
     # Mode A: 自动清理 Safe 项
     # Mode B: 自动清理 Safe 项，Caution 项仅标记（用户需逐项确认，由调用者控制）
@@ -672,14 +887,10 @@ function Main {
     # 且这些消息是正常流程状态而非告警
     $eligibleItems = @()
     foreach ($item in $cleanupItems) {
-        if (Test-Whitelisted -Path $item.path -Key $item.key -ServiceName $item.name) {
-            Write-Output "$prefix SKIP (whitelisted): $($item.id)"
-            $log.Add(@{ id=$item.id; action='skipped_whitelisted'; success=$false })
-            continue
-        }
-        if ($item.risk -eq 'danger') {
-            Write-Output "$prefix SKIP (danger): $($item.id) - $($item.reason)"
-            $log.Add(@{ id=$item.id; action='skipped_danger'; success=$false })
+        $skip = Get-ItemSkipVerdict -Item $item
+        if ($null -ne $skip) {
+            Write-Output "$prefix SKIP ($($skip.code)): $($item.id)$($skip.Detail)"
+            $log.Add($skip.Log)
             continue
         }
         $eligibleItems += $item
@@ -1121,6 +1332,20 @@ function Main {
                         break
                     }
                     $log.Add(@{ id=$item.id; action='registry_deleted'; key=$regKey; success=$true })
+                }
+            }
+
+            # ── 孤儿卸载项删除（只删这一个注册项，实现见 Remove-UninstalledRegistryEntry）──
+            if ($itemKinds -contains 'uninstalled_key') {
+                Write-Output "$prefix   Deleting uninstall entry: $($item.key)"
+                $uni = Remove-UninstalledRegistryEntry -Item $item -Journal $journal -BackupDir $backupDir -DryRun:$DryRun
+                foreach ($rec in @($uni.Records)) { $log.Add($rec) }
+                if ($uni.Status -eq 'persistence_failed') {
+                    Add-CleanupFailure -Log $log -Item $item -ErrorText ([string]$uni.Error)
+                    Write-Error "  → 日志落盘失败，已停止后续破坏性操作: $($uni.Error)"
+                    if ($uni.Unjournaled) { $unjournaledMutations += , $uni.Unjournaled }
+                    $persistenceError = $true
+                    break
                 }
             }
 

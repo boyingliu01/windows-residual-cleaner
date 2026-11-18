@@ -14,8 +14,9 @@ function Test-RollbackRestorable {
     .SYNOPSIS
         kind -> 是否可恢复 + 不可恢复原因（REQ-018 / DD-006）。
     .DESCRIPTION
-        registry_key / startup_value 经备份 .reg 恢复；path_entry 经
-        machine_path_original 整作用域恢复（REQ-021）。
+        registry_key / startup_value / uninstalled_key 经备份 .reg 恢复；path_entry 经
+        machine_path_original 整作用域恢复（REQ-021）。uninstalled_key（孤儿卸载项）
+        与 registry_key 的区别只在探测/探针的键路径校验，恢复手段相同。
         path_deleted（文件/目录删除）、service、task 按 DD-006 不可恢复，
         必须给出如实原因——journal 是「完整交代」，不是选择性遗忘。
         未知 kind 一律 fail-closed 判不可恢复，绝不抛异常中断回滚。
@@ -25,6 +26,7 @@ function Test-RollbackRestorable {
     switch ($Kind) {
         'registry_key'  { return @{ Restorable = $true; Reason = '' } }
         'startup_value' { return @{ Restorable = $true; Reason = '' } }
+        'uninstalled_key' { return @{ Restorable = $true; Reason = '' } }
         'path_entry'    { return @{ Restorable = $true; Reason = '' } }
         'path_deleted'  { return @{ Restorable = $false; Reason = 'not_restorable_file_content' } }
         'service'       { return @{ Restorable = $false; Reason = 'not_restorable_service' } }
@@ -206,7 +208,7 @@ function Get-RollbackVerdict {
         return $base
     }
 
-    $isRegistry = ($kind -eq 'registry_key' -or $kind -eq 'startup_value')
+    $isRegistry = ($kind -eq 'registry_key' -or $kind -eq 'startup_value' -or $kind -eq 'uninstalled_key')
     if ($isRegistry) {
         if ($SignIiDetected) {
             $base.Verdict = 'conflict'

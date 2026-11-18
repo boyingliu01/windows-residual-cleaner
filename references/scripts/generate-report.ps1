@@ -14,6 +14,49 @@ function Set-Id {
     return "{0}{1:D3}" -f $prefix, $counters[$key]
 }
 
+# uninstalled_software 的「可清理」判定（纯函数，issue #12）。
+#
+# 只有证据强到「这个卸载项背后的东西已经不在了」才允许删注册项：
+#   - InstallLocation 非空**且**目录已不存在；
+#   - UninstallString 解析出的 exe 非空**且**文件已不存在。
+# 两者必须同时成立。索引成员关系（scan-uninstalled 的 confidence=low）不足以单独支撑：
+# 「索引里没有」在两个方向上都可能错（索引构建失败、软件名被改写），
+# 而删掉一个仍然存在的软件的卸载项会让它永远无法正常卸载。
+# 这里重算而不是读 confidence：报告层不该依赖上游字符串的措辞。
+function Test-UninstalledActionable {
+    param([Parameter(Mandatory)]$Item)
+
+    $installLocation = [string]$Item.install_location
+    $installMissing = $false
+    if (-not [string]::IsNullOrWhiteSpace($installLocation)) {
+        $clean = [Environment]::ExpandEnvironmentVariables($installLocation.Trim('"').Trim("'"))
+        $installMissing = (-not [string]::IsNullOrWhiteSpace($clean)) -and (-not [System.IO.Directory]::Exists($clean))
+    }
+
+    $uninstallString = [string]$Item.uninstall_string
+    # 系统卸载器（MsiExec / rundll32 / regsvr32）永远不在一处固定路径上，
+    # 「exe 不存在」对它们不成立；与 scan-uninstalled.ps1 的 Get-UninstallExePath 同一判据。
+    $uninstallMissing = $false
+    if (-not [string]::IsNullOrWhiteSpace($uninstallString) -and
+        $uninstallString -notmatch '^\s*(MsiExec|rundll32|regsvr32)\.exe') {
+        $exePath = $null
+        if ($uninstallString -match '^"([^"]+?\.exe)"') { $exePath = $Matches[1] }
+        elseif ($uninstallString -match '^([^"]+?\.exe)(?:\s|$)') { $exePath = $Matches[1] }
+        if (-not [string]::IsNullOrWhiteSpace($exePath)) {
+            $exePath = [Environment]::ExpandEnvironmentVariables($exePath)
+            $uninstallMissing = -not [System.IO.File]::Exists($exePath)
+        }
+    }
+
+    if ($installMissing -and $uninstallMissing) {
+        return @{ actionable = $true; reason = 'InstallLocation directory missing and uninstaller exe missing' }
+    }
+    return @{
+        actionable = $false
+        reason     = 'evidence too weak: InstallLocation directory and uninstaller exe are not both missing'
+    }
+}
+
 function Main {
     # ADR-001: 用 [ref] 回传退出码；不得 exit（会杀死测试宿主），也不得 `return <code>`
     param([ref]$ExitCode)
@@ -48,8 +91,9 @@ function Main {
     # ID counters with D3 zero-padding
     # fs_XXX = filesystem, reg_XXX = registry, svc_XXX = ghost_services,
     # tsk_XXX = ghost_tasks, str_XXX = startup_residuals,
-    # shl_XXX = shell_residuals (COM/ContextMenu), path_XXX = PATH entries
-    $counters = @{fs=0; reg=0; svc=0; tsk=0; str=0; shl=0; path=0}
+    # shl_XXX = shell_residuals (COM/ContextMenu), path_XXX = PATH entries,
+    # uni_XXX = uninstalled_software (orphan uninstall entries, see Set-UninstalledActionable)
+    $counters = @{fs=0; reg=0; svc=0; tsk=0; str=0; shl=0; path=0; uni=0}
 
     # Assign IDs to filesystem residuals
     $fsItems = @()
@@ -123,17 +167,42 @@ function Main {
     # 正确写法：先判空赋给变量，再用 **[array]** 显式转型（**不能**写成
     # `[array]( if ... )` —— `if` 不是表达式，那样是语法错误）。
     # 实测：`[array]@()` → `[]`；`,@()` 会多套一层变成 `[[]]`；不转型可能得到 `{}`。
+    # candidate_directories 只进报告，**没有** id、也**不**计入 total_residuals（issue #12）。
+    # 它们「目录在、索引里没有」这一条证据太弱（解包残留、运行时目录、用户自建目录都长这样），
+    # 没有文件系统残留那套活性/受保护判定，不允许被选进清理集。actionable=false 是给
+    # Phase 2 展示用的显式信号，避免 agent 把它当成「可选但暂时不可点」。
     $candidateDirectories = @()
     if ($null -ne $uninstalled.candidate_directories) {
-        $candidateDirectories = @($uninstalled.candidate_directories)
+        foreach ($dir in @($uninstalled.candidate_directories)) {
+            $dir | Add-Member -NotePropertyName 'actionable' -NotePropertyValue $false
+            $dir | Add-Member -NotePropertyName 'actionable_reason' -NotePropertyValue 'inventory only: weak evidence, no liveness/protected-path gate'
+            $candidateDirectories += $dir
+        }
     }
     $candidateDirectories = [array]$candidateDirectories
 
-    $softwareList = @()
-    if ($null -ne $uninstalled.uninstalled_software) {
-        $softwareList = @($uninstalled.uninstalled_software)
+    # uninstalled_software（孤儿卸载注册项）可清理：分配 uni_XXX id，并只把证据足以
+    # 支撑删除的条目标成 actionable。其余保留在报告里但不可选——扫描器的两阶段判定
+    # 对「索引里没有」且「路径、卸载器都还在」的条目也判 residual(low)，那条证据不足以
+    # 删一个仍然存在的卸载项（AGENTS.md「多条件检测」：权威信号 gate 辅助信号）。
+    $softwareItems = @()
+    foreach ($item in @($uninstalled.uninstalled_software)) {
+        if ($null -eq $item) { continue }
+        $action = Test-UninstalledActionable -Item $item
+        $item | Add-Member -NotePropertyName 'id' -NotePropertyValue (Set-Id $counters 'uni' 'uni_')
+        $item | Add-Member -NotePropertyName 'risk' -NotePropertyValue 'caution'
+        $item | Add-Member -NotePropertyName 'actionable' -NotePropertyValue ([bool]$action.actionable)
+        $item | Add-Member -NotePropertyName 'reason' -NotePropertyValue ([string]$action.reason)
+        if ($action.actionable) {
+            $item | Add-Member -NotePropertyName 'key' -NotePropertyValue ([string]$item.registry_key)
+        }
+        $softwareItems += $item
     }
-    $softwareList = [array]$softwareList
+    $softwareList = [array]$softwareItems
+    $allItems = @($allItems) + @($softwareItems | Where-Object { $_.actionable })
+    # .Count 必须套在 @() 外面：只命中一条时 Where-Object 返回的是单个对象，
+    # 它的 .Count 是该对象的**属性数**（PSCustomObject 无该属性 -> $null），不是 1（陷阱 3）。
+    $cautionCount = @($allItems | Where-Object { $_.risk -eq 'caution' }).Count
 
     $report = @{
         scan_time = Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'
@@ -145,7 +214,6 @@ function Main {
             estimated_space_recoverable_mb = $estimatedSpace
         }
         uninstalled_software = $softwareList
-        # Include candidate_directories from scan-uninstalled.ps1 (L1-T8 fix)
         candidate_directories = $candidateDirectories
         filesystem_residuals = $fsItems
         registry_residuals = $regItems

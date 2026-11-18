@@ -248,7 +248,8 @@ function Get-RollbackEntryProbe {
     .SYNOPSIS
         单个条目的当前状态探测（返回 TargetState + 结构差异证据）。
     .DESCRIPTION
-        - registry_key：键不存在 -> absent；存在 -> 与备份整键结构比较。
+        - registry_key / uninstalled_key：键不存在 -> absent；存在 -> 与备份整键结构比较。
+          （uninstalled_key 是「孤儿卸载项」的 kind，备份形状与 registry_key 相同。）
         - startup_value：只比较目标 value 本身（REQ-024 比较口径）；父键或该 value
           不存在 -> absent。
         - path_entry：段在 PATH 里 -> present_match；不在 -> absent。
@@ -272,7 +273,7 @@ function Get-RollbackEntryProbe {
         if ($c.Absent) { return @{ Ok = $true; TargetState = 'absent' } }
         return @{ Ok = $true; TargetState = 'present_match' }
     }
-    if ($kind -ne 'registry_key' -and $kind -ne 'startup_value') {
+    if ($kind -ne 'registry_key' -and $kind -ne 'startup_value' -and $kind -ne 'uninstalled_key') {
         return @{ Ok = $true; TargetState = 'absent' }
     }
 
@@ -339,7 +340,7 @@ function Get-RollbackEntryParentKey {
         一个注册表类条目所属的**父键**（迹象 (ii) 的作用域）。
     .DESCRIPTION
         startup_value 的 target 是复合串 "<父键>|<value>"，其父键就是 Run/RunOnce 本身
-        （删除 value 更新的就是这个键）；registry_key 的父键是键路径的上_one 段。
+        （删除 value 更新的就是这个键）；registry_key / uninstalled_key 的父键是键路径的上_one 段。
         解析不出来时返回空串（调用方按证据不完整处理）。
     #>
     param([Parameter(Mandatory)][hashtable]$Entry)
@@ -368,7 +369,7 @@ function Get-ParentBaselineMaxByParent {
     $map = @{}
     foreach ($e in (Get-RollbackJournalEntryList -Journal $Journal)) {
         $kind = [string]$e['kind']
-        if ($kind -ne 'registry_key' -and $kind -ne 'startup_value') { continue }
+        if ($kind -ne 'registry_key' -and $kind -ne 'startup_value' -and $kind -ne 'uninstalled_key') { continue }
         $pb = $e['parent_baseline']
         if ($null -eq $pb) { continue }
         $dt = ConvertFrom-IsoUtc -Text $pb
@@ -682,7 +683,7 @@ function Invoke-RollbackRestore {
 
         $extra = @{}
         $kind = [string]$e['kind']
-        if ($kind -eq 'registry_key' -or $kind -eq 'startup_value') {
+        if ($kind -eq 'registry_key' -or $kind -eq 'startup_value' -or $kind -eq 'uninstalled_key') {
             $pk = Get-NormalizedRegKeyPath -Path (Get-RollbackEntryParentKey -Entry $e)
             $entryBaseline = $null
             if ($pk -ne '' -and $null -ne $baselineByParent[$pk]) { $entryBaseline = $baselineByParent[$pk] }

@@ -7,7 +7,39 @@ All notable changes to this project will be documented in this file.
 > （例如曾把 `setup.ps1` 不可插桩说成结构性限制）以「**更正**」附注标出，
 > 而不改写历史条目本身。
 
-## [1.4.14.1] - 2026-11-18
+## [1.4.14.2] - 2026-11-18
+
+### 修复：孤儿卸载注册项「报告得出来、清理不了」（issue #12）
+
+**影响范围：`references/scripts/{generate-report,confirm-cleanup,clean-residuals}.ps1`
+与回滚写入端**。`uninstalled_software`（卸载项还在、安装目录和卸载程序都没了）此前没有
+`id`、不在 `confirm-cleanup.ps1` 的选择集里、`clean-residuals.ps1` 也没有处理分支；即使
+硬塞进去，也会被 `whitelist.json` 第一条 `.*Microsoft\\Windows\\CurrentVersion\\.*`
+100% 拦下——典型的孤儿卸载项全在那条路径下。用户只能让 agent 手工 `reg delete`，
+把备份与回滚整个绕过。
+
+- **报告层**：`uninstalled_software` 一律分配 `uni_XXX` id、`risk=caution`，并新增
+  `actionable` / `reason`。只有 `Test-UninstalledActionable` 判为「`InstallLocation` 非空且
+  缺失 **并且** 卸载 exe 非空且缺失」的条目才是 `actionable: true`（MSI 式卸载串无法判定，
+  按不可清理处理），也只有它们带 `key` 并计入 `summary`。`candidate_directories` 显式
+  `actionable: false` + 原因，无 id、不计入汇总——证据只有「目录在、索引里没有」，太弱。
+- **选择层**：`confirm-cleanup.ps1` 的选择集纳入 `uninstalled_software`（仅 `actionable`），
+  数组合并前统一 `@()` 规整（避免 `@($null)` 读出 `$null.id`）。**`SelectIds` 传入报告里
+  不存在/不可选的 id 由「告警后跳过」改为报错返回 1**：旧行为会静默产出一份少一项的确认
+  清单，而用户以为自己选了它。Danger 仍是告警跳过（那是预期不可选）。
+- **执行层**：新增 `uninstalled_key` 变更种类（journal 可恢复，经 `.reg` 备份），Phase 3
+  独立分支：形状必须落在三根之一且**恰好一层子键**（`Test-UninstalledKeyShape`，
+  整串正则而非 `StartsWith`，`UninstallX\` 与 `...\Uninstall\A\B` 都不放行）；
+  删除前用 `Test-UninstalledKeyPresent` 复核键仍在且 `DisplayName` 与报告一致，变了就拒绝。
+  白名单仅对这一种类改走形状校验，**只删注册项**，不碰 SharedDLLs / Installer 缓存 / 目录。
+- **顺带修复**：`generate-report.ps1` 的 `$cautionCount` 在只命中一条时取到标量
+  `.Count`（PS 5.1 返回 `$null`，陷阱 3），汇总里 `caution` 变成空值——本次新增的
+  `uni_XXX` 是 caution，直接把这个既有缺陷暴露成「报告多了却统计不到」。
+- **测试**：新增 `tests/unit/uninstalled-cleanup.Tests.ps1`（27 条：可清理判定七种证据形态、
+  形状正反例、真实 HKCU 键的 DisplayName 探测、kind 映射、Main 级 DryRun 端到端、删除前
+  六道运行期校验——缺备份目录 / 形状越界 / 键已消失 / DisplayName 已变 / `.reg` 备份失败 /
+  完整成功链路，SelectIds 未知 id 报错）；`tests/unit/main-coverage.Tests.ps1` 补
+  `actionable` 选择集与未知 id 报错。
 
 ### 修复：`-DryRun` 也强制要求管理员，非提权会话无法预览（issue #13）
 

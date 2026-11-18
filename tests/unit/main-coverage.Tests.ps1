@@ -111,6 +111,34 @@ Describe 'confirm-cleanup.ps1 Main (in-process, ADR-001 unlocked)' {
         $ids | Should -Not -Contain 'path_001'
     }
 
+    It 'SelectIds with an id that is not selectable returns 1 instead of silently dropping it (issue #12)' {
+        . $script:ConfirmScript
+        $ReportPath = $script:report; $OutputPath = $script:out
+        $NonInteractive = $true; $AutoSelect = 'none'; $SelectIds = '["fs_001","fs_999"]'
+        Main -ExitCode ([ref]$script:rc) *>&1 | Out-Null
+        $script:rc | Should -Be 1 -Because '拼错的 id 会产出一份少一项的确认清单，必须报错'
+        Test-Path $script:out | Should -Be $false
+    }
+
+    It 'uninstalled_software items are selectable only when actionable (issue #12)' {
+        . $script:ConfirmScript
+        $rptScratch = [System.IO.File]::ReadAllText($script:report, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $rptScratch | Add-Member -NotePropertyName 'uninstalled_software' -NotePropertyValue @(
+            [PSCustomObject]@{ id='uni_001'; name='DeadApp'; registry_key='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\DeadApp'; risk='caution'; actionable=$true; reason='r' }
+            [PSCustomObject]@{ id='uni_002'; name='WeakEvidenceApp'; registry_key='HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WeakEvidenceApp'; risk='caution'; actionable=$false; reason='r' }
+        ) -Force
+        [System.IO.File]::WriteAllText($script:report, ($rptScratch | ConvertTo-Json -Depth 6), [System.Text.UTF8Encoding]::new($false))
+
+        $ReportPath = $script:report; $OutputPath = $script:out
+        $NonInteractive = $true; $AutoSelect = 'all'; $SelectIds = ''
+        Main -ExitCode ([ref]$script:rc) *>&1 | Out-Null
+        $script:rc | Should -Be 0
+        $idsDoc = [System.IO.File]::ReadAllText($script:out, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $ids = @($idsDoc)
+        $ids | Should -Contain 'uni_001' -Because '证据充分（可清理）的孤儿卸载项必须可选'
+        $ids | Should -Not -Contain 'uni_002' -Because 'actionable=false 的条目没有可执行的清理动作，不应出现在确认清单里'
+    }
+
     It 'invalid SelectIds JSON returns 1 instead of exiting' {
         . $script:ConfirmScript
         $ReportPath = $script:report; $OutputPath = $script:out

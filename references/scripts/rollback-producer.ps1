@@ -21,13 +21,15 @@ function ConvertTo-RollbackJournalTarget {
           - 其余 kind 直接用该对象的标识（键路径 / 文件路径 / 服务名 / 任务名 / PATH 段）。
     #>
     param(
-        [Parameter(Mandatory)][ValidateSet('registry_key', 'startup_value', 'path_entry', 'path_deleted', 'service', 'task')][string]$Kind,
+        [Parameter(Mandatory)][ValidateSet('registry_key', 'startup_value', 'path_entry', 'path_deleted', 'service', 'task', 'uninstalled_key')][string]$Kind,
         [Parameter(Mandatory)]$Item
     )
 
     switch ($Kind) {
         'startup_value' { return ('{0}|{1}' -f [string]$Item.key, [string]$Item.value_name) }
         'registry_key'  { return [string]$Item.key }
+        # 孤儿卸载项：只删这一个子键，有别于 vendor/COM 的 registry_key 分支（见 clean-residuals）。
+        'uninstalled_key' { return [string]$Item.key }
         'path_entry'    { return [string]$Item.path }
         'path_deleted'  { return [string]$Item.path }
         'service'       { return [string]$Item.name }
@@ -50,8 +52,13 @@ function Get-ItemMutationKindList {
           task           -> `name -and expanded_path -and -not binary_path`
           startup_value  -> `key -and (type -eq 'startup' -or value_name)`（禁止整键删除）
           registry_key   -> `key` 且不属于上一行
+          uninstalled_key -> `kind -eq 'uninstalled'`（issue #12：孤儿卸载项只删该子键）
         顺序固定为「Phase 2 先、Phase 3 后」，与真实执行顺序一致；同一条 item 可以同时
         命中多类（例如既有安装目录又有注册表键），因此返回**数组**。
+
+        uninstalled 条目有 `name`，但**没有** `binary_path` / `expanded_path` / `path`，
+        所以命中 service / task / path_deleted / path_entry 的判据对它都不成立；
+        只有显式 `kind -eq 'uninstalled'` 才会进 Phase 3 的注册表分支。
 
         返回值**不得**写成 `return , $kinds`：那样调用方的 `@(Get-ItemMutationKindList …)`
         会多套一层，得到「Count=1、唯一元素为 Object[]」的数组，于是
@@ -69,6 +76,7 @@ function Get-ItemMutationKindList {
     if ($isPathEntry -and $Item.path) { $kinds += 'path_entry' }
     if ($Item.key) {
         if (([string]$Item.type) -eq 'startup' -or $Item.value_name) { $kinds += 'startup_value' }
+        elseif (([string]$Item.kind) -eq 'uninstalled') { $kinds += 'uninstalled_key' }
         else { $kinds += 'registry_key' }
     }
     return $kinds

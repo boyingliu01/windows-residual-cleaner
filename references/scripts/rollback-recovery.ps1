@@ -648,7 +648,7 @@ function Get-ParentBaselineMax {
     $max = $null
     foreach ($e in $entries) {
         $kind = [string]$e['kind']
-        if ($kind -ne 'registry_key' -and $kind -ne 'startup_value') { continue }
+        if ($kind -ne 'registry_key' -and $kind -ne 'startup_value' -and $kind -ne 'uninstalled_key') { continue }
         $pb = $e['parent_baseline']
         if ($null -eq $pb) { continue }
         $dt = ConvertFrom-IsoUtc -Text $pb

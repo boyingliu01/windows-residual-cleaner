@@ -28,6 +28,7 @@ pipeline creates a restore point.
 | Individual scans | `build-installed-index.ps1`, `scan-uninstalled.ps1`, `scan-filesystem-residuals.ps1`, `scan-residuals.ps1`, `generate-report.ps1` | **No** — these only `Write-Warning` when unelevated |
 | Confirm | `confirm-cleanup.ps1` | No |
 | Delete | `clean-residuals.ps1`, `create-restore-point.ps1` | **Yes** — abort with exit code `2` |
+| DryRun preview | `clean-residuals.ps1 -DryRun` | **No** — zero-side-effect preview, exits `0` unelevated |
 
 So the honest shape is:
 
@@ -65,9 +66,15 @@ After scan completes, the agent **MUST** read `final-report.json` and present a 
 ```
 === 扫描结果 ===
 
-【已卸载软件】2 项
-  1. foobar2000 汉化版 | 风险: Safe | 残留: 注册表项 + 空目录
-  2. Minisoft Toolbox   | 风险: Safe | 残留: 注册表项
+【已卸载软件】2 项（可清理）   ← `uninstalled_software` 里 `actionable: true` 的条目
+  1. uni_001 | foobar2000 汉化版 | Caution | 卸载项: HKLM\...\Uninstall\foobar2000
+  2. uni_002 | Minisoft Toolbox   | Caution | 卸载项: HKCU\...\Uninstall\Minisoft
+
+【已卸载软件（仅报告）】N 项  ← `actionable: false`：安装目录或卸载程序至少还有一个在，
+  只列出，不可选、不可清理（见 `actionable_reason`）
+
+【候选目录（仅报告）】155 项  ← `candidate_directories`：只有「目录在但索引里没有」这一条
+  弱证据，不参与清理；空目录请以【文件系统残留】为准
 
 【文件系统残留】163 项 (约 12GB)
   1. fs_001 | C:\ProgramData\Tencent\QQBrowser | Safe | 空目录 | 0MB
@@ -94,6 +101,10 @@ Then the agent **MUST** ask:
 - Agent MUST NOT auto-select any items. Wait for user input.
 - Agent MUST present items in a readable format (table or grouped list).
 - Danger items MUST be shown but clearly marked as "不可清理".
+- Items with `actionable: false` (`uninstalled_software` entries whose install directory or
+  uninstaller still exists, and every `candidate_directories` entry) MUST be shown, if at all,
+  only in the "仅报告" group. **Never** promise they can be cleaned, and never translate a user
+  request for them into an ID — they have no cleanable action.
 - If there are >20 items, agent MUST paginate or group by category.
 
 ### Phase 3: Parse User Selection (Agent translates natural language to IDs)

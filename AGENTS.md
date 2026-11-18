@@ -662,6 +662,19 @@ It 'Works against real registry data' {
   必须同提交改这两个字面量**，否则 Gate 0 直接 BLOCK——hook 提示的
   `node scripts/sync-version.cjs` 属于 xp-gate 自己的仓库，本仓库没有这个脚本。
 - MSI 安装软件的 `UninstallString` 为 `MsiExec.exe /X{GUID}` 格式，当前逻辑已跳过此类条目
+- **`uninstalled_software` 只有 `actionable: true` 才可清理**（2026-11-18，issue #12）。
+  判定在 `generate-report.ps1` 的 `Test-UninstalledActionable`：`InstallLocation` **非空且缺失**
+  **并且** `UninstallString` 解析出的 exe **非空且缺失**，两者缺一不可；MSI 式卸载串按
+  「无法判定」处理。条目一律带 `uni_XXX` id 与 `risk=caution`，但只有可清理项带 `key`
+  并计入 `summary`——不可清理项既没有可执行目标，也不该让用户以为「右上角总数」就是可清数。
+  清理动作**只有**「删这一个 Uninstall 直接子键」：不碰 SharedDLLs / Installer 缓存 / 目录。
+  这条路径**故意绕过** `whitelist.json` 的 `.*Microsoft\\Windows\\CurrentVersion\\.*`
+  （它会 100% 命中所有孤儿卸载键），改用 `Test-UninstalledKeyShape` 要求「三根之一 + 恰好一层子键」；
+  真正的保护是 Phase 3 的形状复核 + `DisplayName` 与报告一致 + 逐项 `.reg` 备份（REQ-006）。
+  白名单里那条规则不要删——它保护的是按名称匹配到的 vendor/COM 残留。
+- **`candidate_directories` 永久只读**：证据只有「目录在、索引里没有」，没有文件系统残留那套
+  活性/受保护判定，因此无 id、不计入 `summary`，条目带 `actionable: false` + `actionable_reason`。
+  想清理其中某个空目录，应走 `scan-filesystem-residuals.ps1` 的 `fs_XXX` 通道。
 - 系统 PATH 损坏（如 `C:\Program Fi;es\Memurai\`）会被如实报告，但不会被自动修复
 - 计划任务中的 bare exe 名（如 `sc.exe`）需要 PATH 解析，当前策略是跳过而非解析
 - `confirm-cleanup.ps1` 在 OpenCode 内置终端中无法交互（`Read-Host` 闪退），必须在独立 Windows Terminal 中运行
@@ -888,3 +901,9 @@ if ($MyInvocation.InvocationName -ne '.') {
   与「真的没删」在用户视角完全一样，汇总还是 `0 failed`。
   **判断口径**：删除类操作的「跳过」必须与「执行后复查」用**同一份**存在性判定，
   且该判定要有真实存在的正例测试；汇总数字只有在逐条复验过之后才能当证据。
+- 2026-11-18: `uninstalled_software` 从「只进报告」变成可清理（issue #12）。
+  **判断口径**：**「报告得出来」与「能安全执行」是两件事，中间隔着一道证据门槛**——
+  报告把一切可疑的东西列出来是对的，但只有证据足以支撑「目标已经不在了」的条目才配拿到
+  执行路径；其余条目显式标 `actionable: false`，而不是让用户选中后什么也没发生。
+  同类判据：现有的白名单是按「残留种类」写的，新种类必须回答「它是否也在这份名单的射程里、
+  为什么该拦/不该拦」，否则会得到「全部静默跳过、汇总 0 failed」（与陷阱 17 同形）。

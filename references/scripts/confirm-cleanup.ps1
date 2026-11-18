@@ -12,6 +12,7 @@ param(
 function Get-ItemContent {
     param([PSCustomObject]$Item, [string]$Category)
     switch ($Category) {
+        'uninstalled_software' { if ($Item.registry_key) { return "$($Item.name) -> $($Item.registry_key)" } }
         'filesystem_residuals' { if ($Item.path) { return $Item.path } }
         'registry_residuals'   { if ($Item.key)  { return $Item.key } }
         'ghost_services'       { if ($Item.name)  { return "$($Item.name) -> $($Item.binary_path)" } }
@@ -182,6 +183,7 @@ function Main {
     }
 
     $categoryLabels = @{
+        uninstalled_software = '已卸载软件'
         filesystem_residuals = '文件系统'
         registry_residuals  = '注册表'
         ghost_services      = '幽灵服务'
@@ -194,12 +196,20 @@ function Main {
     $riskOrder = @{ safe = 0; caution = 1; danger = 2 }
     $script:riskLabels = @{ safe = 'Safe'; caution = 'Caution'; danger = 'Danger' }
 
-    $categoryKeys = @('filesystem_residuals','registry_residuals','ghost_services','ghost_tasks','startup_residuals','shell_residuals','path_residuals')
+    # 先 @() 规整再判空：分组缺失时 $report.($catKey) 是 $null，@($null) 却是一个
+    # 含 $null 的集合（陷阱 6 同族），直接 foreach 会读到 $null.id。
+    $categoryKeys = @('uninstalled_software','filesystem_residuals','registry_residuals','ghost_services','ghost_tasks','startup_residuals','shell_residuals','path_residuals')
 
     $allItems = @()
     foreach ($catKey in $categoryKeys) {
-        $catItems = $report.($catKey)
-        if (-not $catItems) { continue }
+        $catItems = @($report.($catKey) | Where-Object { $null -ne $_ })
+        if ($catItems.Count -eq 0) { continue }
+        # uninstalled_software 里只有 actionable=true 的条目可选（issue #12）：
+        # 其余条目仍然进报告供展示，但选中也不会有可执行的清理动作。
+        if ($catKey -eq 'uninstalled_software') {
+            $catItems = @($catItems | Where-Object { $_.actionable -eq $true })
+            if ($catItems.Count -eq 0) { continue }
+        }
         foreach ($item in $catItems) {
             $riskVal = $riskOrder[$item.risk]
             if ($null -eq $riskVal) { $riskVal = 1 }
@@ -245,24 +255,35 @@ function Main {
 
         # If SelectIds is provided, it takes precedence over AutoSelect
         if ($SelectIds -ne '') {
+            $idList = @()
             try {
-                $idList = $SelectIds | ConvertFrom-Json
-                foreach ($id in $idList) {
-                    $matched = $script:sorted | Where-Object { $_.id -eq $id } | Select-Object -First 1
-                    if ($matched) {
-                        if ($matched.risk -eq 'danger') {
-                            Write-Warning "Skipping Danger item in SelectIds: $id"
-                        } else {
-                            $script:selectedIds[$id] = $true
-                        }
-                    } else {
-                        Write-Warning "ID not found in report: $id"
-                    }
-                }
+                # PS 5.1 的 ConvertFrom-Json 把顶层数组当成**单个**对象写进管道，
+                # 所以 `@(cmd | ConvertFrom-Json)` 包到的是数组本身（Count=1，AGENTS.md 陷阱 6）。
+                # 先赋值再 @() 规整；pwsh 7 下逐元素展开，这条同样成立。
+                $idDoc = $SelectIds | ConvertFrom-Json
+                $idList = @($idDoc)
             } catch {
                 Write-Error "Invalid SelectIds JSON: $_"
                 & $setRc 1
                 return
+            }
+            # 不存在的 id 必须报错：调用方（agent / UI）拼错一个 id 时，旧行为是
+            # Write-Warning 后继续，产出一份「少一项」的确认清单，而用户以为自己选了它
+            # （issue #12）。Danger 仍是「跳过并告警」——那是预期的不可选，不是错误。
+            $selectableIds = @($script:sorted | ForEach-Object { [string]$_.id })
+            $unknownIds = @($idList | Where-Object { $selectableIds -notcontains [string]$_ })
+            if ($unknownIds.Count -gt 0) {
+                Write-Error "Unknown ID(s) in SelectIds (not selectable in report): $($unknownIds -join ', ')"
+                & $setRc 1
+                return
+            }
+            foreach ($id in $idList) {
+                $matched = $script:sorted | Where-Object { $_.id -eq $id } | Select-Object -First 1
+                if ($matched.risk -eq 'danger') {
+                    Write-Warning "Skipping Danger item in SelectIds: $id"
+                } else {
+                    $script:selectedIds[$id] = $true
+                }
             }
         } elseif ($AutoSelect -ne 'none') {
             foreach ($item in $script:sorted) {
