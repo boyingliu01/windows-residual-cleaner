@@ -389,7 +389,9 @@ Describe 'clean-residuals.ps1 default permission path (issue #14)' {
         }
     }
 
-    It 'exits 2 when the injected identity is not admin' {
+    It 'runs -DryRun without admin (issue #13)' {
+        # 非提权会话必须能预览：DryRun 零副作用，门禁不得拦（SKILL.md 的强制预览门禁）。
+        # 修复前这里恒为退出 2，普通会话永远看不到「本来会删什么」。
         $prev = $env:WRC_TEST_IS_ADMIN
         $out = "$TestDrive\clean-no.out"
         $err = "$TestDrive\clean-no.err"
@@ -400,7 +402,33 @@ Describe 'clean-residuals.ps1 default permission path (issue #14)' {
                     '-ReportPath', "`"$script:reportPath`"", '-WhitelistPath', "`"$script:wlPath`"", '-DryRun') `
                 -Wait -PassThru -NoNewWindow `
                 -RedirectStandardOutput $out -RedirectStandardError $err
+            $p.ExitCode | Should -Be 0 -Because 'DryRun 无写入，不应要求管理员'
+            $combined = [IO.File]::ReadAllText($out) + [IO.File]::ReadAllText($err)
+            $combined | Should -Not -Match 'Administrator privileges required'
+        } finally {
+            if ($null -eq $prev) { Remove-Item Env:\WRC_TEST_IS_ADMIN -ErrorAction SilentlyContinue }
+            else { $env:WRC_TEST_IS_ADMIN = $prev }
+        }
+    }
+
+    It 'still exits 2 for a real (non-DryRun) clean without admin' {
+        # #13 只放开预览；写路径的强制管理员门禁必须原样保留（AC-013）。
+        $prev = $env:WRC_TEST_IS_ADMIN
+        $out = "$TestDrive\clean-no-write.out"
+        $err = "$TestDrive\clean-no-write.err"
+        $confirm = "$TestDrive\no-admin-confirm.json"
+        [IO.File]::WriteAllText($confirm, '["fs_g1"]')
+        try {
+            $env:WRC_TEST_IS_ADMIN = 'false'
+            $p = Start-Process -FilePath "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe" `
+                -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$script:CleanScript`"",
+                    '-ReportPath', "`"$script:reportPath`"", '-WhitelistPath', "`"$script:wlPath`"",
+                    '-ConfirmFile', "`"$confirm`"") `
+                -Wait -PassThru -NoNewWindow `
+                -RedirectStandardOutput $out -RedirectStandardError $err
             $p.ExitCode | Should -Be 2
+            ([IO.File]::ReadAllText($out) + [IO.File]::ReadAllText($err)) |
+                Should -Match 'Administrator privileges required'
         } finally {
             if ($null -eq $prev) { Remove-Item Env:\WRC_TEST_IS_ADMIN -ErrorAction SilentlyContinue }
             else { $env:WRC_TEST_IS_ADMIN = $prev }

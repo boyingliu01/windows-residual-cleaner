@@ -7,6 +7,33 @@ All notable changes to this project will be documented in this file.
 > （例如曾把 `setup.ps1` 不可插桩说成结构性限制）以「**更正**」附注标出，
 > 而不改写历史条目本身。
 
+## [1.4.14.1] - 2026-11-18
+
+### 修复：`-DryRun` 也强制要求管理员，非提权会话无法预览（issue #13）
+
+**影响范围：`clean-residuals.ps1` 的全部预览用法**。`Main` 的管理员门禁排在
+`-DryRun` 分支之前且恒为 `-Mandatory`，于是零副作用的预览在普通会话里直接退出 `2`，
+`SKILL.md` Phase 5「清理前强制 DryRun 预览」不可达——用户必须先提权才能看到
+「本来会删什么」，而提权本身又会暴露出「先确认再提权」的顺序矛盾。
+
+- **为何预览不需要管理员**：DryRun 路径零副作用——`$willDelete` 为假使
+  `$needsProtection` 恒假，7 处删除分支都有 `if ($DryRun)` 守卫，回滚日志
+  `$journal` 恒为 `$null`（T2 不触发），启动期 T3 传入 `-DryRun` 只报告不消费。
+- **修复**：改为仅非 `-DryRun` 时执行 `Test-AdminPrivilege -Mandatory`；写路径的
+  门禁与退出码 `2` 语义不变（AC-013）。
+- **测试**：原先断言「非管理员 + DryRun → 退出 2」的用例正是在锁定该缺陷，改写为
+  断言退出 `0` 且不出现 `Administrator privileges required`；另补一条
+  「非管理员 + 真实清理 → 仍退出 2」，防止修复过度放开写路径。
+  双引擎串行实测 PS 5.1 883/883、pwsh 7 883/883，PSScriptAnalyzer 0 findings。
+
+### 构建：根 `package.json` 补 `version` 字段，满足 Gate 0 的版本一致性检查
+
+- xp-gate 升级后 Gate 0 新增 version-consistency：`VERSION` 里出现的版本号，必须与
+  同目录 `package.json` 的 `version` 逐字一致，且把「文件存在但没有 `version` 字段」
+  判为漂移。本仓库根清单此前是纯 devDeps、无该字段，于是所有提交都被拦。
+- 同步补 `version: 1.4.14.1`（4 段完整格式，与 `VERSION` 同形）。今后 bump `VERSION`
+  需**同提交**改这两处；AGENTS.md 的已知限制已记录该约束。
+
 ## [1.4.14.0] - 2026-11-14
 
 ### 修复：HKCR/HKU/HKCC 键被静默判为"已消失"，清理实际跳过却报 0 failed（issue #16）

@@ -277,6 +277,24 @@ function Get-AdminState {
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Test-AdminGateBlocked {
+    <#
+    .SYNOPSIS
+        本次运行是否应因权限不足而中止（issue #13）。
+    .DESCRIPTION
+        -DryRun 零副作用（REQ-028 / AC-033）：只读报告、只打印「本来会删什么」，
+        没有任何写入，因此不要求管理员——否则 SKILL.md Phase 5 的「清理前强制
+        DryRun 预览」在非提权会话里不可达。
+        非 DryRun 的写路径仍强制管理员（AC-013）。
+
+        组合判断放在这里而不是 Main 里：Gate 3 的 CCN ratchet 是单向的，
+        Main 里多一个 `if` / `-and` 就永久抬高基线。
+    #>
+    param([switch]$DryRun)
+    if ($DryRun) { return $false }
+    return (-not (Test-AdminPrivilege -Mandatory))
+}
+
 # Admin privilege check (mandatory for write operations)
 function Test-AdminPrivilege {
     [CmdletBinding()]
@@ -499,7 +517,7 @@ function Main {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $OutputEncoding = [System.Text.Encoding]::UTF8
 
-    if (-not (Test-AdminPrivilege -Mandatory)) {
+    if (Test-AdminGateBlocked -DryRun:$DryRun) {
         & $setRc 2
         return
     }

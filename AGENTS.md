@@ -656,6 +656,11 @@ It 'Works against real registry data' {
   `!package.json` / `!package-lock.json` 反忽略）。根清单只承载 Gate 5 根跑所需的最小
   devDeps；`vitest.config.ts` 把范围限定在服务端（`ui/server/**`），与 `ui/package.json`
   的 UI 工具链**职责不重叠**。改依赖请同时提交 `package-lock.json`。
+  `package.json` 的 `version` 必须与根 `VERSION` 逐字一致（xp-gate Gate 0 的
+  version-consistency 检查，2026-11-18 起）：该检查把「文件存在但没有 `version` 字段」
+  也判为漂移，而本文此前写的是「根清单只承载 devDeps」。所以**每次 bump `VERSION`
+  必须同提交改这两个字面量**，否则 Gate 0 直接 BLOCK——hook 提示的
+  `node scripts/sync-version.cjs` 属于 xp-gate 自己的仓库，本仓库没有这个脚本。
 - MSI 安装软件的 `UninstallString` 为 `MsiExec.exe /X{GUID}` 格式，当前逻辑已跳过此类条目
 - 系统 PATH 损坏（如 `C:\Program Fi;es\Memurai\`）会被如实报告，但不会被自动修复
 - 计划任务中的 bare exe 名（如 `sc.exe`）需要 PATH 解析，当前策略是跳过而非解析
