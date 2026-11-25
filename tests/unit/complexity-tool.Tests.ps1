@@ -119,9 +119,9 @@ Describe 'Measure-PowerShellComplexity (Gate 3 PowerShell arm)' {
         #   1. 键名：gate-3.sh 读 `e.name`，生成器必须写 `name`（issue #632）；
         #   2. 测量器：门禁用 xp-gate 自己的 hooks/lib 那份，CCN 与仓库副本不同
         #      （clean-residuals.ps1 的 Main：139 vs 143）；
-        #   3. 路径拼写：门禁的 norm() 在 Windows 上是空操作（L179 的 /\\\\/ 被
-        #      bash 单引号传成四反斜杠 = 匹配两个连续反斜杠），所以基线必须存
-        #      **绝对原生反斜杠路径**；存正斜杠或相对路径都匹配不上。
+        #   3. 路径口径：仓库相对 + 正斜杠。历史上的「绝对原生反斜杠」只在作者机器上成立
+        #      （issue #7）；门禁 norm() 会剥盘符并把反斜杠统一成 "/"，后缀回退按仓库根比较，
+        #      所以绝对前缀换机器即失配。匹配行为由下一条用例实测。
         $genPath = Join-Path $PSScriptRoot '..\..\tools\Update-ComplexityBaseline.ps1'
         Test-Path -LiteralPath $genPath | Should -BeTrue
         $gen = Get-Content -LiteralPath $genPath -Raw
@@ -141,14 +141,118 @@ Describe 'Measure-PowerShellComplexity (Gate 3 PowerShell arm)' {
             '门禁测的是 xp-gate hooks/lib 里那份；用仓库副本会记录门禁看不见的 CCN（139 vs 143）'
         $gen | Should -Match '\$supportsList' -Because '门禁带 -List 比对全量函数；生成器不收集 ccn=1 的 FUNC 行就会漏条目'
 
-        # 3. 路径拼写：绝对 + 原生反斜杠（不带 -replace 转正斜杠）。
-        $relative = @($entries | Where-Object { -not [System.IO.Path]::IsPathRooted([string]$_.file) })
-        $relative.Count | Should -Be 0 -Because '门禁测量输出是绝对路径，相对路径条目一条都匹配不上'
-        $slashed = @($entries | Where-Object { ([string]$_.file).Contains('/') })
-        $slashed.Count | Should -Be 0 -Because `
-            '门禁的 norm() 在 Windows 上是空操作，基线存正斜杠会保留成正斜杠，与测量输出的反斜杠不相等'
-        $gen | Should -Not -Match "file\s*=.*-replace\s+'\\\\\\\\',\s*'/'" -Because `
-            '生成器若把路径转成正斜杠，回归 3 会静默重现'
+        # 3. 路径口径：仓库相对 + 正斜杠。绝对路径（issue #7）只在作者机器上匹配；
+        #    门禁的 norm() 会把两侧都剥掉盘符并统一成 "/"，后缀回退也按仓库根比较，
+        #    所以换成别的克隆根后，绝对前缀就是永远匹配不上的死前缀。
+        #    「能否匹配」由下一条用例用门禁原逻辑实测，这里只钉住写入形态。
+        $absolute = @($entries | Where-Object { [System.IO.Path]::IsPathRooted([string]$_.file) })
+        $absolute.Count | Should -Be 0 -Because `
+            '绝对路径带的是维护机前缀（issue #7）；换机器/换克隆目录后整份基线都匹配不上'
+        $backslashed = @($entries | Where-Object { ([string]$_.file).Contains('\') })
+        $backslashed.Count | Should -Be 0 -Because '门禁 norm() 统一成正斜杠；写入端也用正斜杠，两侧拼写一致'
+        $gen | Should -Match '\.Replace\(' -Because `
+            '生成器必须把路径分隔符统一成正斜杠，否则与门禁 norm() 的规范化结果不一致'
+    }
+
+    It '基线在仓库根不同的克隆下仍能匹配（issue #7：匹配键不得是维护机绝对路径）' {
+        # 2026-11-25 实测（issue #7）：旧基线 file 字段是 168/168 条维护机绝对路径
+        # `D:\Study\LLM\...`，在临时克隆下把同一文件 7 个函数全判成 new function 并
+        # BLOCK。xp-gate 0.38.126 的后缀回退比较的是「仓库根及其后」整段：
+        # kp=`Study/LLM/.../scan-uninstalled.ps1`，target=`Users/admin/.../scan-uninstalled.ps1`，
+        # 两者互不包含 → 回退只对「同一路径的不同前缀深度」有效，对换机器无效。
+        #
+        # 这条用例把 gate-3.sh L171-247 的 known/lookup 逐字复刻成 node 探针，喂入一个
+        # **不同仓库根**的测量路径，要求每个函数都能命中基线。判据是「能匹配」，不是
+        # 「文件里有没有 D:\」——后者钉不住真正的缺陷。
+        $node = Get-Command node -ErrorAction SilentlyContinue
+        if (-not $node) {
+            $candidate = Join-Path $env:ProgramFiles 'nodejs\node.exe'
+            if (Test-Path -LiteralPath $candidate) { $node = Get-Command $candidate }
+        }
+        if (-not $node) { Set-ItResult -Skipped -Because 'node 不在 PATH 上，无法在 Node 里复算门禁匹配'; return }
+
+        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+        $baselinePath = Join-Path $repoRoot '.xp-gate-powershell-ccn-baseline.json'
+        $doc = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+        $entries = @($doc.entries)
+        $entries.Count | Should -BeGreaterThan 0
+
+        # 测量输出在门禁里是绝对路径；这里换一个与作者机器无关的仓库根，
+        # 每个被测量的函数都要能在基线里找到（严格相等或后缀回退命中）。
+        $foreignRoot = 'C:/Users/admin/AppData/Local/Temp/wrc-skill'
+        $probe = Join-Path $TestDrive 'gate3-match-probe.cjs'
+        $probeJs = @'
+const fs = require('fs');
+const baseline = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const foreignRoot = process.argv[3];
+const repoRoot = process.argv[4];
+const entries = baseline.entries || baseline.functions || baseline;
+
+function norm(p) {
+  return String(p)
+    .split('\\').join('/')
+    .replace(/^[A-Za-z]:\//, '')
+    .replace(/^\.\//, '')
+    .replace(/^\//, '');
+}
+// Baseline paths are repo-relative by contract (the first match below enforces
+// that); fall back to stripping a root prefix for absolute spellings so this probe
+// keeps working if the write form ever regresses.
+function relToRepo(p) {
+  const s = String(p).split('\\').join('/');
+  if (!/^[A-Za-z]:\//.test(s) && !s.startsWith('/')) return s.replace(/^\.\//, '');
+  const roots = [repoRoot, norm(repoRoot)].map(r => String(r).split('\\').join('/').toLowerCase());
+  for (const r of roots) {
+    const i = s.toLowerCase().indexOf(r);
+    if (i !== -1) return s.slice(i + r.length).replace(/^\//, '');
+  }
+  return null;
+}
+
+const known = new Map();
+for (const e of entries) {
+  if (!e || !e.file) continue;
+  const fnName = e.name || e.function;
+  if (!fnName) continue;
+  known.set(norm(e.file) + '::' + fnName, Number(e.ccn) || 0);
+}
+function lookup(path, name) {
+  const key = norm(path) + '::' + name;
+  if (known.has(key)) return known.get(key);
+  const target = norm(path);
+  let hit = null;
+  for (const [k, v] of known) {
+    const [kp, kn] = k.split('::');
+    if (kn !== name) continue;
+    if (target.endsWith('/' + kp) || kp.endsWith('/' + target) || kp === target) {
+      if (hit !== null && hit !== v) return null;
+      hit = v;
+    }
+  }
+  return hit;
+}
+
+const misses = [];
+for (const e of entries) {
+  const rel = relToRepo(e.file);
+  if (rel === null) { misses.push('unrelatable:' + e.file); continue; }
+  const measured = foreignRoot + '/' + rel;
+  const v = lookup(measured, e.name || e.function);
+  if (v === null) misses.push(rel);
+}
+const summary = JSON.stringify({ total: entries.length, misses });
+console.log(summary);
+process.exit(misses.length === 0 ? 0 : 1);
+'@
+        [System.IO.File]::WriteAllText($probe, $probeJs, (New-Object System.Text.UTF8Encoding($false)))
+
+        $output = & $node.Source $probe $baselinePath $foreignRoot $repoRoot 2>&1
+        $code = $LASTEXITCODE
+        $summary = ($output | Where-Object { $_ -match '^\{' } | Select-Object -Last 1)
+        $parsed = if ($summary) { $summary | ConvertFrom-Json } else { $null }
+
+        $code | Should -Be 0 -Because "换仓库根后仍有函数在基线里匹配不到（issue #7）：基线若以维护机绝对路径为键，'$foreignRoot' 这类克隆会把它们全部误报为 new function。样本：$(($parsed.misses | Select-Object -First 5) -join '; ')"
+        $parsed.misses.Count | Should -Be 0
     }
 
     It 'ratchet 基线被 git 跟踪（否则 clone/CI 上不存在，门禁静默退回 SKIP）' {

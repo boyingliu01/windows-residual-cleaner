@@ -117,6 +117,7 @@ $raw = & $tool @measureArgs
 $over = @($raw | Where-Object { $_ -like 'OVER *' -or $_ -like 'FUNC *' })
 
 $entries = @()
+$repoRootFull = ([System.IO.Path]::GetFullPath($repoRoot)).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
 foreach ($line in $over) {
     # "<OVER|FUNC> <file>:<line> <name> ccn=<n>"
     # OVER = above threshold, FUNC = every function when -List is passed. Both must land
@@ -124,36 +125,34 @@ foreach ($line in $over) {
     # measured but the baseline lacks is reported as new.
     if ($line -match '^(?:OVER|FUNC) (.+):(\d+) (\S+) ccn=(\d+)$') {
         $fullPath = $Matches[1]
+        # Repo-relative, forward-slashed: the only spelling that survives a clone.
+        # gate-3.sh normalises both sides (strips the drive, backslashes -> "/") and
+        # falls back to a root-anchored suffix match, so "references/scripts/x.ps1"
+        # matches "<any clone root>/references/scripts/x.ps1".
+        #
+        # Was: the machine's absolute path (issue #7). That only matched on the
+        # author's machine; every other clone reported ALL functions as
+        # "new function at ccn=N" and blocked the commit. The suffix fallback added
+        # upstream compares from the repo root and cannot bridge two different roots,
+        # so it did not help. Guard: tests/unit/complexity-tool.Tests.ps1 probes
+        # the gate's own match logic with a foreign clone root.
+        $resolved = (Resolve-Path -LiteralPath $fullPath -ErrorAction SilentlyContinue).Path
+        if (-not $resolved) { $resolved = $fullPath }
+        # [System.IO.Path]::GetRelativePath is .NET Core only and throws on Windows
+        # PowerShell 5.1 (the runtime baseline here), so relativise manually.
+        $fileFull = [System.IO.Path]::GetFullPath($resolved)
+        $rel = $null
+        if ($fileFull.StartsWith($repoRootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $rel = $fileFull.Substring($repoRootFull.Length)
+        }
+        if (-not $rel) {
+            # Outside the repo (should not happen): keep the raw form rather than emit
+            # a path that normalises identically for every entry.
+            $rel = $fileFull
+        }
+        $rel = $rel.Replace('\', '/')
         $entries += [ordered]@{
-            # ABSOLUTE path with NATIVE BACKSLASHES -- exactly how the gate spells it.
-            # Nothing else matches, and the failure is silent:
-            #
-            #   * the gate measures with xp-gate's own hooks/lib/Measure-PowerShellComplexity.ps1,
-            #     which emits `$_.FullName`, i.e. `D:\Study\...\run-all.ps1`;
-            #   * it compares norm(file) + '::' + name, where gate-3.sh L179 is
-            #         function norm(p) { return String(p).replace(/\\\\/g, "/").replace(/^\.\//, ""); }
-            #     Inside the single-quoted `node -e '...'` block bash passes FOUR backslashes,
-            #     so JS receives the regex /\\\\/ -- which matches TWO CONSECUTIVE backslashes.
-            #     A single "\" is never touched: on Windows this norm() is a NO-OP.
-            #
-            # So the two sides only agree when this file spells the path the same way the
-            # gate does, backslashes and all. A forward-slashed baseline (what this tool
-            # used to write) keeps its slashes -- it is "already normalised", so the broken
-            # regex leaves it alone -- and then nothing matches: `known` stays effectively
-            # empty and EVERY function is reported "new function at ccn=N".
-            #
-            # Measured 2026-10-26, three defects stacked, each hiding the next:
-            #   1. baseline key was `function`, gate reads `e.name`      -> known empty
-            #   2. relative paths (gate measures absolute)               -> known empty
-            #   3. forward slashes vs the gate's broken norm()           -> known empty
-            # Only #1 was in the issue I filed; #2 and #3 produce the identical symptom.
-            # Do not "tidy" this back to forward slashes -- that reintroduces #3 silently.
-            #
-            # Trade-off accepted: this file is now machine-specific. Acceptable because CI
-            # does not run xp-gate's pre-commit (see .github/workflows/ci.yml); the baseline
-            # only ever serves the local ratchet. Re-running this tool on another machine
-            # rewrites the prefix.
-            file     = (Resolve-Path -LiteralPath $fullPath -ErrorAction SilentlyContinue).Path
+            file     = $rel
             function = $Matches[3]
             # BOTH keys, for the same value. xp-gate issue #632: gate-3.sh reads
             # `e.name` (`if (!e || !e.file || !e.name) continue;`) while this writer —
