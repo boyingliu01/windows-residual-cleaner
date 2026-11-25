@@ -633,7 +633,7 @@ Mock 测试对以下 Windows 系统交互代码**不可靠**，必须通过集�
 It 'Works against real registry data' {
     # 调用真实函数（不使用 Mock）
     $result = & $scriptPath
-    
+
     # 验证不变式
     $result.id | Should -BeUnique
     $result | Where-Object { $_.risk -eq 'danger' } | Should -Not -BeNullOrEmpty

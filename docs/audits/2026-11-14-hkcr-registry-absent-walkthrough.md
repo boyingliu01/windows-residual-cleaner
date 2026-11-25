@@ -86,9 +86,9 @@ index fc70ed4..3a22619 100644
 --- a/AGENTS.md
 +++ b/AGENTS.md
 @@ -498,6 +498,33 @@ $text = $script:Utf8Read.GetString([System.IO.File]::ReadAllBytes($path))
- 
+
  ---
- 
+
 +### 17. `HKCR:` / `HKU:` / `HKCC:` 不是 PSDrive：`Test-Path` 静默返回 `$false`（2026-11-13 实跑）
 +
 +PowerShell 默认只注册 `HKCU:` 与 `HKLM:` 两个注册表 PSDrive：
@@ -117,7 +117,7 @@ index fc70ed4..3a22619 100644
 +---
 +
  ## 多条件检测逻辑设计原则
- 
+
  ### 核心规则: 权威信号必须 gate 辅助信号
 @@ -852,3 +879,7 @@ if ($MyInvocation.InvocationName -ne '.') {
    **判据**：**「这个数字三个月后会变成错的吗」**——会变就改写成描述，而不是加进白名单。
@@ -148,49 +148,49 @@ index 1411771..fca29c5 100644
 +  types:
 +    patterns: ["ui/src/types/**"]
      allowed_imports: []
- 
+
 -  - name: lib
 -    paths: ["ui/src/lib/**"]
 +  lib:
 +    patterns: ["ui/src/lib/**"]
      allowed_imports: [types]
- 
+
 -  - name: hooks
 -    paths: ["ui/src/hooks/**"]
 +  hooks:
 +    patterns: ["ui/src/hooks/**"]
      allowed_imports: [types, lib]
- 
+
 -  - name: ui-primitives
 -    paths: ["ui/src/components/ui/**"]
 +  ui-primitives:
 +    patterns: ["ui/src/components/ui/**"]
      allowed_imports: [lib]
- 
+
 -  - name: components
 -    paths: ["ui/src/components/**"]
 +  components:
 +    patterns: ["ui/src/components/**"]
      allowed_imports: [ui-primitives, hooks, lib, types]
- 
+
 -  - name: app
 -    paths: ["ui/src/App.tsx", "ui/src/main.tsx"]
 +  app:
 +    patterns: ["ui/src/App.tsx", "ui/src/main.tsx"]
      allowed_imports: [components, ui-primitives, hooks, lib, types]
- 
+
 -  - name: test-support
 -    paths: ["ui/src/test/**"]
 +  test-support:
 +    patterns: ["ui/src/test/**"]
      allowed_imports: [hooks, lib, types]
- 
+
 -  - name: server
 -    paths: ["ui/server/**"]
 +  server:
 +    patterns: ["ui/server/**"]
      allowed_imports: []
- 
+
  # PowerShell layering (2026-10-24).
 diff --git a/references/scripts/rollback-backup.ps1 b/references/scripts/rollback-backup.ps1
 index c24d371..24d9bf6 100644
@@ -205,7 +205,7 @@ index c24d371..24d9bf6 100644
 +        误判成「已消失」（fail-open）。提供程序路径与 PSDrive 注册状态无关。
      #>
      param([Parameter(Mandatory)][string]$Key)
- 
+
 -    $psPath = $Key.Trim().Trim('"')
 -    if ($psPath -notmatch '^\w+\\:') {
 -        $psPath = $psPath -replace '^(HKLM|HKCU|HKCR|HKU|HKCC):?\\', '$1:\'
@@ -219,7 +219,7 @@ index c069fad..8b50839 100644
 --- a/tests/unit/doc-tables.Tests.ps1
 +++ b/tests/unit/doc-tables.Tests.ps1
 @@ -45,7 +45,11 @@ Describe 'Doc tables: 退出码表单一事实来源（2026-10-25）' {
- 
+
      It '文档中的退出码表与代码一致（运行生成器的 -Check 模式）' {
          # 这是 CI 跑的同一条命令；不一致即红。
 -        $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script:Generator -Check 2>&1
@@ -230,7 +230,7 @@ index c069fad..8b50839 100644
 +        $out = & $ps51 -NoProfile -ExecutionPolicy Bypass -File $script:Generator -Check 2>&1
          $LASTEXITCODE | Should -Be 0 -Because "退出码表漂移：$($out -join ' | ')"
      }
- 
+
 diff --git a/tests/unit/rollback-backup.Tests.ps1 b/tests/unit/rollback-backup.Tests.ps1
 index 43076c0..d87b73b 100644
 --- a/tests/unit/rollback-backup.Tests.ps1
@@ -238,7 +238,7 @@ index 43076c0..d87b73b 100644
 @@ -290,6 +290,24 @@ Describe 'Confirm-RegistryTargetAbsent / Confirm-PathEntryRemoved (REQ-024 flag
          $r.Absent | Should -BeFalse
      }
- 
+
 +    It '存在的 <Hive> 键 -> Absent=$false（HKCR/HKU/HKCC 不是 PSDrive，必须走 Registry::）' -TestCases @(
 +        @{ Hive = 'HKCR'; Key = 'HKCR\.txt' }
 +        @{ Hive = 'HKU';  Key = 'HKU\.DEFAULT' }

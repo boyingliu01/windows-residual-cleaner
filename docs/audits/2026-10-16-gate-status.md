@@ -293,5 +293,3 @@ mtime 显示为旧值，是「从其仓库拷回」的指纹，不是未发生�
 **待办**：pre-commit 三补丁需 upstream 吸收（维护者已在仓库内可取
 `githooks/hooks/pre-commit` 为源）；吸收前每次 xp-gate 部署都可能再回滚，
 以一致性测试红为信号、以 vendored 为权威拷回。
-
-

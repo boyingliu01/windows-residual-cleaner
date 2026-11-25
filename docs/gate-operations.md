@@ -74,6 +74,18 @@ hook 适配器在找不到 pwsh 时跳过测试与覆盖率**生成**，但 Stag
 加固后 Gate 5 在 PS-only 提交上会真跑 Pester 并重新生成 coverage.xml，此陷阱只剩
 「纯文档提交」时仍适用。
 
+### 1.5 Pester 与测试对齐引擎的语言盲区
+
+`xp-gate check-alignment` 的已发布语言适配器目前不发现 `.ps1` / `.Tests.ps1`：
+文件既不进入测试解析，也不进入 `unsupportedFiles`。因此在本仓运行它会给出
+`alignment_status=FAIL`、`score=0`，并把 Pester 已覆盖的需求全部报成未覆盖；
+Gate 5c 也会因缺少 `req-ids.json` 而明确 NOT CHECKED。**这不是测试失败的证据**，
+而是上游缺少 PowerShell/Pester 适配器。
+
+不得为了把这份真实报告改成 PASS 而手改 JSON、伪造 `@test` 标注或生成空的
+`req-ids.json`。在本仓，「测试与规格是否对齐」仍以 `specification.yaml`、
+Pester 用例及双引擎实跑为准；上游补齐适配器后，再用同一命令复核。
+
 ---
 
 ## 二、Gate 1 / Gate 3 的专用坑

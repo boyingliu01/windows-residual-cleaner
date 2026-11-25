@@ -107,4 +107,3 @@ powershell:
         - "references/scripts/clean-residuals.ps1"
         - "references/scripts/confirm-cleanup.ps1"
       allowed_imports: [ps-primitive, ps-rollback-lib]
-

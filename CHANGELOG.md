@@ -49,7 +49,9 @@ All notable changes to this project will be documented in this file.
   server **45/45** 通过；ESLint、TypeScript build、PSScriptAnalyzer、复杂度与架构检查通过。
 - 真实 pre-commit 链退出 0：PowerShell 行覆盖率 **84%**，Checkov **80 passed / 0 failed**，
   Semgrep 无阻塞漏洞；独立 `xp-gate check . --all` 为 **10 passed / 9 skipped**。
-- Gate 12 仍将 CRLF 文件误报为缺少 EOF 换行；Node 字节检查确认所有非空文件均以 LF 结束。
+- 文档补充 Pester 对齐适配器盲区，清理过期测试数量口径、尾随空白与选定文件的
+  EOF 换行；测试编码与 `cleanup-log` 隔离修复随代码提交。
+- Gate 12 仍将 CRLF 文件误报为缺少 EOF 换行；Node 字节检查确认已清理文件均以 LF 结束。
 - xp-gate `0.38.126` 尚无 PowerShell/Pester 测试对齐适配器，真实报告保持 `FAIL / score 0`；
   该结果不代表 918 条 Pester 用例失败，也不得通过手改报告或伪造标注消除。
 
