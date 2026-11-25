@@ -60,6 +60,19 @@ jobs:
           }
           Write-Output 'Encoding guard: all non-ASCII .ps1 files carry a UTF-8 BOM'
 
+      - name: Install semgrep (Gate 10 SAST parity)
+        run: |
+          # Gate 10 (SAST) in xp-gate's pre-commit probes for semgrep via
+          # `command -v semgrep` and degrades to WARN ("semgrep not installed")
+          # when it cannot see one. Installing it here makes the CI-side scan a
+          # real verdict instead of a silent skip. Do not add
+          # `pip install --contents ...` as a cache-poisoning preflight: the
+          # `--contents` option only exists on pip 25.3+, so it breaks the
+          # install outright on runners whose bundled pip is older (measured
+          # locally on pip 25.0.1: `no such option: --contents`).
+          python -m pip install --disable-pip-version-check -q semgrep
+          semgrep --version
+
       - name: Install Pester + PSScriptAnalyzer
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted

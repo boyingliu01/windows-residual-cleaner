@@ -182,7 +182,12 @@ $doc = [ordered]@{
 #   SyntaxError: Unexpected token '', "{" is not valid JSON
 # Measured 2026-10-24 -- a gate input that only some parsers can read is exactly
 # the trap this repo's own AGENTS.md documents for BOM + tooling.
-$json = $doc | ConvertTo-Json -Depth 5
+#
+# The trailing newline matters for the same family of reason: Gate 12 (file
+# hygiene) flags a non-empty blob whose last byte is not "\n", and this file is
+# staged by nearly every baseline regeneration. Measured 2026-11-25 -- the
+# BOM-less write below alone still let Gate 12 report `missing_eof_newline`.
+$json = ($doc | ConvertTo-Json -Depth 5) + "`n"
 $target = Join-Path $repoRoot $OutputPath
 [System.IO.File]::WriteAllText($target, $json, (New-Object System.Text.UTF8Encoding($false)))
 Write-Output ("Wrote {0} baseline entries to {1}" -f $entries.Count, $OutputPath)

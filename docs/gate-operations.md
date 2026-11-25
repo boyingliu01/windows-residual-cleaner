@@ -169,6 +169,20 @@ L157-253 的原逻辑（**`norm()` 逐字照抄**，别「顺手修正」它的�
 `%APPDATA%\Python\*\Scripts\semgrep.exe`。commit 时仍建议前置
 `C:\Program Files\nodejs`（Gate 10 verdict 解析与 Stage-2 覆盖率解析都依赖 node）。
 
+**仓内适配器的形参，import 时也会被当成钩子变量**（2026-11-25 实测）。适配器按「被钩子
+`source` 进函数作用域」设计，其中用 `$1` 判断提交类型（如 `Modified files:` 与
+`Files changed:` 两种 diff 头）。一旦某段脚本把适配器路径写进 `BASH_ENV`——本意只是让
+`exec` 出的子进程用上工具目录、顺带把 `semgrep` 的所在目录带上 PATH——这段全局代码就会
+在**每个** bash 子进程启动时再跑一遍，`$1` 变成该脚本自己的参数：
+
+```
+$ BASH_ENV=~/.config/xp-gate/adapters/gate-10.sh node -e '...'   # 以为它只设 PATH
+→ Gate 10: Semgrep SAST Security Scan...                         # 门禁在陌生上下文里跑起来了
+```
+
+**做法**：需要给子进程补工具目录时，用 `env`（`env PATH=... exec node ...`）或命令级的
+PATH 前缀，不要把适配器放进 `BASH_ENV`；也不要为它写 `.bashrc`——非交互 shell 不读。
+
 ### 3.2 适配器断言只写性质，不钉形状
 
 `powershell.sh` 的覆盖率/超时形态、`gate-10.sh` 的 semgrep 探测，断言对象都是

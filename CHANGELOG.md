@@ -7,6 +7,23 @@ All notable changes to this project will be documented in this file.
 > （例如曾把 `setup.ps1` 不可插桩说成结构性限制）以「**更正**」附注标出，
 > 而不改写历史条目本身。
 
+## [1.4.15.2] - 2026-11-25
+
+### 修复：基线文件给出 Gate 12 警告，CI 补上 semgrep
+
+`v1.4.15.1` 重生成基线后，提交时 Gate 12（文件卫生）报
+`WARN / missing_eof_newline`：`ConvertTo-Json` 的输出不带结尾换行。
+
+- `tools/Update-ComplexityBaseline.ps1` 改为写出 JSON 后补 `\n`，基线文件本身一并修正；
+  新增用例同时钉住「文件末尾是换行」与「生成器会补换行」，并已反向验证会变红。
+- CI 的 `powershell` 作业在安装 Pester 之前装上 `semgrep`：Gate 10 用
+  `command -v semgrep` 探测，runner 上没有就等于这一维度静默缺席。
+  （`pip install --contents` 需要 pip 25.3+，runner 自带的更旧，故不做该前置检查。）
+
+`v1.4.15.1` 的两个 WARN 与此无关：Gate 10 的 `tool_not_installed` 是本机
+`semgrep` 的 `pysemgrep` 依赖目录不在 git-bash 的 PATH 上（见
+[`docs/gate-operations.md`](docs/gate-operations.md#31-工具链路径与降级链)），与本轮变更无关。
+
 ## [1.4.15.1] - 2026-11-25
 
 ### 修复：Gate 3 复杂度基线改为仓库相对路径（issue #7）

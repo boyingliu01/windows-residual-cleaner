@@ -77,16 +77,10 @@ Describe 'Measure-PowerShellComplexity (Gate 3 PowerShell arm)' {
         # The invariant this guards is "no entry names a file that no longer exists",
         # NOT "the entry's literal string resolves on this machine".
         #
-        # The baseline necessarily stores ABSOLUTE paths (gate-3.sh's norm() is a no-op
-        # on Windows — see the next It block, and xp-gate issue #633), so the written
-        # prefix is the *author's* checkout, e.g. D:\Study\LLM\windows-residual-cleaner.
-        # On a CI runner the repo lives at D:\a\windows-residual-cleaner\... — asserting
-        # the literal absolute path exists would fail there for every entry, which says
-        # nothing about the repo and everything about which machine ran the test.
-        #
-        # So: strip any absolute prefix back to a repo-relative tail, then check that
-        # tail exists under the current checkout. That catches the real defect (a file
-        # renamed or deleted while its entry lingers) and is machine-independent.
+        # The baseline stores REPO-RELATIVE paths (issue #7), so the entry is
+        # resolved against the current checkout and the test is machine-independent.
+        # It used to re-anchor an author-machine absolute prefix by its tail; that
+        # machinery was removed together with the absolute paths it compensated for.
         $baselinePath = Join-Path $PSScriptRoot '..\..\.xp-gate-powershell-ccn-baseline.json'
         Test-Path -LiteralPath $baselinePath | Should -BeTrue
         $doc = [System.IO.File]::ReadAllText($baselinePath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
@@ -94,22 +88,23 @@ Describe 'Measure-PowerShellComplexity (Gate 3 PowerShell arm)' {
         $missing = @()
         foreach ($e in @($doc.entries)) {
             $rel = ([string]$e.file).Replace('/', '\')
-            # Re-anchor an absolute path by its repo-relative tail: the entry must end
-            # with "<sep>references\scripts\..." / "<sep>tools\..." / "<sep>setup.ps1",
-            # i.e. one of the analysis-path roots. Use the longest matching root.
-            if ([System.IO.Path]::IsPathRooted($rel)) {
-                $matched = $false
-                foreach ($root in @('references\scripts', 'tools', 'setup.ps1')) {
-                    $idx = $rel.IndexOf('\' + $root + '\')
-                    if ($idx -ge 0) { $rel = $rel.Substring($idx + 1); $matched = $true; break }
-                    if ($rel.EndsWith('\' + $root)) { $rel = $root; $matched = $true; break }
-                }
-                if (-not $matched) { $missing += "$($e.file)  (no analysis-path root in path)"; continue }
-            }
             $abs = Join-Path $repoRoot $rel
             if (-not (Test-Path -LiteralPath $abs)) { $missing += "$($e.file)  -> $rel" }
         }
         $missing | Should -BeNullOrEmpty -Because "基线引用了不存在的文件：$($missing -join '; ')（文件改名/删除后必须重跑 tools/Update-ComplexityBaseline.ps1）"
+    }
+
+    It 'ratchet 基线的写入形态不会被 Gate 12（文件卫生）判为问题' {
+        # 2026-11-25 实测：基线重生成后的提交在 Gate 12 拿到 WARN / missing_eof_newline。
+        # 门禁的判据是「非空 blob 的最后一个字节不是 \n」，而 ConvertTo-Json 的输出不带换行。
+        # 这条用例把两端都钉住：文件本身（现状）与生成器（下一次重生成）。
+        $baselinePath = Join-Path $PSScriptRoot '..\..\.xp-gate-powershell-ccn-baseline.json'
+        $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $baselinePath).Path)
+        $bytes[$bytes.Length - 1] | Should -Be 0x0A -Because 'Gate 12 要求文件以换行结尾，否则每次重生成基线都会带一条 missing_eof_newline 警告'
+
+        $genPath = Join-Path $PSScriptRoot '..\..\tools\Update-ComplexityBaseline.ps1'
+        $gen = Get-Content -LiteralPath $genPath -Raw
+        $gen | Should -Match 'ConvertTo-Json[^\r\n]*\+\s*"`n"' -Because '生成器必须在 JSON 输出后补换行；只修盘上这一份文件的话，下一次重生成又会退回缺失 EOF 换行的形态'
     }
 
     It '基线生成器写出的 form 与门禁的比较口径一致（三个「known 恒空」缺陷的回归守卫）' {
