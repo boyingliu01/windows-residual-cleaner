@@ -356,10 +356,23 @@ Describe 'clean-residuals.ps1: uninstalled_software handling in Main (in-process
         [System.IO.File]::WriteAllText($script:report, ($report | ConvertTo-Json -Depth 6), [System.Text.UTF8Encoding]::new($false))
         [System.IO.File]::WriteAllText($script:confirm, '["uni_001","uni_002","uni_003"]', [System.Text.UTF8Encoding]::new($false))
 
+        $repoCleanupLog = Join-Path "$PSScriptRoot\..\.." 'cleanup-log.json'
+        $repoLogHashBefore = if (Test-Path -LiteralPath $repoCleanupLog) {
+            (Get-FileHash -LiteralPath $repoCleanupLog -Algorithm SHA256).Hash
+        } else { $null }
+
         . "$script:Scripts\clean-residuals.ps1"
         Mock Test-AdminPrivilege { return $true }
+        $ProjectRootOverride = $script:WorkDir
         $ReportPath = $script:report; $ConfirmFile = $script:confirm; $DryRun = $true; $Mode = 'D'
         $out = (Main -ExitCode ([ref]$script:rc) 2>&1) -join "`n"
+
+        $repoLogHashAfter = if (Test-Path -LiteralPath $repoCleanupLog) {
+            (Get-FileHash -LiteralPath $repoCleanupLog -Algorithm SHA256).Hash
+        } else { $null }
+        $repoLogHashAfter | Should -Be $repoLogHashBefore -Because '测试不得覆盖主仓的 cleanup-log.json'
+        $testLog = Get-Content -LiteralPath (Join-Path $script:WorkDir 'cleanup-log.json') -Raw | ConvertFrom-Json
+        $testLog.summary.total_processed | Should -Be 2
 
         $script:rc | Should -Be 0
         $out | Should -Match 'Deleting uninstall entry: HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\DeadApp'

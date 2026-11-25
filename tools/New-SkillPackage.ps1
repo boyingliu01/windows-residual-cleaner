@@ -81,6 +81,28 @@ $packages = @(
 # so a future edit to `Include` cannot quietly reintroduce them.
 $forbiddenInSkill = @('ui', 'ui/server', 'tests', 'tools')
 
+function Copy-PackageTree {
+    [CmdletBinding(SupportsShouldProcess = $false)]
+    param([string]$Source, [string]$Dest)
+
+    $pending = New-Object System.Collections.Generic.Stack[string]
+    $pending.Push($Source)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        $destinationDir = "$Dest$($current.Substring($Source.Length))"
+        New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+        foreach ($child in Get-ChildItem -LiteralPath $current -Force) {
+            if ($child.PSIsContainer) {
+                if ($child.Name -eq 'node_modules') { continue }
+                $pending.Push($child.FullName)
+            }
+            else {
+                Copy-Item -LiteralPath $child.FullName -Destination (Join-Path $destinationDir $child.Name) -Force
+            }
+        }
+    }
+}
+
 function Copy-PackageContent {
     # Named "Copy-*" rather than "New-*"/"Set-*": PowerShell's approved-verb rules
     # (PSUseShouldProcessForStateChangingFunctions) apply to state-changing verbs.
@@ -95,7 +117,7 @@ function Copy-PackageContent {
         if (-not (Test-Path -LiteralPath $src)) { continue }
         $dst = Join-Path $Dest $item
         if ((Get-Item -LiteralPath $src).PSIsContainer) {
-            Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force
+            Copy-PackageTree -Source $src -Dest $dst
         }
         else {
             $parent = Split-Path -Parent $dst
@@ -103,18 +125,6 @@ function Copy-PackageContent {
             Copy-Item -LiteralPath $src -Destination $dst -Force
         }
     }
-}
-
-function Clear-NodeModuleTree {
-    # "Clear-*" is an approved verb for emptying a container; "Remove-*" on a
-    # plural noun triggers both PSUseSingularNouns and the ShouldProcess rule.
-    [CmdletBinding(SupportsShouldProcess = $false)]
-    # node_modules is gitignored and huge; it also must not reach a distributed
-    # archive. Removing after copy keeps the include list simple.
-    param([string]$Root)
-    Get-ChildItem -LiteralPath $Root -Recurse -Directory -Filter 'node_modules' -ErrorAction SilentlyContinue |
-        Sort-Object { $_.FullName.Length } -Descending |
-        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 if (-not (Test-Path -LiteralPath $OutputRoot)) {
@@ -130,7 +140,6 @@ foreach ($pkg in $packages) {
     New-Item -ItemType Directory -Path $dest -Force | Out-Null
 
     Copy-PackageContent -SourceRoot $repoRoot -Dest $dest -Includes $pkg.Include
-    Clear-NodeModuleTree -Root $dest
 
     # Refuse to publish a skill package that carries a privileged surface.
     if ($pkg.Name -eq 'windows-residual-cleaner-skill') {

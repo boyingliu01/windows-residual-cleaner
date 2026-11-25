@@ -7,6 +7,52 @@ All notable changes to this project will be documented in this file.
 > （例如曾把 `setup.ps1` 不可插桩说成结构性限制）以「**更正**」附注标出，
 > 而不改写历史条目本身。
 
+## [1.4.15.0] - 2026-11-25
+
+### 质量加固：清理结果真实化、服务端安全修复与 UI 可维护性收敛
+
+使用 xp-gate `0.38.126` 对全树做真实 pre-commit 验收，修复门禁与行为审查暴露的
+正确性、安全性和性能问题；未添加覆盖率忽略、未放宽阈值、未伪造测试对齐报告。
+
+#### 清理与报告 correctness
+
+- **改名不等于删除**：`path_renamed` 仍保留磁盘内容且不可自动恢复，UI 不再把它显示为
+  普通成功；退出码 0 但存在延期删除项时明确提示内容仍在磁盘。
+- **退出码语义**：修正退出码 15 的说明，不再声称「未做任何删除」；服务端未报告结果码
+  或进程异常结束时按未知结果处理，不能视为成功。
+- **未卸载软件分类**：UI 的选择、复核、过滤和汇总纳入 `uninstalled_software`，只允许
+  `actionable: true` 的 `uni_*` 项进入执行路径；表头全选不会选中 danger 项。
+- **旧报告兼容**：报告缺少分类字段时按空集合处理，不再白屏；复核搜索覆盖 `registry_key`，
+  不可操作条目不再显示为可执行目标。
+- **回滚注册表路径**：统一归一为 `Registry::` 提供程序路径，覆盖 HKCR/HKU/HKCC，
+  不再依赖默认 PSDrive 注册状态而把存在的键误判为不存在。
+- **NDJSON 完整性**：服务端与客户端使用 UTF-8 流式解码，保留跨 chunk 字符，并在 EOF 时
+  flush 无尾换行的最后一条记录；取消扫描会同步更新全局阶段。
+
+#### 服务端与安全边界
+
+- 正常 JSON body 完成不再误触发 cleanup 子进程取消；只在请求中止或响应未正常结束时取消。
+- 合法 `uni_*` id 不再被服务端拒绝。
+- Origin guard 不再接受任意以 `127.` 开头的 hostname，只接受明确的 loopback 地址。
+- 备份状态为 null、JSON 畸形或结构不符时返回可解释状态，不再崩溃或误分类。
+- 删除无效 UI 原语与单体类型文件，按领域拆分类型模块，降低跨模块耦合。
+
+#### 构建与发布性能
+
+- 技能打包不再先复制再递归删除 `node_modules`，而是在遍历时直接跳过依赖目录；
+  损坏的依赖 junction 不会中止发布，完整 Pester 套件耗时显著下降。
+- 刷新 UI lockfile 的可选平台依赖，保证 Windows 安装可复现。
+
+#### 验收证据与上游限制
+
+- PowerShell 5.1 与 pwsh 7 串行全量 Pester：各 **918/918 passed**；UI **139/139**、
+  server **45/45** 通过；ESLint、TypeScript build、PSScriptAnalyzer、复杂度与架构检查通过。
+- 真实 pre-commit 链退出 0：PowerShell 行覆盖率 **84%**，Checkov **80 passed / 0 failed**，
+  Semgrep 无阻塞漏洞；独立 `xp-gate check . --all` 为 **10 passed / 9 skipped**。
+- Gate 12 仍将 CRLF 文件误报为缺少 EOF 换行；Node 字节检查确认所有非空文件均以 LF 结束。
+- xp-gate `0.38.126` 尚无 PowerShell/Pester 测试对齐适配器，真实报告保持 `FAIL / score 0`；
+  该结果不代表 918 条 Pester 用例失败，也不得通过手改报告或伪造标注消除。
+
 ## [1.4.14.2] - 2026-11-18
 
 ### 修复：孤儿卸载注册项「报告得出来、清理不了」（issue #12）

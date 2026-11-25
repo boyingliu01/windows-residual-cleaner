@@ -2,7 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest'
 import { fireEvent, screen } from '@testing-library/react'
 import { fixtureCleanupLog, renderWithApp, sseResponse, jsonResponse } from '@/test'
 import { CleanupPanel } from './CleanupPanel'
-import type { BackupStatus } from '@/types'
+import type { BackupStatus } from '@/types/backup'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -31,10 +31,10 @@ function status(over: Partial<BackupStatus['restore_point']>): BackupStatus {
   }
 }
 
-function stubApi(doneLog: unknown, backup: BackupStatus | null) {
+function stubApi(doneLog: unknown, backup: BackupStatus | null, existingLog: unknown = null) {
   vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
     const url = String((input as RequestInfo))
-    if (url.includes('/api/cleanup-log')) return jsonResponse(null, false)
+    if (url.includes('/api/cleanup-log')) return jsonResponse(existingLog, existingLog !== null)
     if (url.includes('/api/backup-status')) {
       return backup === null ? jsonResponse({}, false) : jsonResponse(backup)
     }
@@ -42,7 +42,57 @@ function stubApi(doneLog: unknown, backup: BackupStatus | null) {
   }))
 }
 
+function renderRollback(overrides: Partial<NonNullable<BackupStatus['last_rollback']>>) {
+  const backup = status({})
+  backup.last_rollback = {
+    backup_dir: 'backup-test',
+    run_id: null,
+    executed_at: null,
+    within_window: true,
+    counts: {},
+    verdicts: [],
+    ...overrides,
+  }
+  stubApi(fixtureCleanupLog, backup)
+  renderWithApp(<CleanupPanel />)
+}
+
 describe('CleanupPanel', () => {
+  it('loads an existing cleanup log on mount', async () => {
+    stubApi(fixtureCleanupLog, status({}), fixtureCleanupLog)
+    renderWithApp(<CleanupPanel />)
+
+    expect(await screen.findByText(/处理 2 项/)).toHaveProperty('textContent', expect.stringMatching(/处理 2 项/))
+    expect(screen.getByText('成功 2')).toBeTruthy()
+  })
+
+  it('finishes the phase and refreshes protection evidence after real cleanup', async () => {
+    const executed = {
+      ...fixtureCleanupLog,
+      summary: { ...fixtureCleanupLog.summary, dry_run: false, mode: 'execute' },
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String((input as RequestInfo))
+      if (url.includes('/api/cleanup-log')) return jsonResponse(null, false)
+      if (url.includes('/api/backup-status')) return jsonResponse(status({}))
+      const preview = String(init?.body).includes('"dryRun":true')
+      return sseResponse([{ type: 'done', log: preview ? fixtureCleanupLog : executed, exit_code: 0 }])
+    }))
+    const { dispatch, app } = renderWithApp(<CleanupPanel />)
+    dispatch({ type: 'SET_PHASE', phase: 'dry-run' })
+
+    fireEvent.click(screen.getByText('运行 DryRun 预览'))
+    fireEvent.click(await screen.findByText('确认执行清理'))
+    fireEvent.click(await screen.findByText('确认清理'))
+
+    expect(await screen.findByText('清理结果')).toBeTruthy()
+    expect(app.current?.state.phase).toBe('done')
+    expect(app.current?.state.cleanupLog).toEqual(executed)
+    const urls = vi.mocked(fetch).mock.calls.map(([input]) => String(input))
+    expect(urls.filter(url => url.endsWith('/api/backup-status'))).toHaveLength(3)
+    expect(urls.filter(url => url.endsWith('/api/cleanup'))).toHaveLength(2)
+  })
+
   it('runs a dry-run from the streamed output and offers the real cleanup', async () => {
     stubApi(fixtureCleanupLog, status({}))
     const { dispatch } = renderWithApp(<CleanupPanel />)
@@ -50,7 +100,7 @@ describe('CleanupPanel', () => {
 
     fireEvent.click(screen.getByText('运行 DryRun 预览'))
 
-    expect(await screen.findByText(/处理 2 项/)).toBeTruthy()
+    expect(await screen.findByText(/处理 2 项/)).toHaveProperty('textContent', expect.stringMatching(/处理 2 项/))
     expect(screen.getByText('成功 2')).toBeTruthy()
     expect(screen.getByText('确认执行清理')).toBeTruthy()
   })
@@ -70,8 +120,10 @@ describe('CleanupPanel', () => {
 
     fireEvent.click(screen.getByText('运行 DryRun 预览'))
 
-    expect(await screen.findByText('删除失败的项：')).toBeTruthy()
+    expect(await screen.findByText('删除失败的项：')).toHaveProperty('textContent', '删除失败的项：')
     expect(screen.getByText(/\[fs_002\].*access denied/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: '重新预览' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '确认执行清理' })).toBeNull()
   })
 })
 
@@ -80,7 +132,7 @@ describe('CleanupPanel protection status (AC-013 / AC-023 / AC-065)', () => {
     stubApi(fixtureCleanupLog, status({}))
     renderWithApp(<CleanupPanel />)
 
-    expect(await screen.findByText(/强制逐项精准保护/)).toBeTruthy()
+    expect(await screen.findByText(/强制逐项精准保护/)).toHaveProperty('textContent', expect.stringMatching(/强制逐项精准保护/))
     expect(screen.getByText(/可选系统还原点/)).toBeTruthy()
     expect(screen.getByText('已建立')).toBeTruthy()
     expect(screen.queryByText(/已通过系统还原点备份/)).toBeNull()
@@ -94,7 +146,7 @@ describe('CleanupPanel protection status (AC-013 / AC-023 / AC-065)', () => {
     }))
     renderWithApp(<CleanupPanel />)
 
-    expect(await screen.findByText('未建立')).toBeTruthy()
+    expect(await screen.findByText('未建立')).toHaveProperty('textContent', '未建立')
     expect(screen.getByText(/System Protection 关闭/)).toBeTruthy()
     expect(screen.queryByText(/已通过系统还原点备份/)).toBeNull()
   })
@@ -103,7 +155,7 @@ describe('CleanupPanel protection status (AC-013 / AC-023 / AC-065)', () => {
     stubApi(fixtureCleanupLog, null)
     renderWithApp(<CleanupPanel />)
 
-    expect(await screen.findByText(/保护状态未知/)).toBeTruthy()
+    expect(await screen.findByText(/保护状态未知/)).toHaveProperty('textContent', expect.stringMatching(/保护状态未知/))
     expect(screen.queryByText(/已通过系统还原点备份/)).toBeNull()
   })
 
@@ -124,7 +176,7 @@ describe('CleanupPanel protection status (AC-013 / AC-023 / AC-065)', () => {
     stubApi(fixtureCleanupLog, pending)
     renderWithApp(<CleanupPanel />)
 
-    expect(await screen.findByText(/上一轮清理可能未恢复/)).toBeTruthy()
+    expect(await screen.findByText(/上一轮清理可能未恢复/)).toHaveProperty('textContent', expect.stringMatching(/上一轮清理可能未恢复/))
     expect(screen.getByText(/run_42，7 项/)).toBeTruthy()
   })
 
@@ -132,7 +184,7 @@ describe('CleanupPanel protection status (AC-013 / AC-023 / AC-065)', () => {
     stubApi(fixtureCleanupLog, status({}))
     renderWithApp(<CleanupPanel />)
 
-    expect(await screen.findByText(/24 小时内/)).toBeTruthy()
+    expect(await screen.findByText(/24 小时内/)).toHaveProperty('textContent', expect.stringMatching(/24 小时内/))
     expect(screen.getByText(/无法自动还原/)).toBeTruthy()
   })
 
@@ -157,12 +209,11 @@ describe('CleanupPanel last rollback result', () => {
     stubApi(fixtureCleanupLog, status({}))
     renderWithApp(<CleanupPanel />)
 
-    expect(await screen.findByText(/从未回滚/)).toBeTruthy()
+    expect(await screen.findByText(/从未回滚/)).toHaveProperty('textContent', expect.stringMatching(/从未回滚/))
   })
 
   it('separates unrepaired items from the ones that were never restorable', async () => {
-    const withRollback = status({})
-    withRollback.last_rollback = {
+    renderRollback({
       backup_dir: 'backup-20261005-101010',
       run_id: 'run_7',
       executed_at: '2026-10-05T10:10:10Z',
@@ -173,11 +224,9 @@ describe('CleanupPanel last rollback result', () => {
         { item_id: 'service:WRCGhost', kind: 'service', target: 'WRCGhost', verdict: 'not_restorable', reason: 'not_restorable_service', evidence_incomplete: false },
         { item_id: 'path_entry:C://wrc-drill', kind: 'path_entry', target: 'C://wrc-drill', verdict: 'restore_failed', reason: 'conflict(target_present_and_differs)', evidence_incomplete: false },
       ],
-    }
-    stubApi(fixtureCleanupLog, withRollback)
-    renderWithApp(<CleanupPanel />)
+    })
 
-    expect(await screen.findByText(/未修复 1/)).toBeTruthy()
+    expect(await screen.findByText(/未修复 1/)).toHaveProperty('textContent', expect.stringMatching(/未修复 1/))
     expect(screen.getByText(/已恢复 1/)).toBeTruthy()
     expect(screen.getByText(/conflict\(target_present_and_differs\)/)).toBeTruthy()
     // A not_restorable verdict is disclosure, not a repair queue — it must not be
@@ -188,8 +237,7 @@ describe('CleanupPanel last rollback result', () => {
   })
 
   it('lists evidence-incomplete items apart from unrepaired ones', async () => {
-    const withRollback = status({})
-    withRollback.last_rollback = {
+    renderRollback({
       backup_dir: 'backup-20261005-111111',
       run_id: 'run_8',
       executed_at: '2026-10-05T11:11:11Z',
@@ -198,14 +246,63 @@ describe('CleanupPanel last rollback result', () => {
       verdicts: [
         { item_id: 'startup_value:HKCU:/Software/Microsoft/Windows/CurrentVersion/Run/WRC-Drill', kind: 'startup_value', target: 'HKCU:/Software/Microsoft/Windows/CurrentVersion/Run/WRC-Drill', verdict: 'restored', reason: null, evidence_incomplete: true },
       ],
-    }
-    stubApi(fixtureCleanupLog, withRollback)
-    renderWithApp(<CleanupPanel />)
+    })
 
     // The item list and the low-confidence verdict both name the condition.
     expect((await screen.findAllByText(/证据不完整/)).length).toBeGreaterThan(1)
     expect(screen.getByText(/多数可恢复条目的证据不完整/)).toBeTruthy()
     expect(screen.getByText(/WRC-Drill/)).toBeTruthy()
+  })
+
+  it('discloses an out-of-window rollback and defaults missing metadata to zero', async () => {
+    renderRollback({
+      backup_dir: 'backup-20261005-121212',
+      run_id: null,
+      executed_at: null,
+      within_window: false,
+      counts: {},
+      verdicts: [],
+    })
+
+    expect(await screen.findByText(/未知 run_id/)).toHaveProperty('textContent', expect.stringMatching(/未知 run_id/))
+    expect(screen.getByText(/未知时间/)).toBeTruthy()
+    expect(screen.getByText(/超出 24 小时恢复窗口/)).toBeTruthy()
+    expect(screen.getByText(/已恢复 0 · 已存在 0 · 不可恢复 0 · 未修复 0/)).toBeTruthy()
+  })
+
+  it('falls back to the target and then a placeholder for unidentified verdicts', async () => {
+    renderRollback({
+      backup_dir: 'backup-20261005-131313',
+      run_id: 'run_9',
+      executed_at: '2026-10-05T13:13:13Z',
+      within_window: true,
+      counts: { restore_failed: 2 },
+      verdicts: [
+        { item_id: null, kind: 'service', target: 'WRCGhost', verdict: 'restore_failed', reason: null, evidence_incomplete: false },
+        { item_id: null, kind: 'service', target: null, verdict: 'restore_failed', reason: null, evidence_incomplete: false },
+      ],
+    })
+
+    expect((await screen.findByText(/^WRCGhost —$/)).textContent?.trim()).toBe('WRCGhost —')
+    expect(screen.getByText(/^\? —$/)).toBeTruthy()
+  })
+
+  it('does not call a minority of incomplete evidence low confidence', async () => {
+    renderRollback({
+      backup_dir: 'backup-20261005-141414',
+      run_id: 'run_10',
+      executed_at: '2026-10-05T14:14:14Z',
+      within_window: true,
+      counts: { restored: 3 },
+      verdicts: [
+        { item_id: 'a', kind: 'registry_key', target: 'a', verdict: 'restored', reason: null, evidence_incomplete: false },
+        { item_id: 'b', kind: 'registry_key', target: 'b', verdict: 'restored', reason: null, evidence_incomplete: false },
+        { item_id: 'c', kind: 'registry_key', target: 'c', verdict: 'restored', reason: null, evidence_incomplete: true },
+      ],
+    })
+
+    expect(await screen.findByText(/证据不完整/)).toHaveProperty('textContent', expect.stringMatching(/证据不完整/))
+    expect(screen.queryByText(/多数可恢复条目的证据不完整/)).toBeNull()
   })
 })
 
@@ -214,19 +311,100 @@ describe('CleanupPanel restore-point record age', () => {
     stubApi(fixtureCleanupLog, status({ timestamp: '2020-01-01T00:00:00Z' }))
     renderWithApp(<CleanupPanel />)
 
-    expect(await screen.findByText(/已超过/)).toBeTruthy()
+    expect(await screen.findByText(/已超过/)).toHaveProperty('textContent', expect.stringMatching(/已超过/))
   })
 
   it('does not age-warn about a record from this run', async () => {
     stubApi(fixtureCleanupLog, status({}))
     renderWithApp(<CleanupPanel />)
 
-    expect(await screen.findByText(/记录于/)).toBeTruthy()
+    expect(await screen.findByText(/记录于/)).toHaveProperty('textContent', expect.stringMatching(/记录于/))
+    expect(screen.queryByText(/已超过/)).toBeNull()
+  })
+
+  it('labels an unknown restore point without inventing an age warning', async () => {
+    stubApi(fixtureCleanupLog, status({ state: 'unknown', timestamp: null, detail: '没有还原点证据' }))
+    renderWithApp(<CleanupPanel />)
+
+    expect(await screen.findByText('状态未知')).toHaveProperty('textContent', '状态未知')
+    expect(screen.getByText(/无记录时间/)).toBeTruthy()
+    expect(screen.queryByText(/已超过/)).toBeNull()
+  })
+
+  it('does not treat an invalid restore-point timestamp as stale', async () => {
+    stubApi(fixtureCleanupLog, status({ timestamp: 'not-a-date' }))
+    renderWithApp(<CleanupPanel />)
+
+    expect(await screen.findByText(/记录于 not-a-date/)).toHaveProperty('textContent', expect.stringMatching(/记录于 not-a-date/))
+    expect(screen.queryByText(/已超过/)).toBeNull()
+  })
+
+  it('does not age-warn about an unavailable restore point', async () => {
+    stubApi(fixtureCleanupLog, status({ state: 'unavailable', timestamp: '2020-01-01T00:00:00Z' }))
+    renderWithApp(<CleanupPanel />)
+
+    expect(await screen.findByText('未建立')).toHaveProperty('textContent', '未建立')
     expect(screen.queryByText(/已超过/)).toBeNull()
   })
 })
 
 describe('CleanupPanel result honesty', () => {
+  it('does not count a deferred rename as a deletion success', async () => {
+    const renamedLog = {
+      ...fixtureCleanupLog,
+      summary: {
+        ...fixtureCleanupLog.summary,
+        dry_run: false,
+        mode: 'execute',
+        total_processed: 1,
+        succeeded: 1,
+        failed: 0,
+        skipped: 0,
+      },
+      entries: [{
+        success: true,
+        id: 'fs_001',
+        path: 'C:/ProgramData/OldApp',
+        action: 'path_renamed',
+        renamed_to: 'C:/ProgramData/OldApp.wrc-pending',
+      }],
+    }
+    stubApi(renamedLog, status({}))
+    const { dispatch } = renderWithApp(<CleanupPanel />)
+    dispatch({ type: 'SET_PHASE', phase: 'dry-run' })
+    fireEvent.click(screen.getByText('运行 DryRun 预览'))
+
+    expect(await screen.findByText('改名未删除 1')).toHaveProperty('textContent', '改名未删除 1')
+    expect(screen.getByText('成功 0')).toHaveProperty('textContent', '成功 0')
+    expect(screen.getByText('已改名，未删除')).toHaveProperty('textContent', '已改名，未删除')
+    expect(await screen.findByText(/退出码 0：存在改名未删除项/)).toHaveProperty(
+      'textContent', expect.stringMatching(/退出码 0：存在改名未删除项/)
+    )
+    expect(screen.queryByText(/退出码 0：全部成功/)).toBeNull()
+    expect(screen.getByText('清理结果').closest('div')?.className).toContain('text-caution')
+  })
+
+  it('does not claim exit code 15 means no deletion happened', async () => {
+    const executed = {
+      ...fixtureCleanupLog,
+      summary: { ...fixtureCleanupLog.summary, dry_run: false, mode: 'execute' },
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String((input as RequestInfo))
+      if (url.includes('/api/cleanup-log')) return jsonResponse(null, false)
+      if (url.includes('/api/backup-status')) return jsonResponse(status({}))
+      return sseResponse([{ type: 'done', log: executed, exit_code: 15 }])
+    }))
+    const { dispatch } = renderWithApp(<CleanupPanel />)
+    dispatch({ type: 'SET_PHASE', phase: 'dry-run' })
+    fireEvent.click(screen.getByText('运行 DryRun 预览'))
+
+    expect(await screen.findByText(/持久化失败.*可能仍有未恢复改动/)).toHaveProperty(
+      'textContent', expect.stringMatching(/持久化失败.*可能仍有未恢复改动/)
+    )
+    expect(screen.queryByText(/未做任何删除/)).toBeNull()
+  })
+
   it('renders a caution line from the stream as caution, not info', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
       const url = String((input as RequestInfo))
@@ -260,7 +438,7 @@ describe('CleanupPanel result honesty', () => {
     dispatch({ type: 'SET_PHASE', phase: 'dry-run' })
     fireEvent.click(screen.getByText('运行 DryRun 预览'))
 
-    expect(await screen.findByText(/回滚未完全成功/)).toBeTruthy()
+    expect(await screen.findByText(/回滚未完全成功/)).toHaveProperty('textContent', expect.stringMatching(/回滚未完全成功/))
   })
 
   it('does not report success when the server withheld the exit code', async () => {
@@ -278,7 +456,7 @@ describe('CleanupPanel result honesty', () => {
     dispatch({ type: 'SET_PHASE', phase: 'dry-run' })
     fireEvent.click(screen.getByText('运行 DryRun 预览'))
 
-    expect(await screen.findByText(/退出码未知/)).toBeTruthy()
+    expect(await screen.findByText(/退出码未知/)).toHaveProperty('textContent', expect.stringMatching(/退出码未知/))
   })
 
   it('surfaces a streamed error line instead of hanging on a finished run', async () => {

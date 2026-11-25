@@ -6,7 +6,7 @@ import { SummaryBar } from './SummaryBar'
 describe('SummaryBar', () => {
   it('renders nothing without a report', () => {
     const { container } = renderWithApp(<SummaryBar />)
-    expect(container.firstChild).toBeNull()
+    expect(container.childNodes).toHaveLength(0)
   })
 
   it('shows risk totals, selection count and recoverable space', () => {

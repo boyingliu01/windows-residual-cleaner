@@ -5,7 +5,7 @@
 // Item ids come from generate-report.ps1's Set-Id: "<prefix>NNN" (3+ digits).
 // confirmed-ids.json is the credential clean-residuals.ps1 deletes registry keys,
 // services and PATH segments by, so nothing else may reach it.
-const ITEM_ID_PATTERN = /^(?:fs|reg|svc|tsk|str|shl|path)_\d{3,}$/;
+const ITEM_ID_PATTERN = /^(?:fs|reg|svc|tsk|str|shl|path|uni)_\d{3,}$/;
 
 function validateItemIds(value) {
   if (!Array.isArray(value)) {
@@ -29,9 +29,23 @@ function splitHostname(hostHeader) {
   return colon === -1 ? raw : raw.slice(0, colon);
 }
 
+function isIPv4Loopback(value) {
+  const parts = value.split('.');
+  return parts.length === 4
+    && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+}
+
 function isLoopbackHostname(value) {
   const h = String(value || '').toLowerCase().replace(/^\[|\]$/g, '');
-  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.startsWith('127.');
+  return h === 'localhost' || h === '::1' || (h.startsWith('127.') && isIPv4Loopback(h));
+}
+
+function isAllowedHost(hostHeader, hostname, expectedHosts) {
+  return isLoopbackHostname(hostname) || expectedHosts.has(hostHeader);
+}
+
+function isAllowedOrigin(origin, hostHeader, allowedOrigins) {
+  return origin === `http://${hostHeader}` || allowedOrigins.has(origin);
 }
 
 // Binding to loopback is not an attacker barrier: any page the user opens can POST
@@ -47,7 +61,7 @@ function createOriginGuard({ allowedOrigins = [], expectedHosts = [] } = {}) {
   return function originGuard(req, res, next) {
     const hostHeader = String(req.headers.host || '');
     const hostname = splitHostname(hostHeader);
-    if (!isLoopbackHostname(hostname) && !hosts.has(hostHeader)) {
+    if (!isAllowedHost(hostHeader, hostname, hosts)) {
       res.status(403).json({ error: 'non-loopback host rejected' });
       return;
     }
@@ -56,7 +70,7 @@ function createOriginGuard({ allowedOrigins = [], expectedHosts = [] } = {}) {
       next();
       return;
     }
-    if (origin === `http://${hostHeader}` || allowed.has(origin)) {
+    if (isAllowedOrigin(origin, hostHeader, allowed)) {
       next();
       return;
     }

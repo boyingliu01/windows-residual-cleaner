@@ -8,6 +8,20 @@ $script:IsAdmin = [Security.Principal.WindowsPrincipal]::new(
     [Security.Principal.WindowsIdentity]::GetCurrent()
 ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
+BeforeAll {
+    $script:RepoCleanupLog = Join-Path $PSScriptRoot '..\..\cleanup-log.json'
+    $script:RepoLogHashBefore = if (Test-Path -LiteralPath $script:RepoCleanupLog) {
+        (Get-FileHash -LiteralPath $script:RepoCleanupLog -Algorithm SHA256).Hash
+    } else { $null }
+}
+
+AfterAll {
+    $repoLogHashAfter = if (Test-Path -LiteralPath $script:RepoCleanupLog) {
+        (Get-FileHash -LiteralPath $script:RepoCleanupLog -Algorithm SHA256).Hash
+    } else { $null }
+    $repoLogHashAfter | Should -Be $script:RepoLogHashBefore -Because '测试不得覆盖主仓的 cleanup-log.json'
+}
+
 Describe 'Extract-ExecutablePath (scan-residuals.ps1)' {
     BeforeAll {
         . "$PSScriptRoot\..\..\references\scripts\scan-residuals.ps1" *>$null
@@ -15,37 +29,37 @@ Describe 'Extract-ExecutablePath (scan-residuals.ps1)' {
             Set-Alias -Name Extract-ExecutablePath -Value Get-ExecutablePath
         }
     }
-    
+
     It 'Extracts path from quoted command with arguments' {
         $result = Extract-ExecutablePath -pathName '"C:\Program Files\App\app.exe" -param --flag'
         $result | Should -Be 'C:\Program Files\App\app.exe'
     }
-    
+
     It 'Extracts path from unquoted .exe command with arguments' {
         $result = Extract-ExecutablePath -pathName 'C:\Windows\System32\svchost.exe -k netsvcs'
         $result | Should -Be 'C:\Windows\System32\svchost.exe'
     }
-    
+
     It 'Extracts path from unquoted .dll path' {
         $result = Extract-ExecutablePath -pathName 'C:\path\to\service.dll'
         $result | Should -Be 'C:\path\to\service.dll'
     }
-    
+
     It 'Extracts path from unquoted .sys path' {
         $result = Extract-ExecutablePath -pathName 'C:\drivers\mydriver.sys -param'
         $result | Should -Be 'C:\drivers\mydriver.sys'
     }
-    
+
     It 'Returns first token for paths without known extensions' {
         $result = Extract-ExecutablePath -pathName '/usr/bin/someservice arg1 arg2'
         $result | Should -Be '/usr/bin/someservice'
     }
-    
+
     It 'Returns null for empty input' {
         $result = Extract-ExecutablePath -pathName ''
         $result | Should -Be $null
     }
-    
+
     It 'Handles path with spaces in filename' {
         $result = Extract-ExecutablePath -pathName '"C:\Program Files\My App\my app.exe" /start'
         $result | Should -Be 'C:\Program Files\My App\my app.exe'
@@ -111,13 +125,13 @@ Describe 'Test-Whitelisted (clean-residuals.ps1)' {
     BeforeAll {
         . "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" *>$null
     }
-    
+
     It 'Returns false when whitelist variable is null' {
         $whitelist = $null
         $result = Test-Whitelisted -Path 'C:\test\path' -Key 'HKLM\test' -ServiceName 'test'
         $result | Should -Be $false
     }
-    
+
     Context 'With mock whitelist' {
         BeforeAll {
             $script:whitelist = @{
@@ -132,32 +146,32 @@ Describe 'Test-Whitelisted (clean-residuals.ps1)' {
                 service_names = @('Winmgmt', 'RpcSs', 'EventLog')
             }
         }
-        
+
         It 'Detects whitelisted registry key' {
             $result = Test-Whitelisted -Key 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
             $result | Should -Be $true
         }
-        
+
         It 'Detects whitelisted path' {
             $result = Test-Whitelisted -Path 'C:\Program Files\Microsoft\something'
             $result | Should -Be $true
         }
-        
+
         It 'Detects whitelisted service name' {
             $result = Test-Whitelisted -ServiceName 'EventLog'
             $result | Should -Be $true
         }
-        
+
         It 'Returns false for non-matching registry key' {
             $result = Test-Whitelisted -Key 'HKLM\SOFTWARE\UnknownApp'
             $result | Should -Be $false
         }
-        
+
         It 'Returns false for non-matching path' {
             $result = Test-Whitelisted -Path 'C:\Program Files\MyApp'
             $result | Should -Be $false
         }
-        
+
         It 'Returns false for non-matching service name' {
             $result = Test-Whitelisted -ServiceName 'MyCustomService'
             $result | Should -Be $false
@@ -289,14 +303,14 @@ Describe 'Get-EffectiveFileCount (scan-filesystem-residuals.ps1)' {
         if (Test-Path $testDir) { Remove-Item $testDir -Recurse -Force }
         New-Item -ItemType Directory -Path $testDir -Force | Out-Null
     }
-    
+
     It 'Counts non-excluded files' {
         'data' | Out-File "$testDir\data.txt"
         'config' | Out-File "$testDir\config.ini"
         $result = Get-EffectiveFileCount -path $testDir -excluded @('.gitkeep', 'desktop.ini')
         $result | Should -Be 2
     }
-    
+
     It 'Excludes files matching patterns' {
         Remove-Item "$testDir\*" -Force
         'data' | Out-File "$testDir\data.txt"
@@ -304,7 +318,7 @@ Describe 'Get-EffectiveFileCount (scan-filesystem-residuals.ps1)' {
         $result = Get-EffectiveFileCount -path $testDir -excluded @('desktop.ini')
         $result | Should -Be 1
     }
-    
+
     It 'Excludes files matching wildcard patterns' {
         Remove-Item "$testDir\*" -Force
         'readme' | Out-File "$testDir\README.md"
@@ -312,7 +326,7 @@ Describe 'Get-EffectiveFileCount (scan-filesystem-residuals.ps1)' {
         $result = Get-EffectiveFileCount -path $testDir -excluded @('README*')
         $result | Should -Be 1
     }
-    
+
     AfterAll {
         Remove-Item $testDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -322,7 +336,7 @@ Describe 'Test-AllSubdirsEmpty (scan-filesystem-residuals.ps1)' {
     BeforeAll {
         . "$PSScriptRoot\..\..\references\scripts\scan-filesystem-residuals.ps1" *>$null
     }
-    
+
     It 'Returns true for directory with no subdirectories' {
         $d = "$env:TEMP\pester-no-subdirs"
         New-Item -ItemType Directory -Path $d -Force | Out-Null
@@ -330,7 +344,7 @@ Describe 'Test-AllSubdirsEmpty (scan-filesystem-residuals.ps1)' {
         $result | Should -Be $true
         Remove-Item $d -Force
     }
-    
+
     It 'Returns true for directory with empty subdirectories' {
         $d = "$env:TEMP\pester-empty-subs"
         New-Item -ItemType Directory -Path "$d\sub1" -Force | Out-Null
@@ -339,7 +353,7 @@ Describe 'Test-AllSubdirsEmpty (scan-filesystem-residuals.ps1)' {
         $result | Should -Be $true
         Remove-Item $d -Recurse -Force
     }
-    
+
     It 'Returns false for directory with non-empty subdirectories' {
         $d = "$env:TEMP\pester-nonempty-subs"
         New-Item -ItemType Directory -Path "$d\sub1" -Force | Out-Null
@@ -1001,6 +1015,7 @@ Describe 'clean-residuals.ps1 safety guards (fail-closed, static + subprocess)' 
 
         $ReportPath = $dangerReport; $ConfirmFile = $confirm
         $WhitelistPath = $global:_guardNoWhitelist; $DryRun = $true
+        $ProjectRootOverride = $global:_guardDir
         $out = (Main 2>&1) -join "`n"
         # danger 项被过滤掉，不进入 eligible 集合
         $out | Should -Match 'matched 0 items'
@@ -1287,6 +1302,7 @@ Describe 'clean-residuals.ps1 ConfirmFile integration' {
         # Run in DryRun mode with ConfirmFile (dot-source + mock admin check)
         . $scriptPath
         Mock Test-AdminPrivilege { return $true }
+        $ProjectRootOverride = $TestDrive
         $ReportPath = $testReportPath
         $ConfirmFile = $confirmedPath
         $DryRun = $true
@@ -1338,6 +1354,7 @@ Describe 'clean-residuals.ps1 ConfirmFile integration' {
         # Dot-source + mock admin check
         . $scriptPath
         Mock Test-AdminPrivilege { return $true }
+        $ProjectRootOverride = $TestDrive
         $ReportPath = $testReportPath
         $ConfirmFile = $confirmedPath
         $DryRun = $true
@@ -1391,6 +1408,7 @@ Describe 'clean-residuals.ps1 destructive-safety regressions (DryRun)' {
         }
         . $global:_wrcScript
         Mock Test-AdminPrivilege { return $true }
+        $ProjectRootOverride = $TestDrive
         # 关闭白名单（指向不存在文件 → $script:whitelist 保持 null → 不遮蔽），
         # 否则默认 whitelist.json 会命中共享 Run 键，item 被 SKIP，测不到值级删除分支。
         $ReportPath = $fx.report; $ConfirmFile = $fx.confirm; $DryRun = $true
@@ -1407,6 +1425,7 @@ Describe 'clean-residuals.ps1 destructive-safety regressions (DryRun)' {
         }
         . $global:_wrcScript
         Mock Test-AdminPrivilege { return $true }
+        $ProjectRootOverride = $TestDrive
         $ReportPath = $fx.report; $ConfirmFile = $fx.confirm; $DryRun = $true
         $WhitelistPath = "$PSScriptRoot\..\..\wrc-no-whitelist.json"
         $output = (Main 2>&1) -join "`n"

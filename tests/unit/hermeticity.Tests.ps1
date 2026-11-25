@@ -230,6 +230,7 @@ Describe 'Main returns exit code instead of calling exit (hermeticity contract)'
             Mock Test-AdminPrivilege { return $true }
             Mock Get-CimInstance { return $null }
             Mock Get-ScheduledTask { return $null }
+            $ProjectRootOverride = $script:WorkDir
 
             $report = Join-Path $script:WorkDir 'r.json'
             [IO.File]::WriteAllText($report, (@{

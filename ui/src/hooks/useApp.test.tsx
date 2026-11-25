@@ -1,7 +1,18 @@
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { render } from '@testing-library/react'
-import { fixtureReport, renderWithApp, sseResponse, jsonResponse } from '@/test'
+import { fixtureReport, fixtureCleanupLog, renderWithApp, sseResponse, jsonResponse } from '@/test'
+import type { FinalReport } from '@/types/report'
 import { useApp, confirmCleanup, fetchBackupStatus, startCleanup, startScan } from './useApp'
+
+function chunkedResponse(chunks: Uint8Array[]): Response {
+  const body = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk)
+      controller.close()
+    },
+  })
+  return { ok: true, statusText: 'OK', body } as unknown as Response
+}
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -33,10 +44,70 @@ describe('app reducer', () => {
     expect(app.current?.state.error).toBe('boom')
   })
 
+  it('preserves every non-selection action domain', () => {
+    const { app, dispatch } = renderWithApp(null)
+    dispatch({ type: 'SET_PHASE', phase: 'scanning' })
+    dispatch({ type: 'SET_CLEANUP_LOG', log: fixtureCleanupLog })
+    dispatch({ type: 'ADD_SCAN_LINE', line: { text: 'scanning', type: 'step', timestamp: 1 } })
+    dispatch({ type: 'SET_SCAN_PROGRESS', progress: 50 })
+    dispatch({ type: 'SET_ACTIVE_CATEGORY', category: 'filesystem' })
+    expect(app.current?.state.phase).toBe('scanning')
+    expect(app.current?.state.cleanupLog).toBe(fixtureCleanupLog)
+    expect(app.current?.state.scanOutput).toEqual([{ text: 'scanning', type: 'step', timestamp: 1 }])
+    expect(app.current?.state.scanProgress).toBe(50)
+    expect(app.current?.state.activeCategory).toBe('filesystem')
+
+    dispatch({ type: 'CLEAR_SCAN_OUTPUT' })
+    expect(app.current?.state.scanOutput).toEqual([])
+    expect(app.current?.state.scanProgress).toBe(0)
+  })
+
+  it('supports bulk toggles and replacing the selected ids', () => {
+    const { app, dispatch } = renderWithApp(null)
+    dispatch({ type: 'TOGGLE_ALL', ids: ['fs_001', 'reg_001'] })
+    expect(app.current?.state.selectedIds).toEqual(new Set(['fs_001', 'reg_001']))
+    dispatch({ type: 'SET_SELECTED_IDS', ids: ['fs_002'] })
+    expect(app.current?.state.selectedIds).toEqual(new Set(['fs_002']))
+  })
+
   it('collects all item ids from every report category', () => {
     const { app, dispatch } = renderWithApp(null)
     dispatch({ type: 'SET_REPORT', report: fixtureReport })
     expect(app.current?.allItemIds).toEqual(['fs_001', 'fs_002', 'reg_001'])
+  })
+
+  it('collects existing ids when legacy report categories are missing', () => {
+    const legacyReport = { ...fixtureReport } as FinalReport
+    delete (legacyReport as Partial<FinalReport>).ghost_tasks
+    delete (legacyReport as Partial<FinalReport>).uninstalled_software
+    const { app, dispatch } = renderWithApp(null)
+
+    expect(() => dispatch({ type: 'SET_REPORT', report: legacyReport })).not.toThrow()
+    expect(app.current?.allItemIds).toEqual(['fs_001', 'fs_002', 'reg_001'])
+  })
+
+  it('includes only actionable uninstalled software ids', () => {
+    const { app, dispatch } = renderWithApp(null)
+    const uninstalled = {
+      id: 'uni_001',
+      name: 'Old App',
+      registry_key: 'HKCU:/Software/OldApp',
+      install_location: '',
+      uninstall_string: '',
+      evidence: [],
+      source: 'HKCU',
+      actionable: true,
+      risk: 'caution' as const,
+      reason: 'uninstall entry missing',
+    }
+    dispatch({
+      type: 'SET_REPORT',
+      report: {
+        ...fixtureReport,
+        uninstalled_software: [uninstalled, { ...uninstalled, id: 'uni_002', actionable: false }],
+      },
+    })
+    expect(app.current?.allItemIds).toEqual(['fs_001', 'fs_002', 'reg_001', 'uni_001'])
   })
 })
 
@@ -74,10 +145,15 @@ describe('fetchBackupStatus', () => {
   })
 
   it('returns null rather than guessing when the route fails or the network dies', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({}, false)))
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({}, false))
+      .mockRejectedValueOnce(new Error('offline'))
+    vi.stubGlobal('fetch', fetchMock)
     await expect(fetchBackupStatus()).resolves.toBeNull()
-    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
     await expect(fetchBackupStatus()).resolves.toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/backup-status')
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/backup-status')
   })
 })
 
@@ -87,13 +163,13 @@ describe('startCleanup result channel', () => {
   // needed before the callbacks are observable.
   const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)) }
 
-  it('passes the exit code through so 10..15 stay distinguishable', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => sseResponse([{ type: 'done', log, exit_code: 11 }])))
+  it('passes the exit code and detail through so 10..15 stay distinguishable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => sseResponse([{ type: 'done', log, exit_code: 11, detail: 'rollback incomplete' }])))
     const codes: unknown[] = []
-    const controller = await startCleanup(false, () => {}, (l, code) => codes.push([l, code]), () => {})
+    const controller = await startCleanup(false, () => {}, (l, code, detail) => codes.push([l, code, detail]), () => {})
     await flush()
     controller.abort()
-    expect(codes).toEqual([[log, 11]])
+    expect(codes).toEqual([[log, 11, 'rollback incomplete']])
   })
 
   it('reports null, not 0, when the server never told us the code', async () => {
@@ -117,6 +193,76 @@ describe('startCleanup result channel', () => {
     controller.abort()
     expect(errors).toEqual(['前置门禁失败，未删除任何内容'])
     expect(lines).toContain('前置门禁失败，未删除任何内容')
+  })
+})
+
+describe('startScan stream framing', () => {
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)) }
+
+  it('consumes a final record without a trailing newline', async () => {
+    const payload = JSON.stringify({ type: 'done', report: fixtureReport })
+    vi.stubGlobal('fetch', vi.fn(async () => chunkedResponse([new TextEncoder().encode(payload)])))
+    const done = vi.fn()
+    const controller = startScan(() => {}, done, () => {})
+    await settle()
+    controller.abort()
+    expect(done).toHaveBeenCalledWith(fixtureReport)
+  })
+
+  it('preserves records and multibyte text split at every byte boundary', async () => {
+    const bytes = new TextEncoder().encode(
+      `${JSON.stringify({ type: 'step', text: '正在扫描系统残留' })}\n` +
+      `${JSON.stringify({ type: 'done', report: fixtureReport })}\n`,
+    )
+    vi.stubGlobal('fetch', vi.fn(async () => chunkedResponse([...bytes].map(byte => Uint8Array.of(byte)))))
+    const lines: string[] = []
+    const done = vi.fn()
+    const controller = startScan(l => lines.push(l.text), done, () => {})
+    await settle()
+    controller.abort()
+    expect(lines.filter(line => line === '正在扫描系统残留')).toEqual(['正在扫描系统残留'])
+    expect(lines.some(line => line.includes('\uFFFD'))).toBe(false)
+    expect(done).toHaveBeenCalledWith(fixtureReport)
+  })
+
+  it('skips blank lines and exposes malformed records as console output', async () => {
+    const payload = `\nnot-json\n${JSON.stringify({ type: 'done', report: fixtureReport })}`
+    vi.stubGlobal('fetch', vi.fn(async () => chunkedResponse([new TextEncoder().encode(payload)])))
+    const lines: string[] = []
+    const done = vi.fn()
+    const controller = startScan(l => lines.push(l.text), done, () => {})
+    await settle()
+    controller.abort()
+    expect(lines).toContain('not-json')
+    expect(lines).toContain(JSON.stringify({ type: 'done', report: fixtureReport }))
+    expect(lines).toHaveLength(2)
+    expect(done).toHaveBeenCalledWith(fixtureReport)
+  })
+
+  it('reports HTTP, missing-body and network failures without claiming completion', async () => {
+    const done = vi.fn()
+    const errors: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, statusText: 'Forbidden' } as Response)))
+    startScan(() => {}, done, e => errors.push(e)).abort()
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true } as Response)))
+    startScan(() => {}, done, e => errors.push(e)).abort()
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    startScan(() => {}, done, e => errors.push(e)).abort()
+    await settle()
+    expect(errors).toEqual(['扫描失败: Forbidden', '无法读取扫描输出', 'offline'])
+    expect(done).not.toHaveBeenCalled()
+  })
+  it('uses the fallback for non-Error failures and ignores aborts', async () => {
+    const done = vi.fn()
+    const errors: string[] = []
+    vi.stubGlobal('fetch', vi.fn()
+      .mockRejectedValueOnce('offline')
+      .mockRejectedValueOnce(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+    startScan(() => {}, done, e => errors.push(e)).abort()
+    startScan(() => {}, done, e => errors.push(e)).abort()
+    await settle()
+    expect(errors).toEqual(['扫描过程中出错'])
+    expect(done).not.toHaveBeenCalled()
   })
 })
 

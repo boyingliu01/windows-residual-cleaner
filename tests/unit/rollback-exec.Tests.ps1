@@ -95,15 +95,25 @@ Windows Registry Editor Version 5.00
 
 Describe 'ConvertTo-CanonicalRegKeyPath' {
     It '<In> -> <Out>' -TestCases @(
-        @{ In = 'HKLM\SOFTWARE\Foo';              Out = 'HKLM:\SOFTWARE\Foo' }
-        @{ In = 'HKEY_LOCAL_MACHINE\SOFTWARE\Foo'; Out = 'HKLM:\SOFTWARE\Foo' }
-        @{ In = 'HKCU:\Software\Foo';             Out = 'HKCU:\Software\Foo' }
-        @{ In = 'HKEY_CURRENT_USER\Software';     Out = 'HKCU:\Software' }
+        @{ In = 'HKLM\SOFTWARE\Foo';              Out = 'Registry::HKLM\SOFTWARE\Foo' }
+        @{ In = 'HKEY_LOCAL_MACHINE\SOFTWARE\Foo'; Out = 'Registry::HKLM\SOFTWARE\Foo' }
+        @{ In = 'HKCU:\Software\Foo';             Out = 'Registry::HKCU\Software\Foo' }
+        @{ In = 'HKEY_CURRENT_USER\Software';     Out = 'Registry::HKCU\Software' }
+        @{ In = 'HKCR\CLSID\{GUID}\InProcServer32'; Out = 'Registry::HKCR\CLSID\{GUID}\InProcServer32' }
+        @{ In = 'HKU\.DEFAULT\Software';          Out = 'Registry::HKU\.DEFAULT\Software' }
+        @{ In = 'HKEY_CURRENT_CONFIG\Software';   Out = 'Registry::HKCC\Software' }
         @{ In = 'WEIRD\Thing';                    Out = 'WEIRD\Thing' }
         @{ In = '';                               Out = '' }
     ) {
         param($In, $Out)
         ConvertTo-CanonicalRegKeyPath -Path $In | Should -Be $Out
+    }
+
+    It '所有注册表 hive 都不依赖默认 PSDrive 注册状态' {
+        foreach ($hive in @('HKLM', 'HKCU', 'HKCR', 'HKU', 'HKCC')) {
+            ConvertTo-CanonicalRegKeyPath -Path "$hive\Software\Foo" |
+                Should -Be "Registry::$hive\Software\Foo"
+        }
     }
 }
 

@@ -611,7 +611,8 @@ Describe 'Platform hygiene: 适配器 stdout 契约（2026-10-24 实测）' {
         $leaks -join ' | ' | Should -Be '' -Because "stdout 混入非 .ps1 的提示行：这些行会被当作路径塞进 Pester 的 CodeCoverage.Path，导致覆盖率产物变成空文档。漏出的行：$($leaks -join ' | ')"
     }
 
-    It '发现的产品源恰好 18 个（17 脚本 + setup.ps1，权威口径）' {        if (-not $script:Bash) {
+    It '发现的产品源恰好 18 个（17 脚本 + setup.ps1，权威口径）' {
+        if (-not $script:Bash) {
             Set-ItResult -Inconclusive -Because 'bash 不可用'
             return
         }
@@ -620,12 +621,19 @@ Describe 'Platform hygiene: 适配器 stdout 契约（2026-10-24 实测）' {
             Set-ItResult -Inconclusive -Because '用户级 xp-gate 未安装'
             return
         }
-        $script = & $script:Bash -lc "cd '$($script:Root -replace '\\','/')' && source '$($liveAdapter -replace '\\','/')' && _find_powershell_files '*.ps1' 2>/dev/null"
+        $scratch = Join-Path $script:Root ('.wrc-platform-hygiene-' + [guid]::NewGuid().ToString('N') + '.ps1')
+        [IO.File]::WriteAllText($scratch, '# transient drill script')
+        try {
+            $script = & $script:Bash -lc "cd '$($script:Root -replace '\\','/')' && source '$($liveAdapter -replace '\\','/')' && _find_powershell_files '*.ps1' 2>/dev/null"
+        }
+        finally {
+            Remove-Item -LiteralPath $scratch -Force -ErrorAction SilentlyContinue
+        }
         # `_tampered-pkg-probe.ps1` is created and deleted by tests/unit/skill-packaging.Tests.ps1
         # around a single invocation (it must live in tools/ so the tool can resolve its repo
-        # root). Exclude that one name: the count is about the COMMITTED product sources, and a
-        # transient file from a concurrently-running test is not one of them.
-        $product = @($script | Where-Object { $_ -match '\.ps1$' -and $_ -notmatch '\.Tests\.ps1$' -and $_ -notmatch '_tampered-pkg-probe\.ps1$' })
+        # root). `.wrc-*` scripts are gitignored local drill artifacts, never committed product
+        # sources. Exclude both transient namespaces: the count is about committed sources.
+        $product = @($script | Where-Object { $_ -match '\.ps1$' -and $_ -notmatch '\.Tests\.ps1$' -and $_ -notmatch '_tampered-pkg-probe\.ps1$' -and $_ -notmatch '^\./\.wrc-' })
         # AGENTS.md「coverage.xml 的口径与污染」：权威口径 = references/scripts 17
         # 脚本 + setup.ps1 + tools/ 下 5 个门禁工具脚本 = 23 sourcefile。
         # 数量变了要么是新脚本没入列的缺陷，要么是文档没跟上——两种都需要人看一眼，

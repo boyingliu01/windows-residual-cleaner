@@ -1,6 +1,7 @@
 import { render, act } from '@testing-library/react'
 import { AppProvider, useApp } from '@/hooks/useApp'
-import type { CleanupLog, FinalReport } from '@/types'
+import type { CleanupLog } from '@/types/cleanup'
+import type { FinalReport } from '@/types/report'
 import type { ReactElement } from 'react'
 
 export const fixtureReport: FinalReport = {

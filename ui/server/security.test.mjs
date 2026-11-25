@@ -32,15 +32,20 @@ const guard = createOriginGuard({
 
 describe('validateItemIds', () => {
   it('accepts the report id shape generate-report.ps1 emits', () => {
-    expect(validateItemIds(['fs_001', 'path_1234', 'shl_007']).ok).toBe(true);
+    expect(validateItemIds(['fs_001', 'uni_001', 'path_1234', 'shl_007']).ok).toBe(true);
   });
   it('rejects a non-array body', () => {
     expect(validateItemIds('fs_001').ok).toBe(false);
     expect(validateItemIds(undefined).ok).toBe(false);
   });
   it('rejects ids that are not strings or not in the report shape', () => {
-    for (const bad of [['fs_01'], ['FS_001'], ['fs_001', ''], [42], ['..\\..\\x'], ['fs_001; Get-ChildItem']]) {
+    for (const bad of [['fs_01'], ['uni_01'], ['FS_001'], ['fs_001', ''], [42], ['..\\..\\x'], ['fs_001; Get-ChildItem']]) {
       expect(validateItemIds(bad).ok).toBe(false);
+    }
+  });
+  it('rejects trailing line breaks instead of accepting a prefix of the id', () => {
+    for (const id of ['fs_001\n', 'fs_001\r', 'fs_001\r\n']) {
+      expect(validateItemIds([id])).toEqual({ ok: false, error: 'ids contain unknown item ids' });
     }
   });
   it('accepts an empty selection (clearing the confirmation)', () => {
@@ -75,5 +80,20 @@ describe('createOriginGuard', () => {
     expect(isLoopbackHostname('[::1]')).toBe(true);
     const r = run(guard, { headers: { host: '[::1]:3456', origin: 'http://[::1]:3456' } });
     expect(r.passed).toBe(true);
+  });
+  it('accepts IPv4 loopback addresses but rejects domains that merely start with 127.', () => {
+    expect(isLoopbackHostname('127.0.0.2')).toBe(true);
+    expect(isLoopbackHostname('127.255.255.255')).toBe(true);
+    for (const host of ['127.evil.example', '127.0.0.1.evil.example', '127.999.0.1']) {
+      expect(isLoopbackHostname(host)).toBe(false);
+      const r = run(guard, { headers: { host, origin: `http://${host}` } });
+      expect(r).toEqual({ status: 403, body: { error: 'non-loopback host rejected' }, passed: false });
+    }
+  });
+  it('allows only an exactly configured expected Host, including its port', () => {
+    const exactGuard = createOriginGuard({ expectedHosts: ['internal.example:3456'] });
+    expect(run(exactGuard, { headers: { host: 'internal.example:3456' } }).passed).toBe(true);
+    const r = run(exactGuard, { headers: { host: 'internal.example:3457' } });
+    expect(r).toEqual({ status: 403, body: { error: 'non-loopback host rejected' }, passed: false });
   });
 });

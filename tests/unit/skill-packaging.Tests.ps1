@@ -136,6 +136,33 @@ Describe 'Skill packaging: CLI 与 UI 的分离（2026-10-24）' {
         }
     }
 
+    It '打包时不遍历 node_modules，损坏的依赖 junction 不会中止发布' {
+        $fixtureRoot = Join-Path $TestDrive 'repo'
+        $fixtureTools = Join-Path $fixtureRoot 'tools'
+        $fixtureUi = Join-Path $fixtureRoot 'ui'
+        $fixtureNodeModules = Join-Path $fixtureUi 'node_modules'
+        $packageRoot = Join-Path $TestDrive 'packages'
+        New-Item -ItemType Directory -Path $fixtureTools, $fixtureNodeModules -Force | Out-Null
+        Copy-Item -LiteralPath $script:Tool -Destination $fixtureTools
+        foreach ($file in @('SKILL.md', 'VERSION', 'LICENSE', 'package.json', 'ui/keep.txt', 'references/scripts/run-all.ps1')) {
+            $target = Join-Path $fixtureRoot $file
+            $parent = Split-Path -Parent $target
+            if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+            [System.IO.File]::WriteAllText($target, 'fixture', [System.Text.Encoding]::UTF8)
+        }
+        $missingTarget = Join-Path $TestDrive 'missing'
+        New-Item -ItemType Directory -Path $missingTarget -Force | Out-Null
+        New-Item -ItemType Junction -Path (Join-Path $fixtureNodeModules 'broken') -Target $missingTarget | Out-Null
+        Remove-Item -LiteralPath $missingTarget -Force
+        $fixtureTool = Join-Path $fixtureTools 'New-SkillPackage.ps1'
+
+        { & $fixtureTool -OutputRoot $packageRoot *> $null } | Should -Not -Throw
+        $fullPackage = Join-Path $packageRoot 'windows-residual-cleaner-full'
+        (Test-Path -LiteralPath (Join-Path $fullPackage 'ui/keep.txt')) | Should -BeTrue
+        (Test-Path -LiteralPath (Join-Path $fullPackage 'ui/node_modules')) | Should -BeFalse
+        (Test-Path -LiteralPath (Join-Path $fullPackage 'node_modules')) | Should -BeFalse
+    }
+
     It 'full 包保留 ui/（维护者需要），且产出 packages.json 清单' {
         (Test-Path -LiteralPath (Join-Path $script:FullPkg 'ui')) | Should -BeTrue -Because 'full 包是给维护者的，必须保留 UI'
         (Test-Path -LiteralPath (Join-Path $script:FullPkg 'tests')) | Should -BeTrue

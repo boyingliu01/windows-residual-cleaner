@@ -2,6 +2,7 @@ const express = require('express');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { StringDecoder } = require('node:string_decoder');
 const { createOriginGuard, validateItemIds } = require('./security.cjs');
 
 const app = express();
@@ -51,6 +52,21 @@ const SCRIPTS_DIR = path.join(PROJECT_ROOT, 'references', 'scripts');
 const POWERSHELL = 'powershell.exe';
 const PS_FLAGS = ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NonInteractive'];
 
+function createOutputCollector(child) {
+  const output = { stdout: '', stderr: '' };
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
+  child.stdout.on('data', data => { output.stdout += stdoutDecoder.write(data); });
+  child.stderr.on('data', data => { output.stderr += stderrDecoder.write(data); });
+  return {
+    output,
+    finish() {
+      output.stdout += stdoutDecoder.end();
+      output.stderr += stderrDecoder.end();
+    },
+  };
+}
+
 // ====== HELPER: Run PowerShell and return output ======
 function runPS(scriptName, args = []) {
   return new Promise((resolve, reject) => {
@@ -66,8 +82,7 @@ function runPS(scriptName, args = []) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    let stdout = '';
-    let stderr = '';
+    const { output, finish } = createOutputCollector(child);
     let timedOut = false;
 
     const timer = setTimeout(() => {
@@ -76,23 +91,16 @@ function runPS(scriptName, args = []) {
       reject(new Error(`Script ${scriptName} timed out after 300s`));
     }, 300000);
 
-    child.stdout.on('data', (data) => {
-      stdout += data.toString('utf8');
-    });
-
-    child.stderr.on('data', (data) => {
-      stderr += data.toString('utf8');
-    });
-
     child.on('close', (code) => {
       clearTimeout(timer);
       if (timedOut) return;
+      finish();
       if (code === 0) {
-        resolve(stdout.trim());
+        resolve(output.stdout.trim());
       } else {
         // 带上真实退出码：/api/restore-point 必须区分「4=可选层未建立（可继续）」
         // 与「1/2/3=真失败」，两者对用户的含义完全不同。
-        const err = new Error(stderr.trim() || `Exit code: ${code} for ${scriptName}`);
+        const err = new Error(output.stderr.trim() || `Exit code: ${code} for ${scriptName}`);
         err.exitCode = code;
         reject(err);
       }
@@ -102,6 +110,29 @@ function runPS(scriptName, args = []) {
       clearTimeout(timer);
       reject(err);
     });
+  });
+}
+
+function attachChunkedLines(stream, onLine, prefix = '') {
+  let buffer = '';
+  const decoder = new StringDecoder('utf8');
+  const consume = (line) => {
+    const text = line.trim();
+    if (text) onLine(prefix + text);
+  };
+  stream.on('data', (data) => {
+    buffer += decoder.write(data);
+    let newline = buffer.indexOf('\n');
+    while (newline !== -1) {
+      consume(buffer.slice(0, newline));
+      buffer = buffer.slice(newline + 1);
+      newline = buffer.indexOf('\n');
+    }
+  });
+  stream.on('end', () => {
+    buffer += decoder.end();
+    consume(buffer);
+    buffer = '';
   });
 }
 
@@ -126,21 +157,8 @@ function streamPS(scriptName, args = [], onLine, onDone, onError) {
     onError('Script timed out');
   }, 300000);
 
-  child.stdout.on('data', (data) => {
-    const text = data.toString('utf8');
-    const lines = text.split('\n').filter(l => l.trim());
-    for (const line of lines) {
-      onLine(line);
-    }
-  });
-
-  child.stderr.on('data', (data) => {
-    const text = data.toString('utf8');
-    const lines = text.split('\n').filter(l => l.trim());
-    for (const line of lines) {
-      onLine(`[stderr] ${line}`);
-    }
-  });
+  attachChunkedLines(child.stdout, onLine);
+  attachChunkedLines(child.stderr, onLine, '[stderr] ');
 
   child.on('close', (code) => {
     clearTimeout(timer);
@@ -206,99 +224,158 @@ function listBackupDirs() {
 
 // 同名文件在各备份目录里取「最近写入」的那份——与 clean-residuals.ps1 的
 // Get-OptionalProtectionStatus 同一口径（按 LastWriteTime，不按目录名排序）。
+function isJSONRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function considerBackupFile(best, dir, fileName) {
+  const file = path.join(dir.full, fileName);
+  try {
+    if (!fs.existsSync(file)) return best;
+    const stat = fs.statSync(file);
+    if (best && stat.mtimeMs <= best.mtimeMs) return best;
+    return { file, dir: dir.name, mtime: stat.mtimeMs };
+  } catch {
+    return best;
+  }
+}
+
 function newestFileInBackups(dirs, fileName) {
   let best = null;
-  for (const d of dirs) {
-    const f = path.join(d.full, fileName);
-    try {
-      if (!fs.existsSync(f)) continue;
-      const st = fs.statSync(f);
-      if (!best || st.mtimeMs > best.mtimeMs) best = { file: f, dir: d.name, mtime: st.mtimeMs };
-    } catch { /* 读不动的目录跳过：最终如实表现为「无记录」 */ }
+  for (const dir of dirs) {
+    best = considerBackupFile(best, dir, fileName);
   }
   return best;
 }
 
-function readRestorePointStatus(dirs) {
-  const restorePoint = {
-    state: 'unknown',      // available | unavailable | unknown
+function createRestorePointStatus() {
+  return {
+    state: 'unknown',
     enabled: false,
-    attempted: null,       // null = 旧版本未记录，无法判断「试过没有」
+    attempted: null,
     detail: '',
     source: null,
     timestamp: null,
   };
-  const rpFile = newestFileInBackups(dirs, 'restore-status.json');
-  if (!rpFile) {
-    restorePoint.state = 'unavailable';
-    restorePoint.detail = 'restore-status.json 不存在（从未运行 create-restore-point.ps1，或该步骤失败）';
-    return restorePoint;
+}
+
+function getRestorePointDetail(enabled, attempted) {
+  if (enabled) return '系统还原点已建立（尽力而为的最后手段）';
+  if (attempted === false) return '按请求跳过（-SkipRestorePoint），未尝试建立';
+  return '系统还原点未建立（System Protection 关闭 / 24h 节流 / 无权限）';
+}
+
+function isRestorePointDocument(doc) {
+  return isJSONRecord(doc) && 'restore_point_enabled' in doc;
+}
+
+function getRestorePointAttempted(value) {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function applyRestorePointDocument(status, doc) {
+  if (!isRestorePointDocument(doc)) {
+    status.detail = 'restore-status.json 缺少有效状态字段';
+    return status;
   }
-  restorePoint.source = `${rpFile.dir}/restore-status.json`;
-  const doc = readJSONFile(rpFile.file);
-  if (doc.__error) {
-    restorePoint.detail = `restore-status.json 不可解析：${doc.__error}`;
-    return restorePoint;
+  status.enabled = doc.restore_point_enabled === true;
+  status.state = status.enabled ? 'available' : 'unavailable';
+  status.attempted = getRestorePointAttempted(doc.restore_point_attempted);
+  status.timestamp = doc.timestamp || null;
+  status.detail = getRestorePointDetail(status.enabled, status.attempted);
+  return status;
+}
+
+function readRestorePointStatus(dirs) {
+  const status = createRestorePointStatus();
+  const hit = newestFileInBackups(dirs, 'restore-status.json');
+  if (!hit) {
+    status.state = 'unavailable';
+    status.detail = 'restore-status.json 不存在（从未运行 create-restore-point.ps1，或该步骤失败）';
+    return status;
   }
-  restorePoint.enabled = doc.restore_point_enabled === true;
-  restorePoint.state = restorePoint.enabled ? 'available' : 'unavailable';
-  restorePoint.attempted = typeof doc.restore_point_attempted === 'boolean' ? doc.restore_point_attempted : null;
-  restorePoint.timestamp = doc.timestamp || null;
-  restorePoint.detail = restorePoint.enabled
-    ? '系统还原点已建立（尽力而为的最后手段）'
-    : (restorePoint.attempted === false
-      ? '按请求跳过（-SkipRestorePoint），未尝试建立'
-      : '系统还原点未建立（System Protection 关闭 / 24h 节流 / 无权限）');
-  return restorePoint;
+  status.source = `${hit.dir}/restore-status.json`;
+  const doc = readJSONFile(hit.file);
+  if (doc?.__error) {
+    status.detail = `restore-status.json 不可解析：${doc.__error}`;
+    return status;
+  }
+  return applyRestorePointDocument(status, doc);
+}
+
+function pickText(record, key) {
+  return record[key] || null;
+}
+
+function normalizeJournal(dir, doc) {
+  return {
+    backup_dir: dir.name,
+    run_id: pickText(doc, 'run_id'),
+    created_at: pickText(doc, 'created_at'),
+    completed_at: pickText(doc, 'completed_at'),
+    unfinished: !doc.completed_at,
+    entries: Array.isArray(doc.entries) ? doc.entries.length : 0,
+  };
+}
+
+function readJournal(dir) {
+  const file = path.join(dir.full, 'rollback-journal.json');
+  if (!fs.existsSync(file)) return null;
+  const doc = readJSONFile(file);
+  if (!isJSONRecord(doc) || doc.__error) return null;
+  return normalizeJournal(dir, doc);
 }
 
 function readJournals(dirs) {
   const journals = [];
-  for (const d of dirs) {
-    const f = path.join(d.full, 'rollback-journal.json');
-    if (!fs.existsSync(f)) continue;
-    const doc = readJSONFile(f);
-    if (doc.__error) continue;
-    const entries = Array.isArray(doc.entries) ? doc.entries : [];
-    journals.push({
-      backup_dir: d.name,
-      run_id: doc.run_id || null,
-      created_at: doc.created_at || null,
-      completed_at: doc.completed_at || null,
-      unfinished: !doc.completed_at,
-      entries: entries.length,
-    });
+  for (const dir of dirs) {
+    const journal = readJournal(dir);
+    if (journal) journals.push(journal);
   }
   return journals;
+}
+
+function pickField(record, camelCase, pascalCase) {
+  return record[camelCase] ?? record[pascalCase] ?? null;
+}
+
+function normalizeVerdict(verdict) {
+  if (!isJSONRecord(verdict)) return null;
+  return {
+    item_id: pickField(verdict, 'item_id', 'ItemId'),
+    kind: pickField(verdict, 'kind', 'Kind'),
+    target: pickField(verdict, 'target', 'Target'),
+    verdict: pickField(verdict, 'verdict', 'Verdict'),
+    reason: pickField(verdict, 'reason', 'Reason'),
+    evidence_incomplete: verdict.evidence_incomplete ?? (verdict.EvidenceIncomplete === true),
+  };
+}
+
+function normalizeRollbackVerdicts(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(normalizeVerdict).filter(Boolean);
+}
+
+function createRollbackResult(hit, doc) {
+  return {
+    backup_dir: hit.dir,
+    run_id: pickText(doc, 'run_id'),
+    executed_at: pickText(doc, 'executed_at'),
+    within_window: doc.within_window === true,
+    counts: isJSONRecord(doc.counts) ? doc.counts : {},
+    verdicts: normalizeRollbackVerdicts(doc.verdicts),
+  };
 }
 
 function readLastRollback(dirs) {
   const hit = newestFileInBackups(dirs, 'rollback-result.json');
   if (!hit) return null;
   const doc = readJSONFile(hit.file);
-  if (doc.__error) return null;
-  const verdicts = Array.isArray(doc.verdicts) ? doc.verdicts : [];
-  return {
-    backup_dir: hit.dir,
-    run_id: doc.run_id || null,
-    executed_at: doc.executed_at || null,
-    within_window: doc.within_window === true,
-    counts: doc.counts || {},
-    verdicts: verdicts.map(v => ({
-      item_id: v.item_id ?? v.ItemId ?? null,
-      kind: v.kind ?? v.Kind ?? null,
-      target: v.target ?? v.Target ?? null,
-      verdict: v.verdict ?? v.Verdict ?? null,
-      reason: v.reason ?? v.Reason ?? null,
-      // PS writes the PascalCase field; the spec requires the UI to list these
-      // separately from unrepaired items, so it must survive the read.
-      evidence_incomplete: v.evidence_incomplete ?? (v.EvidenceIncomplete === true),
-    })),
-  };
+  if (!isJSONRecord(doc) || doc.__error) return null;
+  return createRollbackResult(hit, doc);
 }
 
-function getBackupStatus() {
-  const dirs = listBackupDirs();
+function getBackupStatus(dirs = listBackupDirs()) {
   const journals = readJournals(dirs);
   const pending = journals.filter(j => j.unfinished)
     .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
@@ -469,8 +546,13 @@ app.post('/api/cleanup', (req, res) => {
     }
   );
 
-  req.on('close', () => {
+  const cancelChild = () => {
     if (!child.killed) child.kill();
+  };
+  // req close also fires after a normal body; only abort or an unfinished response means the client left.
+  req.on('aborted', cancelChild);
+  res.on('close', () => {
+    if (!res.writableEnded) cancelChild();
   });
 });
 
@@ -544,4 +626,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, PROJECT_ROOT, getBackupStatus };
+module.exports = { app, PROJECT_ROOT, getBackupStatus, runPS, streamPS };

@@ -1,4 +1,4 @@
-# Pester Integration Tests - Pipeline with Mock Data (Pester 3.x Compatible)
+﻿# Pester Integration Tests - Pipeline with Mock Data (Pester 3.x Compatible)
 # Tests end-to-end: generate-report.ps1 and clean-residuals.ps1 with mock JSON data
 
 Describe 'Pipeline Integration - generate-report.ps1' {
@@ -157,13 +157,18 @@ Describe 'Pipeline Integration - generate-report.ps1' {
 
 Describe 'Pipeline Integration - clean-residuals.ps1' {
     BeforeAll {
+        $repoCleanupLog = "$PSScriptRoot\..\..\cleanup-log.json"
+        $repoLogHashBefore = if (Test-Path -LiteralPath $repoCleanupLog) {
+            (Get-FileHash -LiteralPath $repoCleanupLog -Algorithm SHA256).Hash
+        } else { $null }
+
         $testDir = "$PSScriptRoot\..\..\test-output-cleanup"
         if (Test-Path $testDir) { Remove-Item $testDir -Recurse -Force }
         New-Item -ItemType Directory -Path $testDir -Force | Out-Null
 
         # Create a fake backup directory for restore point check
         $backupDir = "$PSScriptRoot\..\..\backup-test"
-        if (-not (Test-Path $backupDir)) { 
+        if (-not (Test-Path $backupDir)) {
             New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
             $status = @{restore_point_enabled=$true; backup_dir=$backupDir; timestamp=(Get-Date -Format 'yyyy-MM-ddTHH:mm:ss')}
             $status | ConvertTo-Json | Out-File "$backupDir\restore-status.json" -Encoding UTF8
@@ -194,16 +199,25 @@ Describe 'Pipeline Integration - clean-residuals.ps1' {
     }
 
     It 'clean-residuals.ps1 Mode D runs without error' {
-        { & "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath "$testDir\final-report.json" -Mode D 2>&1 | Out-Null } | Should -Not -Throw
+        { & "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath "$testDir\final-report.json" -Mode D -ProjectRootOverride $testDir 2>&1 | Out-Null } | Should -Not -Throw
     }
 
     It 'clean-residuals.ps1 accepts Mode A and DryRun without error' {
-        { & "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath "$testDir\final-report.json" -Mode A -DryRun 2>&1 | Out-Null } | Should -Not -Throw
+        { & "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath "$testDir\final-report.json" -Mode A -DryRun -ProjectRootOverride $testDir 2>&1 | Out-Null } | Should -Not -Throw
+        $testLog = Get-Content -LiteralPath "$testDir\cleanup-log.json" -Raw | ConvertFrom-Json
+        $testLog.summary.total_processed | Should -Be 1
     }
 
     AfterAll {
-        Remove-Item $testDir -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item "$PSScriptRoot\..\..\backup-test" -Recurse -Force -ErrorAction SilentlyContinue
+        try {
+            $repoLogHashAfter = if (Test-Path -LiteralPath $repoCleanupLog) {
+                (Get-FileHash -LiteralPath $repoCleanupLog -Algorithm SHA256).Hash
+            } else { $null }
+            $repoLogHashAfter | Should -Be $repoLogHashBefore -Because '测试不得覆盖主仓的 cleanup-log.json'
+        } finally {
+            Remove-Item $testDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item "$PSScriptRoot\..\..\backup-test" -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

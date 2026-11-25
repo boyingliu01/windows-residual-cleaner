@@ -29,6 +29,20 @@ function global:winget {
 function global:scoop { param([Parameter(ValueFromRemainingArguments = $true)]$rest) }
 function global:choco { param([Parameter(ValueFromRemainingArguments = $true)]$rest) }
 
+BeforeAll {
+    $script:RepoCleanupLog = Join-Path $PSScriptRoot '..\..\cleanup-log.json'
+    $script:RepoLogHashBefore = if (Test-Path -LiteralPath $script:RepoCleanupLog) {
+        (Get-FileHash -LiteralPath $script:RepoCleanupLog -Algorithm SHA256).Hash
+    } else { $null }
+}
+
+AfterAll {
+    $repoLogHashAfter = if (Test-Path -LiteralPath $script:RepoCleanupLog) {
+        (Get-FileHash -LiteralPath $script:RepoCleanupLog -Algorithm SHA256).Hash
+    } else { $null }
+    $repoLogHashAfter | Should -Be $script:RepoLogHashBefore -Because '测试不得覆盖主仓的 cleanup-log.json'
+}
+
 # ---------------------------------------------------------------------------
 # build-installed-index.ps1: 真实注册表扫描（进程内 Main → 覆盖率可见）
 # ---------------------------------------------------------------------------
@@ -302,7 +316,7 @@ Describe 'Main-flow: clean-residuals.ps1 whitelist + danger gating' {
     }
 
     It 'Skips whitelisted items in DryRun mode' {
-        . "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath $reportPath -WhitelistPath $wlPath -Mode A -DryRun
+        . "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath $reportPath -WhitelistPath $wlPath -Mode A -DryRun -ProjectRootOverride $TestDrive
         Mock Test-AdminPrivilege { return $true }
         $result = Main 2>&1 | Out-String
         # fs_101 (safe) 命中白名单 → SKIP；reg_101 (danger) 在 Mode A 筛选中已被排除，
@@ -314,7 +328,7 @@ Describe 'Main-flow: clean-residuals.ps1 whitelist + danger gating' {
     }
 
     It 'Mode D performs no cleanup' {
-        . "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath $reportPath -WhitelistPath $wlPath -Mode D -DryRun
+        . "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath $reportPath -WhitelistPath $wlPath -Mode D -DryRun -ProjectRootOverride $TestDrive
         Mock Test-AdminPrivilege { return $true }
         $result = Main 2>&1 | Out-String
         $result | Should -Match 'Report-only mode'
@@ -324,7 +338,7 @@ Describe 'Main-flow: clean-residuals.ps1 whitelist + danger gating' {
     It 'ItemsToClean filters by explicit IDs' {
         # Mode C 已排除 danger（reg_101），因此过滤必须用非 danger ID 才能命中。
         # fs_101 经 ItemsToClean 过滤后进入 pre-filter，命中白名单 → SKIP。
-        . "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath $reportPath -WhitelistPath $wlPath -Mode C -DryRun -ItemsToClean '["fs_101"]'
+        . "$PSScriptRoot\..\..\references\scripts\clean-residuals.ps1" -ReportPath $reportPath -WhitelistPath $wlPath -Mode C -DryRun -ItemsToClean '["fs_101"]' -ProjectRootOverride $TestDrive
         Mock Test-AdminPrivilege { return $true }
         $result = Main 2>&1 | Out-String
         $result | Should -Match 'SKIP \(whitelisted\): fs_101'

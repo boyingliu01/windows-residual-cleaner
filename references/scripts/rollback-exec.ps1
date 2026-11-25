@@ -37,18 +37,12 @@ function Split-StartupTarget {
 function ConvertTo-CanonicalRegKeyPath {
     <#
     .SYNOPSIS
-        把 'HKLM\SOFTWARE\Foo' / 'HKEY_LOCAL_MACHINE\SOFTWARE\Foo' 都转成
-        PS 注册表提供程序路径 'HKLM:\SOFTWARE\Foo'。
-    .DESCRIPTION
-        提供程序只认短 hive 名（HKLM:/HKCU:/...）作为驱动器；直接给长名
-        （HKEY_LOCAL_MACHINE:\）Test-Path 一律为假 —— 那会把「存在」误判成
-        「不存在」，进而把已存在的目标当成待恢复目标。
+        把注册表键路径归一为与 PSDrive 注册状态无关的 Registry:: 提供程序路径。
     #>
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
 
     $p = $Path.Trim().Trim('"').Trim()
-    # 已是 PS 提供程序形态（'HKLM:\SOFTWARE\Foo'）就原样返回；注意判别的是「字母 + :\」
-    if ($p -match '^[A-Za-z]+:\\') { return $p }
+    if ($p -match '^Registry::') { return $p }
     $short = @{
         'HKEY_LOCAL_MACHINE' = 'HKLM'; 'HKLM' = 'HKLM'
         'HKEY_CURRENT_USER' = 'HKCU'; 'HKCU' = 'HKCU'
@@ -58,9 +52,9 @@ function ConvertTo-CanonicalRegKeyPath {
     }
     $i = $p.IndexOf('\')
     if ($i -lt 0) { $hive = $p; $rest = '' } else { $hive = $p.Substring(0, $i); $rest = $p.Substring($i) }
-    $drive = $short[$hive.ToUpperInvariant()]
+    $drive = $short[$hive.TrimEnd(':').ToUpperInvariant()]
     if ($null -eq $drive) { return $p }
-    return ($drive + ':\' + $rest.TrimStart('\'))
+    return ('Registry::{0}\{1}' -f $drive, $rest.TrimStart('\'))
 }
 
 function Add-RegSignatureLine {

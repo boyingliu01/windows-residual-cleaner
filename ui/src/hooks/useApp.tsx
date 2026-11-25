@@ -1,5 +1,9 @@
 import React, { createContext, useContext, useReducer, type ReactNode } from 'react'
-import type { FinalReport, CleanupLog, AppPhase, ScanOutputLine, RiskLevel, BackupStatus } from '@/types'
+import type { FinalReport } from '@/types/report'
+import type { CleanupLog } from '@/types/cleanup'
+import type { AppPhase, ScanOutputLine } from '@/types/app'
+import type { RiskLevel } from '@/types/residual'
+import type { BackupStatus } from '@/types/backup'
 
 interface AppState {
   phase: AppPhase
@@ -38,7 +42,52 @@ const initialState: AppState = {
   error: null,
 }
 
-function appReducer(state: AppState, action: Action): AppState {
+function toggleIds(selected: Set<string>, ids: string[]): Set<string> {
+  const next = new Set(selected)
+  for (const id of ids) {
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+  }
+  return next
+}
+
+type ActionReducer = (state: AppState, action: Action) => AppState
+
+function reduceSelectionToggles(state: AppState, action: Action): AppState {
+  switch (action.type) {
+    case 'TOGGLE_ID':
+      return { ...state, selectedIds: toggleIds(state.selectedIds, [action.id]) }
+    case 'TOGGLE_ALL':
+      return { ...state, selectedIds: toggleIds(state.selectedIds, action.ids) }
+    default:
+      return state
+  }
+}
+
+function reduceSelectionBulk(state: AppState, action: Action): AppState {
+  switch (action.type) {
+    case 'SELECT_ALL_RISK':
+      return { ...state, selectedIds: new Set([...state.selectedIds, ...action.ids]) }
+    case 'CLEAR_SELECTION':
+      return { ...state, selectedIds: new Set() }
+    case 'SET_SELECTED_IDS':
+      return { ...state, selectedIds: new Set(action.ids) }
+    default:
+      return state
+  }
+}
+
+function reduceSelection(state: AppState, action: Action): AppState {
+  switch (action.type) {
+    case 'TOGGLE_ID':
+    case 'TOGGLE_ALL':
+      return reduceSelectionToggles(state, action)
+    default:
+      return reduceSelectionBulk(state, action)
+  }
+}
+
+function reduceResultActions(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'SET_PHASE':
       return { ...state, phase: action.phase }
@@ -46,42 +95,53 @@ function appReducer(state: AppState, action: Action): AppState {
       return { ...state, report: action.report }
     case 'SET_CLEANUP_LOG':
       return { ...state, cleanupLog: action.log }
+    default:
+      return state
+  }
+}
+
+function reduceScanActions(state: AppState, action: Action): AppState {
+  switch (action.type) {
     case 'ADD_SCAN_LINE':
       return { ...state, scanOutput: [...state.scanOutput, action.line] }
     case 'CLEAR_SCAN_OUTPUT':
       return { ...state, scanOutput: [], scanProgress: 0 }
     case 'SET_SCAN_PROGRESS':
       return { ...state, scanProgress: action.progress }
-    case 'TOGGLE_ID': {
-      const next = new Set(state.selectedIds)
-      if (next.has(action.id)) next.delete(action.id)
-      else next.add(action.id)
-      return { ...state, selectedIds: next }
-    }
-    case 'TOGGLE_ALL': {
-      const next = new Set(state.selectedIds)
-      for (const id of action.ids) {
-        if (next.has(id)) next.delete(id)
-        else next.add(id)
-      }
-      return { ...state, selectedIds: next }
-    }
-    case 'SELECT_ALL_RISK': {
-      const next = new Set(state.selectedIds)
-      for (const id of action.ids) next.add(id)
-      return { ...state, selectedIds: next }
-    }
-    case 'CLEAR_SELECTION':
-      return { ...state, selectedIds: new Set() }
+    default:
+      return state
+  }
+}
+
+function reducePreferenceActions(state: AppState, action: Action): AppState {
+  switch (action.type) {
     case 'SET_ACTIVE_CATEGORY':
       return { ...state, activeCategory: action.category }
     case 'SET_ERROR':
       return { ...state, error: action.error }
-    case 'SET_SELECTED_IDS':
-      return { ...state, selectedIds: new Set(action.ids) }
     default:
       return state
   }
+}
+
+const actionReducers: Record<Action['type'], ActionReducer> = {
+  SET_PHASE: reduceResultActions,
+  SET_REPORT: reduceResultActions,
+  SET_CLEANUP_LOG: reduceResultActions,
+  ADD_SCAN_LINE: reduceScanActions,
+  CLEAR_SCAN_OUTPUT: reduceScanActions,
+  SET_SCAN_PROGRESS: reduceScanActions,
+  SET_ACTIVE_CATEGORY: reducePreferenceActions,
+  SET_ERROR: reducePreferenceActions,
+  TOGGLE_ID: reduceSelection,
+  TOGGLE_ALL: reduceSelection,
+  SELECT_ALL_RISK: reduceSelection,
+  CLEAR_SELECTION: reduceSelection,
+  SET_SELECTED_IDS: reduceSelection,
+}
+
+function appReducer(state: AppState, action: Action): AppState {
+  return actionReducers[action.type](state, action)
 }
 
 interface AppContextValue {
@@ -92,19 +152,40 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null)
 
+const REPORT_ITEM_CATEGORIES = [
+  'filesystem_residuals',
+  'registry_residuals',
+  'ghost_services',
+  'ghost_tasks',
+  'startup_residuals',
+  'shell_residuals',
+  'path_residuals',
+] as const
+
+function appendItemIds(ids: string[], items: ReadonlyArray<{ id?: string }>): void {
+  for (const item of items) {
+    if (item.id) ids.push(item.id)
+  }
+}
+
+function appendActionableIds(ids: string[], items: ReadonlyArray<{ id?: string; actionable?: boolean }>): void {
+  for (const item of items) {
+    if (item.actionable && item.id) ids.push(item.id)
+  }
+}
+
+function collectAllItemIds(report: FinalReport | null): string[] {
+  if (!report) return []
+  const ids: string[] = []
+  for (const category of REPORT_ITEM_CATEGORIES) appendItemIds(ids, report[category] ?? [])
+  appendActionableIds(ids, report.uninstalled_software ?? [])
+  return ids
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState)
 
-  const allItemIds = React.useMemo(() => {
-    if (!state.report) return []
-    const ids: string[] = []
-    for (const key of ['filesystem_residuals', 'registry_residuals', 'ghost_services', 'ghost_tasks', 'startup_residuals', 'shell_residuals', 'path_residuals'] as const) {
-      for (const item of (state.report as any)[key] || []) {
-        if (item.id) ids.push(item.id)
-      }
-    }
-    return ids
-  }, [state.report])
+  const allItemIds = React.useMemo(() => collectAllItemIds(state.report), [state.report])
 
   return (
     <AppContext.Provider value={{ state, dispatch, allItemIds }}>
@@ -132,62 +213,89 @@ export async function fetchReport(): Promise<FinalReport | null> {
   }
 }
 
+interface StreamPayload {
+  type?: ScanOutputLine['type']
+  text?: string
+  timestamp?: number
+  report?: FinalReport
+  log?: CleanupLog
+  exit_code?: number | null
+  detail?: string | null
+}
+
 interface StreamHandlers {
   onLine: (line: ScanOutputLine) => void
-  onDone: (parsed: any) => void
+  onDone: (parsed: StreamPayload) => void
   onError: (err: string) => void
   failPrefix: string
   readPrefix: string
   fallbackMessage: string
 }
 
+type LineHandlers = Pick<StreamHandlers, 'onLine' | 'onDone' | 'onError'>
+
+function emitParsedLine(parsed: StreamPayload, line: string, handlers: LineHandlers): void {
+  const type = parsed.type || 'info'
+  const text = parsed.text || line
+  handlers.onLine({ text, type, timestamp: parsed.timestamp || Date.now() })
+  if (parsed.type === 'done') handlers.onDone(parsed)
+  if (type === 'error') handlers.onError(text)
+}
+
+function consumeStreamLine(line: string, handlers: LineHandlers): void {
+  if (!line.trim()) return
+  try {
+    const parsed = JSON.parse(line) as StreamPayload
+    emitParsedLine(parsed, line, handlers)
+  } catch {
+    handlers.onLine({ text: line, type: 'info', timestamp: Date.now() })
+  }
+}
+
+function createLineConsumer(handlers: LineHandlers) {
+  return (line: string) => consumeStreamLine(line, handlers)
+}
+
+function consumeCompleteLines(buffer: string, consume: (line: string) => void): string {
+  const lines = buffer.split('\n')
+  buffer = lines.pop() || ''
+  for (const line of lines) consume(line)
+  return buffer
+}
+
+async function readResponseBody(res: Response, handlers: StreamHandlers): Promise<void> {
+  const reader = res.body?.getReader()
+  if (!reader) {
+    handlers.onError(handlers.readPrefix)
+    return
+  }
+  const decoder = new TextDecoder()
+  const consume = createLineConsumer(handlers)
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer = consumeCompleteLines(buffer + decoder.decode(value, { stream: true }), consume)
+  }
+  buffer += decoder.decode()
+  consume(buffer)
+}
+
+function handleStreamError(err: unknown, handlers: StreamHandlers): void {
+  if (err instanceof Error && err.name === 'AbortError') return
+  handlers.onError(err instanceof Error ? err.message : handlers.fallbackMessage)
+}
+
 async function streamNDJSON(url: string, init: RequestInit, handlers: StreamHandlers): Promise<void> {
-  const { onLine, onDone, onError } = handlers
   try {
     const res = await fetch(url, init)
     if (!res.ok) {
-      onError(`${handlers.failPrefix}: ${res.statusText}`)
+      handlers.onError(`${handlers.failPrefix}: ${res.statusText}`)
       return
     }
-    const reader = res.body?.getReader()
-    if (!reader) {
-      onError(handlers.readPrefix)
-      return
-    }
-
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (!line.trim()) continue
-        try {
-          const parsed = JSON.parse(line)
-          const type = parsed.type || 'info'
-          const text = parsed.text || line
-          onLine({ text, type, timestamp: parsed.timestamp || Date.now() })
-          if (parsed.type === 'done') onDone(parsed)
-          // The server signals failure with a `type:'error'` line. Forwarding those only
-          // to onLine left onError reachable just for network errors, so a pipeline that
-          // died (run-all exit 2, missing report, cleanup abort) kept the caller spinning
-          // with no message. Surface it; the line stays in the console too.
-          if (type === 'error') onError(text)
-        } catch {
-          onLine({ text: line, type: 'info', timestamp: Date.now() })
-        }
-      }
-    }
-  } catch (err: any) {
-    if (err?.name !== 'AbortError') {
-      onError(err?.message || handlers.fallbackMessage)
-    }
+    await readResponseBody(res, handlers)
+  } catch (err) {
+    handleStreamError(err, handlers)
   }
 }
 
@@ -224,7 +332,7 @@ export async function confirmCleanup(ids: string[]): Promise<boolean> {
   }
 }
 
-export async function startCleanup(dryRun: boolean, onLine: (line: ScanOutputLine) => void, onDone: (log: any, exitCode?: number | null, detail?: string | null) => void, onError: (err: string) => void): Promise<AbortController> {
+export async function startCleanup(dryRun: boolean, onLine: (line: ScanOutputLine) => void, onDone: (log: CleanupLog, exitCode?: number | null, detail?: string | null) => void, onError: (err: string) => void): Promise<AbortController> {
   const controller = new AbortController()
 
   void streamNDJSON(`${API_BASE}/cleanup`, {
